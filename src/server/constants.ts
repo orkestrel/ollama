@@ -14,3 +14,16 @@ export const DEFAULT_KEEP_ALIVE = '5m'
  * generous enough that a cold model load does not trip it.
  */
 export const DEFAULT_PROVIDER_TIMEOUT = 120_000
+
+/**
+ * The cap, in characters, on how much of a non-OK response body is
+ * incorporated into a thrown {@link OllamaHTTPError}'s message.
+ *
+ * @remarks
+ * Bounds the excerpt so a defensive proxy or a misbehaving daemon handing
+ * back an unbounded response body cannot inflate the thrown error's message
+ * without limit (§14). `2048` characters is generous enough to carry a
+ * useful diagnostic snippet while staying well short of any practical size
+ * concern.
+ */
+export const MAX_ERROR_BODY_LENGTH = 2048

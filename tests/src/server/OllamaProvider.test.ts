@@ -2,7 +2,7 @@ import type { ContextFormatInterface, MessageInterface, ToolDefinition } from '@
 import { createAbort } from '@orkestrel/abort'
 import { isProviderAbortError } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
-import { OllamaProvider } from '@src/server'
+import { isOllamaHTTPError, OllamaProvider } from '@src/server'
 import { describe, expect, it, vi } from 'vitest'
 import { createRecorder, createUserMessage } from '../../setup.js'
 import {
@@ -16,6 +16,7 @@ import {
 	STREAM_OPTIONS,
 	THINK_OPTIONS,
 	TOOL_OPTIONS,
+	waitForRequest,
 } from '../../setupServer.js'
 
 // OllamaProvider — LIVE-ONLY (AGENTS §16 — no mocks; only genuine third-party calls;
@@ -485,11 +486,16 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 	// Recipe: 'hi' / no options set / think:false (default). Assertion: provider-
 	// behavior — keep_alive defaults to '5m', neither options nor tools key present.
+	// bounded by abort-once-recorded, no generation awaited.
 	it('defaults keep_alive to 5m and omits options/tools when unset', async () => {
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({ model: OLLAMA_CONFIG.model, url: proxy.url })
-			await provider.generate([createUserMessage('hi')], createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			const body = proxy.requests[0]?.body ?? {}
 			expect(body.keep_alive).toBe('5m')
@@ -502,6 +508,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 	// Recipe: 'hi' / no options / think:true (constructor). Assertion: provider-
 	// behavior — think:true rides the wire verbatim.
+	// bounded by abort-once-recorded, no generation awaited.
 	it('carries think:true on the wire when the option is set', async () => {
 		const proxy = await createRecordingProxy()
 		try {
@@ -510,7 +517,11 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 				url: proxy.url,
 				think: true,
 			})
-			await provider.generate([createUserMessage('hi')], createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect(proxy.requests[0]?.body.think).toBe(true)
 		} finally {
@@ -520,11 +531,16 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 	// Recipe: 'hi' / no options / think omitted. Assertion: provider-behavior —
 	// think:false rides the wire by default.
+	// bounded by abort-once-recorded, no generation awaited.
 	it('carries the default think:false on the wire when the option is omitted', async () => {
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({ model: OLLAMA_CONFIG.model, url: proxy.url })
-			await provider.generate([createUserMessage('hi')], createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect(proxy.requests[0]?.body.think).toBe(false)
 		} finally {
@@ -534,6 +550,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 	// Recipe: 'hi' / constructor think:true, per-call think:false. Assertion:
 	// provider-behavior — per-call think overrides the constructor default.
+	// bounded by abort-once-recorded, no generation awaited.
 	it('per-call think overrides the constructor default', async () => {
 		const proxy = await createRecordingProxy()
 		try {
@@ -542,9 +559,13 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 				url: proxy.url,
 				think: true,
 			})
-			await provider
-				.generate([createUserMessage('hi')], createAbort().signal, undefined, { think: false })
+			const abort = createAbort()
+			const pending = provider
+				.generate([createUserMessage('hi')], abort.signal, undefined, { think: false })
 				.catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect(proxy.requests[0]?.body.think).toBe(false)
 		} finally {
@@ -554,13 +575,18 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 	// Recipe: 'hi' / constructor think omitted (false), per-call think:true.
 	// Assertion: provider-behavior — per-call think can enable over a false default.
+	// bounded by abort-once-recorded, no generation awaited.
 	it('per-call think can enable reasoning over a constructor default of false', async () => {
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({ model: OLLAMA_CONFIG.model, url: proxy.url })
-			await provider
-				.generate([createUserMessage('hi')], createAbort().signal, undefined, { think: true })
+			const abort = createAbort()
+			const pending = provider
+				.generate([createUserMessage('hi')], abort.signal, undefined, { think: true })
 				.catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect(proxy.requests[0]?.body.think).toBe(true)
 		} finally {
@@ -570,11 +596,16 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 	// Recipe: 'hi' / an EMPTY tools array passed. Assertion: provider-behavior —
 	// no `tools` key rides the wire for an empty array.
+	// bounded by abort-once-recorded, no generation awaited.
 	it('omits the tools key when an EMPTY tools array is passed', async () => {
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({ model: OLLAMA_CONFIG.model, url: proxy.url })
-			await provider.generate([createUserMessage('hi')], createAbort().signal, []).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate([createUserMessage('hi')], abort.signal, []).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect('tools' in (proxy.requests[0]?.body ?? {})).toBe(false)
 		} finally {
@@ -584,15 +615,18 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 	// Recipe: 'hi' / streaming path. Assertion: provider-behavior — stream:true rides
 	// the wire on the streaming path.
+	// bounded by abort-once-recorded, no generation awaited.
 	it('sets stream:true on the streaming path', async () => {
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({ model: OLLAMA_CONFIG.model, url: proxy.url })
-			try {
-				await drive(provider.stream([createUserMessage('hi')], createAbort().signal))
-			} catch {
-				// outcome irrelevant — the proxy recorded the request before forwarding
-			}
+			const abort = createAbort()
+			const pending = drive(provider.stream([createUserMessage('hi')], abort.signal)).catch(
+				() => {},
+			)
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect(proxy.requests[0]?.body.stream).toBe(true)
 		} finally {
@@ -603,6 +637,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 	// Recipe: a 4-turn system/user/assistant(with tool_calls)/tool conversation.
 	// Assertion: provider-behavior — every role maps to the wire shape and the
 	// assistant's tool_calls replay verbatim.
+	// bounded by abort-once-recorded, no generation awaited.
 	it('maps every role (system/user/assistant/tool) and replays assistant tool_calls', async () => {
 		const proxy = await createRecordingProxy()
 		try {
@@ -618,7 +653,11 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 				},
 				{ id: '4', role: 'tool', content: 'sunny' },
 			]
-			await provider.generate(messages, createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate(messages, abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect(proxy.requests[0]?.body.messages).toEqual([
 				{ role: 'system', content: 'sys' },
@@ -637,11 +676,16 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 	// Recipe: an EMPTY messages array. Assertion: provider-behavior — sends an empty
 	// array on the wire (daemon rejects with a 400; outcome tolerated).
+	// bounded by abort-once-recorded, no generation awaited.
 	it('accepts an empty messages array (sends [])', async () => {
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({ model: OLLAMA_CONFIG.model, url: proxy.url })
-			await provider.generate([], createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate([], abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect(proxy.requests[0]?.body.messages).toEqual([])
 		} finally {
@@ -652,6 +696,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 	// Recipe: one user turn with base64 images, one without. Assertion: provider-
 	// behavior — images forwarded verbatim only when present (daemon may reject a
 	// non-vision model; outcome tolerated).
+	// bounded by abort-once-recorded, no generation awaited.
 	it('forwards a multimodal turn’s base64 images onto the wire message (only when present)', async () => {
 		const proxy = await createRecordingProxy()
 		try {
@@ -660,7 +705,11 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 				{ id: '1', role: 'user', content: 'Describe this.', images: ['aGVsbG8=', 'd29ybGQ='] },
 				{ id: '2', role: 'user', content: 'No image here.' },
 			]
-			await provider.generate(messages, createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate(messages, abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect(proxy.requests[0]?.body.messages).toEqual([
 				{ role: 'user', content: 'Describe this.', images: ['aGVsbG8=', 'd29ybGQ='] },
@@ -673,6 +722,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 	// Recipe: a user turn with an EMPTY images array. Assertion: provider-behavior —
 	// the empty optional never rides the wire.
+	// bounded by abort-once-recorded, no generation awaited.
 	it('omits images for an empty images array (no empty optional on the wire)', async () => {
 		const proxy = await createRecordingProxy()
 		try {
@@ -680,7 +730,11 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 			const messages: readonly MessageInterface[] = [
 				{ id: '1', role: 'user', content: 'hi', images: [] },
 			]
-			await provider.generate(messages, createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate(messages, abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect(proxy.requests[0]?.body.messages).toEqual([{ role: 'user', content: 'hi' }])
 		} finally {
@@ -691,6 +745,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 	// Recipe: 'hi' / a context-framing format configured. Assertion: provider-
 	// behavior — the same-name `format` (context-framing) NEVER crosses onto the
 	// Ollama wire body.
+	// bounded by abort-once-recorded, no generation awaited.
 	it('NEVER sends the context-framing format on the /api/chat wire (the same-name collision guard)', async () => {
 		const proxy = await createRecordingProxy()
 		try {
@@ -699,7 +754,11 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 				url: proxy.url,
 				format: FRAMING,
 			})
-			await provider.generate([createUserMessage('hi')], createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect('format' in (proxy.requests[0]?.body ?? {})).toBe(false)
 		} finally {
@@ -711,6 +770,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 	// behavior — the FULL ordered conversation rides the wire (not just the last
 	// message) — a provider-behavior replacement for the model-obedience "system →
 	// blue" test, which asserted MODEL behavior (forbidden by doctrine).
+	// bounded by abort-once-recorded, no generation awaited.
 	it('sends the whole conversation (system + user) in order on the wire', async () => {
 		const proxy = await createRecordingProxy()
 		try {
@@ -723,7 +783,11 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 				},
 				{ id: crypto.randomUUID(), role: 'user', content: 'What is your favorite color?' },
 			]
-			await provider.generate(messages, createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate(messages, abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect(proxy.requests[0]?.body.messages).toEqual([
 				{ role: 'system', content: 'You only ever answer with the single word: blue.' },
@@ -736,6 +800,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 })
 
 describe('OllamaProvider (recording proxy — transport seam headers)', () => {
+	// bounded by abort-once-recorded, no generation awaited.
 	it('merges a dynamically-injected header onto the request (the obfuscated token reaches the server)', async () => {
 		const proxy = await createRecordingProxy()
 		try {
@@ -744,7 +809,11 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 				url: proxy.url,
 				headers: () => ({ authorization: 'Bearer obfuscated-xyz' }),
 			})
-			await provider.generate([createUserMessage('hi')], createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			const request = proxy.requests[0]
 			if (request === undefined) throw new Error('no recorded request')
@@ -755,6 +824,7 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 		}
 	})
 
+	// bounded by abort-once-recorded, no generation awaited.
 	it('applies an ASYNC headers hook (a Promise-returning injector resolves and is merged)', async () => {
 		const proxy = await createRecordingProxy()
 		try {
@@ -766,7 +836,11 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 					return { authorization: 'Bearer async-token', 'x-extra': '1' }
 				},
 			})
-			await provider.generate([createUserMessage('hi')], createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			const request = proxy.requests[0]
 			if (request === undefined) throw new Error('no recorded request')
@@ -778,6 +852,7 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 		}
 	})
 
+	// bounded by abort-once-recorded, no generation awaited.
 	it('lets the hook override Content-Type when it explicitly returns one', async () => {
 		const proxy = await createRecordingProxy()
 		try {
@@ -786,7 +861,11 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 				url: proxy.url,
 				headers: () => ({ 'Content-Type': 'application/json; charset=utf-8' }),
 			})
-			await provider.generate([createUserMessage('hi')], createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect(proxy.requests[0]?.headers['content-type']).toBe('application/json; charset=utf-8')
 		} finally {
@@ -794,6 +873,7 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 		}
 	})
 
+	// bounded by abort-once-recorded, no generation awaited.
 	it('the headers hook applies on the STREAMING path too', async () => {
 		const proxy = await createRecordingProxy()
 		try {
@@ -802,11 +882,13 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 				url: proxy.url,
 				headers: () => ({ authorization: 'Bearer stream-token' }),
 			})
-			try {
-				await drive(provider.stream([createUserMessage('hi')], createAbort().signal))
-			} catch {
-				// outcome irrelevant — the request was recorded before forwarding
-			}
+			const abort = createAbort()
+			const pending = drive(provider.stream([createUserMessage('hi')], abort.signal)).catch(
+				() => {},
+			)
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			expect(proxy.requests[0]?.headers.authorization).toBe('Bearer stream-token')
 			expect(proxy.requests[0]?.headers['content-type']).toBe('application/json')
@@ -815,11 +897,16 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 		}
 	})
 
+	// bounded by abort-once-recorded, no generation awaited.
 	it('sends ONLY the base Content-Type when headers is omitted (default unchanged)', async () => {
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({ model: OLLAMA_CONFIG.model, url: proxy.url })
-			await provider.generate([createUserMessage('hi')], createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			const request = proxy.requests[0]
 			if (request === undefined) throw new Error('no recorded request')
@@ -937,35 +1024,92 @@ describe('OllamaProvider (transport seam — orthogonal to the deadline)', () =>
 
 describe('OllamaProvider (live error status)', () => {
 	// Recipe: model 'does-not-exist:zzz' — a genuine 404 from the real daemon.
-	// Assertion: exact status code in the error message (structural, not prose).
+	// Assertion: structural — a typed OllamaHTTPError with status 404, message
+	// still mentioning the status.
 	it('throws with the status and body text on a non-OK response (live 404 bad model)', async () => {
 		const provider = new OllamaProvider({ model: 'does-not-exist:zzz', url: OLLAMA_CONFIG.host })
 		const abort = createAbort()
 
-		await expect(provider.generate([createUserMessage('hi')], abort.signal)).rejects.toThrow(
-			/Ollama API error: 404/,
-		)
+		let caught: unknown
+		try {
+			await provider.generate([createUserMessage('hi')], abort.signal)
+		} catch (error) {
+			caught = error
+		}
+
+		expect(isOllamaHTTPError(caught)).toBe(true)
+		if (!isOllamaHTTPError(caught)) throw new Error('expected OllamaHTTPError')
+		expect(caught.status).toBe(404)
+		expect(caught.message).toMatch(/Ollama API error: 404/)
 	})
 
 	// Recipe: an empty model string — a genuine 400 "model is required" from the real
-	// daemon. Assertion: exact status code in the error message.
+	// daemon. Assertion: structural — a typed OllamaHTTPError with status 400.
 	it('throws with the status on a non-OK response (live 400 missing model)', async () => {
 		const provider = new OllamaProvider({ model: '', url: OLLAMA_CONFIG.host })
 		const abort = createAbort()
 
-		await expect(provider.generate([createUserMessage('hi')], abort.signal)).rejects.toThrow(
-			/Ollama API error: 400/,
-		)
+		let caught: unknown
+		try {
+			await provider.generate([createUserMessage('hi')], abort.signal)
+		} catch (error) {
+			caught = error
+		}
+
+		expect(isOllamaHTTPError(caught)).toBe(true)
+		if (!isOllamaHTTPError(caught)) throw new Error('expected OllamaHTTPError')
+		expect(caught.status).toBe(400)
+		expect(caught.message).toMatch(/Ollama API error: 400/)
 	})
 
 	// Recipe: model 'does-not-exist:zzz' — streaming path, a genuine 404 before any
-	// delta. Assertion: exact status code in the error message.
+	// delta. Assertion: structural — a typed OllamaHTTPError with status 404.
 	it('surfaces a non-OK status on the streaming path too (live 404 bad model, before any delta)', async () => {
 		const provider = new OllamaProvider({ model: 'does-not-exist:zzz', url: OLLAMA_CONFIG.host })
 		const abort = createAbort()
 
 		const generator = provider.stream([createUserMessage('hi')], abort.signal)
-		await expect(generator.next()).rejects.toThrow(/Ollama API error: 404/)
+		let caught: unknown
+		try {
+			await generator.next()
+		} catch (error) {
+			caught = error
+		}
+
+		expect(isOllamaHTTPError(caught)).toBe(true)
+		if (!isOllamaHTTPError(caught)) throw new Error('expected OllamaHTTPError')
+		expect(caught.status).toBe(404)
+		expect(caught.message).toMatch(/Ollama API error: 404/)
+	})
+
+	// Recipe: 'Count slowly from 1 to 40, one number per line.' / num_predict:64
+	// (ABORT_OPTIONS) / think:false. Breaks the for-await loop right after the first
+	// content delta arrives (an early consumer break, not an abort). Assertion:
+	// structural — the break completes promptly (no hang from an uncancelled reader),
+	// then a fresh FAST_OPTIONS generate() on the SAME provider still succeeds —
+	// guarding the stream's `finally` reader-cancel so the freed connection is reusable.
+	it('an early consumer break completes promptly and leaves the provider reusable', async () => {
+		const provider = createLiveOllama({ numPredict: ABORT_OPTIONS.num_predict })
+		const abort = createAbort()
+
+		const generator = provider.stream(
+			[createUserMessage('Count slowly from 1 to 40, one number per line.')],
+			abort.signal,
+		)
+		const first = await generator.next()
+		expect(first.done).toBe(false)
+
+		for await (const _ of generator) break
+
+		const result = await provider.generate(
+			[createUserMessage('Say hi.')],
+			createAbort().signal,
+			undefined,
+			{
+				think: false,
+			},
+		)
+		expect(result.content.length).toBeGreaterThan(0)
 	})
 })
 

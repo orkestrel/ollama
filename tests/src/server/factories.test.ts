@@ -8,6 +8,7 @@ import {
 	FAST_OPTIONS,
 	OLLAMA_CONFIG,
 	STREAM_OPTIONS,
+	waitForRequest,
 } from '../../setupServer.js'
 
 // createOllama returns a working ProviderInterface (AGENTS §16 — real Ollama, no
@@ -94,10 +95,15 @@ describe('createOllama (live)', () => {
 describe('createOllama (defaults)', () => {
 	it('defaults keep_alive to 5m and sends think:false with no options/tools', async () => {
 		// Recipe: default options (no options bag passed) — asserts the constructed body shape only.
+		// bounded by abort-once-recorded, no generation awaited.
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = createOllama({ model: OLLAMA_CONFIG.model, url: proxy.url })
-			await provider.generate([createUserMessage('hi')], createAbort().signal).catch(() => {})
+			const abort = createAbort()
+			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
 
 			const body = proxy.requests[0]?.body ?? {}
 			expect(body.keep_alive).toBe('5m')

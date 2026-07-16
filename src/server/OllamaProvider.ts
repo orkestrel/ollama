@@ -15,7 +15,13 @@ import { createThinkSplitter, ProviderAbortError } from '@orkestrel/agent'
 import { isNumber, isRecord, isString } from '@orkestrel/contract'
 import { createNDJSONParser } from '@orkestrel/ndjson'
 import { Timeout } from '@orkestrel/timeout'
-import { DEFAULT_KEEP_ALIVE, DEFAULT_OLLAMA_URL, DEFAULT_PROVIDER_TIMEOUT } from './constants.js'
+import {
+	DEFAULT_KEEP_ALIVE,
+	DEFAULT_OLLAMA_URL,
+	DEFAULT_PROVIDER_TIMEOUT,
+	MAX_ERROR_BODY_LENGTH,
+} from './constants.js'
+import { OllamaHTTPError } from './errors.js'
 
 /**
  * The local Ollama inference boundary — a {@link ProviderInterface} over Ollama's
@@ -133,8 +139,7 @@ export class OllamaProvider implements ProviderInterface {
 	): Promise<ProviderResult> {
 		const { response, timeout } = await this.#fetch(messages, false, signal, tools, options)
 		try {
-			const data: unknown = await response.json()
-			const record = isRecord(data) ? data : {}
+			const record = await this.#parseBody(response)
 			// The one-body call routes through the SAME splitter as the stream (the daemon may
 			// ignore `think: false` — the splitter is the guarantee): the assembled content is
 			// CLEAN (the splitter's authoritative `content`, which also covers the qwen3
@@ -166,7 +171,7 @@ export class OllamaProvider implements ProviderInterface {
 		const body = response.body
 		if (body === null) {
 			timeout.clear()
-			throw new Error('no response body')
+			throw new OllamaHTTPError('Ollama API error: no response body', 0)
 		}
 		const reader = body.getReader()
 		const decoder = new TextDecoder()
@@ -182,6 +187,27 @@ export class OllamaProvider implements ProviderInterface {
 		let wired = ''
 		const calls: ToolCall[] = []
 		let usage: TokenUsage | undefined
+		// Per-record handling shared between the live loop and the post-loop NDJSON
+		// tail flush below — captured over `this` so a nested `function*` (not an
+		// arrow, which cannot be a generator) needs no rebinding.
+		const contentOf = (record: Record<string, unknown>): string => this.#content(record)
+		const thinkingOf = (record: Record<string, unknown>): string => this.#thinking(record)
+		const toolsOf = (record: Record<string, unknown>): readonly ToolCall[] => this.#tools(record)
+		const usageOf = (record: Record<string, unknown>): TokenUsage | undefined => this.#usage(record)
+		function* handle(record: Record<string, unknown>): Generator<ProviderDelta> {
+			const delta = splitter.split(contentOf(record))
+			if (delta.length > 0) yield { type: 'content', text: delta }
+			// The PRIMARY live reasoning channel: each native `message.thinking` wire delta is
+			// surfaced as a tagged `thinking` delta AND accumulated into `wired` for the assembled
+			// result (the two stay in lockstep). The ThinkSplitter's in-content reclassified spans
+			// have no per-delta hook — the final `ProviderResult.thinking` reconciles them; the
+			// native channel (think: true) is what streams live.
+			const thinking = thinkingOf(record)
+			if (thinking.length > 0) yield { type: 'thinking', text: thinking }
+			wired += thinking
+			calls.push(...toolsOf(record))
+			if (Reflect.get(record, 'done') === true) usage = usageOf(record)
+		}
 		try {
 			for (;;) {
 				const { value, done } = await reader.read()
@@ -189,19 +215,15 @@ export class OllamaProvider implements ProviderInterface {
 				// Pair the streaming decoder with the line parser: the decoder handles
 				// partial multi-byte CHARS, the parser handles partial LINES (§14).
 				for (const record of parser.parse(decoder.decode(value, { stream: true }))) {
-					const delta = splitter.split(this.#content(record))
-					if (delta.length > 0) yield { type: 'content', text: delta }
-					// The PRIMARY live reasoning channel: each native `message.thinking` wire delta is
-					// surfaced as a tagged `thinking` delta AND accumulated into `wired` for the assembled
-					// result (the two stay in lockstep). The ThinkSplitter's in-content reclassified spans
-					// have no per-delta hook — the final `ProviderResult.thinking` reconciles them; the
-					// native channel (think: true) is what streams live.
-					const thinking = this.#thinking(record)
-					if (thinking.length > 0) yield { type: 'thinking', text: thinking }
-					wired += thinking
-					calls.push(...this.#tools(record))
-					if (Reflect.get(record, 'done') === true) usage = this.#usage(record)
+					yield* handle(record)
 				}
+			}
+			// Flush the decoder's held partial multi-byte tail and feed it (plus a
+			// terminating `\n`) through the parser, so a non-conformant proxy's final
+			// unterminated `done` line is recovered instead of silently dropped.
+			const decoderTail = decoder.decode()
+			for (const record of parser.parse(decoderTail.length > 0 ? `${decoderTail}\n` : '\n')) {
+				yield* handle(record)
 			}
 			// Stream end: a held partial tag that never completed was real content — it is the
 			// final delta (the splitter folds it into its `content` too).
@@ -211,13 +233,25 @@ export class OllamaProvider implements ProviderInterface {
 			// A mid-stream cancel (the caller's signal or the deadline) surfaces the
 			// partial so the loop can recover what streamed; anything else propagates.
 			if (combined.aborted) {
+				// Flush the splitter's held partial tail first (mirrors the
+				// normal-completion assembly above) so the recovered partial includes
+				// any clean content that never crossed a tag boundary.
+				splitter.flush()
 				throw new ProviderAbortError(
 					this.#result(splitter.content, this.#thought(splitter, wired), calls, usage),
 				)
 			}
 			throw error
 		} finally {
-			reader.releaseLock()
+			// Cancel (not merely release) the reader on early return so the
+			// underlying HTTP connection is freed; a normal-done or already-errored
+			// reader tolerates the redundant cancel as a no-op. `cancel()` also
+			// releases the lock — never call `releaseLock()` afterward.
+			try {
+				await reader.cancel()
+			} catch {
+				// Never mask the primary error/result with a cancel failure.
+			}
 			parser.reset()
 			timeout.clear()
 		}
@@ -244,7 +278,24 @@ export class OllamaProvider implements ProviderInterface {
 				signal: combined,
 			})
 			if (!response.ok) {
-				throw new Error(`Ollama API error: ${response.status} - ${await response.text()}`)
+				// Bound the incorporated body: a defensive proxy or daemon could hand
+				// back an unbounded response — read defensively so a body-read
+				// failure still throws with the status, never a masked/unbounded read.
+				let detail: string
+				try {
+					const text = await response.text()
+					detail = text.length > MAX_ERROR_BODY_LENGTH ? text.slice(0, MAX_ERROR_BODY_LENGTH) : text
+				} catch (cause) {
+					throw new OllamaHTTPError(
+						`Ollama API error: ${response.status} - (error body unavailable)`,
+						response.status,
+						{ cause },
+					)
+				}
+				throw new OllamaHTTPError(
+					`Ollama API error: ${response.status} - ${detail}`,
+					response.status,
+				)
 			}
 			return { response, timeout, combined }
 		} catch (error) {
@@ -253,6 +304,20 @@ export class OllamaProvider implements ProviderInterface {
 			// call. The caller's `finally` only takes ownership once we return a response.
 			timeout.clear()
 			throw error
+		}
+	}
+
+	// The non-stream `/api/chat` body — read the 200-OK response as text and parse it
+	// inside a total guard (§14): a malformed or empty body degrades to `{}` (empty
+	// content, no usage), never a raw `SyntaxError` escaping to the caller.
+	async #parseBody(response: Response): Promise<Record<string, unknown>> {
+		const text = await response.text()
+		if (text.length === 0) return {}
+		try {
+			const data: unknown = JSON.parse(text)
+			return isRecord(data) ? data : {}
+		} catch {
+			return {}
 		}
 	}
 

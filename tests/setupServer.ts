@@ -284,6 +284,34 @@ export async function createRecordingProxy(
 	}
 }
 
+/**
+ * Poll a {@link RecordingProxyInterface} until it has recorded at least `count`
+ * requests, or throw once `timeoutMs` elapses — the "abort-once-recorded" pattern for
+ * a wire-shape test that asserts ONLY on `proxy.requests` and never awaits the
+ * provider call to completion (the response, and how long generation takes, are
+ * irrelevant to those assertions).
+ *
+ * @param proxy - The {@link RecordingProxyInterface} to poll
+ * @param count - The minimum number of recorded requests to wait for; defaults to `1`
+ * @param timeoutMs - How long to poll before throwing; defaults to `10_000`
+ * @returns Resolves once `proxy.requests.length >= count`
+ */
+export async function waitForRequest(
+	proxy: RecordingProxyInterface,
+	count = 1,
+	timeoutMs = 10_000,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs
+	while (proxy.requests.length < count) {
+		if (Date.now() >= deadline) {
+			throw new Error(
+				`waitForRequest: expected ${count} recorded request(s), got ${proxy.requests.length} after ${timeoutMs}ms`,
+			)
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10))
+	}
+}
+
 // ── Provider stream driver (Ollama-project test helper) ─────────────────────────
 // Shared by the OllamaProvider and createOllama tests (AGENTS §16.1 — a helper used by
 // more than one test file lives in a setup file). Drives the provider stream surface the

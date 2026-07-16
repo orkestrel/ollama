@@ -11,7 +11,7 @@ import {
 	ndjsonLine,
 	OLLAMA_CONFIG,
 	startOllamaStub,
-} from '../../setupOllama.js'
+} from '../../setupServer.js'
 
 // OllamaProvider — two complementary tracks (AGENTS §16 — no mocks; only genuine
 // third-party calls).

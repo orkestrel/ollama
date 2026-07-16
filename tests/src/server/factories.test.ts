@@ -2,7 +2,7 @@
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../../setup.js'
-import { drive, OLLAMA_CONFIG, startOllamaStub } from '../../setupOllama.js'
+import { drive, OLLAMA_CONFIG, startOllamaStub } from '../../setupServer.js'
 
 // createOllama returns a working ProviderInterface (AGENTS §16 — real Ollama, no
 // mocks). The `src:ollama` project REQUIRES Ollama (`setupOllama.ts` enforces it +

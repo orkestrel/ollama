@@ -1,7 +1,0 @@
-# Direct @orkestrel imports from src/ only (not tests, not transitive)
-
-@orkestrel/agent     no
-@orkestrel/budget    no
-@orkestrel/contract  yes  guides/src/contract.md
-@orkestrel/ndjson    yes  guides/src/ndjson.md
-@orkestrel/timeout   no

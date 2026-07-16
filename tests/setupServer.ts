@@ -1,5 +1,10 @@
 import type { IncomingMessage, Server, ServerResponse } from 'node:http'
-import type { ContextFormatInterface, ProviderDelta, ProviderInterface, ProviderResult } from '@orkestrel/agent'
+import type {
+	ContextFormatInterface,
+	ProviderDelta,
+	ProviderInterface,
+	ProviderResult,
+} from '@orkestrel/agent'
 import { createServer } from 'node:http'
 import { isNumber, isRecord } from '@orkestrel/contract'
 import { OllamaProvider } from '@src/server'
@@ -19,7 +24,7 @@ export function flattenHeaders(
 	return result
 }
 
-// Ollama-test setup — loaded after `setup.ts` for the node `src:ollama` project
+// Ollama-test setup — loaded after `setup.ts` for the node `src:server` project
 // (the dedicated Ollama provider surface). The provider is tested against a REAL
 // local Ollama (AGENTS §16: no mocks — only genuine third-party calls), so unlike
 // the other projects this surface REQUIRES the daemon: there is no `skipIf`. This
@@ -35,10 +40,17 @@ export function env(name: string, fallback: string): string {
 	return value !== undefined && value.length > 0 ? value : fallback
 }
 
+// Ollama's own CLI/env convention accepts a scheme-less `host:port` for `OLLAMA_HOST`
+// (e.g. `127.0.0.1:11434`); `fetch` requires a full URL, so a value that doesn't
+// already start with `http://` / `https://` is prefixed with `http://` here.
+function withScheme(value: string): string {
+	return value.startsWith('http://') || value.startsWith('https://') ? value : `http://${value}`
+}
+
 // The Ollama endpoint + model the provider tests hit — `OLLAMA_HOST` /
 // `OLLAMA_MODEL` override the local defaults.
 export const OLLAMA_CONFIG = {
-	host: env('OLLAMA_HOST', 'http://localhost:11434'),
+	host: withScheme(env('OLLAMA_HOST', 'http://localhost:11434')),
 	model: env('OLLAMA_MODEL', 'qwen3.5:2b-q4_K_M'),
 } as const
 
@@ -126,21 +138,29 @@ await warmup()
 // cold pull of a quantized model can take a while); any non-OK / network failure
 // throws so a broken daemon surfaces loudly here rather than mid-test.
 async function warmup(): Promise<void> {
-	const response = await fetch(`${OLLAMA_CONFIG.host}/api/chat`, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify({
-			model: OLLAMA_CONFIG.model,
-			messages: [{ role: 'user', content: 'hi' }],
-			stream: false,
-			think: false,
-			options: { num_predict: 1 },
-		}),
-		signal: AbortSignal.timeout(60_000),
-	})
+	let response: Response
+	try {
+		response = await fetch(`${OLLAMA_CONFIG.host}/api/chat`, {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				model: OLLAMA_CONFIG.model,
+				messages: [{ role: 'user', content: 'hi' }],
+				stream: false,
+				think: false,
+				options: { num_predict: 1 },
+				keep_alive: '30m',
+			}),
+			signal: AbortSignal.timeout(120_000),
+		})
+	} catch (error) {
+		throw new Error(
+			`Ollama warmup could not reach ${OLLAMA_CONFIG.host} for model ${OLLAMA_CONFIG.model} — a live Ollama daemon with the model pulled is required (${String(error)})`,
+		)
+	}
 	if (!response.ok) {
 		throw new Error(
-			`Ollama warmup failed (${response.status}) for model ${OLLAMA_CONFIG.model} at ${OLLAMA_CONFIG.host} — is the model pulled?`,
+			`Ollama warmup failed (${response.status}) for model ${OLLAMA_CONFIG.model} at ${OLLAMA_CONFIG.host} — a live Ollama daemon with the model pulled is required`,
 		)
 	}
 	// Drain the body so the connection is released before the suite starts.

@@ -10,7 +10,7 @@ import type {
 	ToolDefinition,
 } from '@orkestrel/agent'
 import type { TokenUsage } from '@orkestrel/budget'
-import type { OllamaOptions, OllamaResponse } from './types.js'
+import type { OllamaOptions, OllamaResponse, WireChatRequest } from './types.js'
 import { createThinkSplitter, ProviderAbortError } from '@orkestrel/agent'
 import { isNumber, isRecord, isString } from '@orkestrel/contract'
 import { createNDJSONParser } from '@orkestrel/ndjson'
@@ -53,7 +53,7 @@ import { DEFAULT_KEEP_ALIVE, DEFAULT_OLLAMA_URL, DEFAULT_PROVIDER_TIMEOUT } from
  *   `globalThis.fetch`) and {@link OllamaOptions.headers} is a per-request, possibly
  *   async header injector merged over the base `Content-Type` — so a browser runtime
  *   can route through the developer's own server with an obfuscated bearer token,
- *   without taverna ever handling a real API key. Both omitted ⇒ today's behaviour.
+ *   without this library ever handling a real API key. Both omitted ⇒ today's behaviour.
  *   Orthogonal to the deadline: the hook is awaited inside `#fetch`'s try, so a hook
  *   rejection clears the armed timer like any other request failure.
  *
@@ -106,7 +106,7 @@ export class OllamaProvider implements ProviderInterface {
 
 	/**
 	 * The provider's context-framing default — the PROVIDER-DEFAULT level of
-	 * {@link import('@src/core').AgentContextInterface.build}'s format cascade (it BEATS
+	 * {@link import('@orkestrel/agent').AgentContextInterface.build}'s format cascade (it BEATS
 	 * the managers' built-in framing, is BEATEN by a manager-options or per-item override).
 	 * Satisfies the OPTIONAL {@link ProviderInterface.format} contract member: `undefined`
 	 * when {@link OllamaOptions.format} was omitted (the framing-agnostic default ⇒ core's
@@ -281,41 +281,59 @@ export class OllamaProvider implements ProviderInterface {
 		stream: boolean,
 		tools?: readonly ToolDefinition[],
 		options?: ProviderStreamOptions,
-	): Record<string, unknown> {
-		const body: Record<string, unknown> = {
+	): WireChatRequest {
+		return {
 			model: this.#model,
 			messages: this.#plain(messages),
 			stream,
 			keep_alive: this.#keepAlive,
 			think: options?.think ?? this.#think,
+			...(this.#options !== undefined ? { options: this.#options } : {}),
+			...(tools !== undefined && tools.length > 0
+				? {
+						tools: tools.map(
+							(
+								tool,
+							): {
+								type: 'function'
+								function: {
+									name: string
+									description?: string
+									parameters?: Readonly<Record<string, unknown>>
+								}
+							} => ({
+								type: 'function',
+								function: {
+									name: tool.name,
+									description: tool.description,
+									parameters: tool.parameters,
+								},
+							}),
+						),
+					}
+				: {}),
 		}
-		if (this.#options !== undefined) body.options = this.#options
-		if (tools !== undefined && tools.length > 0) {
-			body.tools = tools.map((tool) => ({
-				type: 'function',
-				function: { name: tool.name, description: tool.description, parameters: tool.parameters },
-			}))
-		}
-		return body
 	}
 
 	// Map messages to the wire's minimal turn shape — `tool_calls` only on a turn
 	// that replays them, `images` only on a multimodal turn (omit empty optionals).
-	#plain(messages: readonly MessageInterface[]): readonly Record<string, unknown>[] {
-		return messages.map((message) => {
-			const turn: Record<string, unknown> = { role: message.role, content: message.content }
-			if (message.calls !== undefined && message.calls.length > 0) {
-				turn.tool_calls = message.calls.map((call) => ({
-					function: { name: call.name, arguments: call.arguments },
-				}))
-			}
+	#plain(messages: readonly MessageInterface[]): WireChatRequest['messages'] {
+		return messages.map((message) => ({
+			role: message.role,
+			content: message.content,
+			...(message.calls !== undefined && message.calls.length > 0
+				? {
+						tool_calls: message.calls.map((call) => ({
+							function: { name: call.name, arguments: call.arguments },
+						})),
+					}
+				: {}),
 			// Forward multimodal image data — Ollama accepts a base64 `images` array on a
 			// message, which a vision-capable model receives alongside the text content.
-			if (message.images !== undefined && message.images.length > 0) {
-				turn.images = [...message.images]
-			}
-			return turn
-		})
+			...(message.images !== undefined && message.images.length > 0
+				? { images: [...message.images] }
+				: {}),
+		}))
 	}
 
 	// Assemble a ProviderResult including only the present optionals — no empty

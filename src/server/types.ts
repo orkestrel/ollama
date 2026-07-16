@@ -22,6 +22,44 @@ export interface OllamaResponse {
 }
 
 /**
+ * The exact `POST /api/chat` request body `OllamaProvider` sends — the internal typed
+ * wire contract.
+ *
+ * @remarks
+ * This is the typed wire shape asserted against the official `ollama` client's
+ * `ChatRequest` by the compile-time parity test; `src/` never imports `ollama` itself.
+ * `messages` mirrors the minimal turn shape `#plain` builds (`role` / `content`, plus
+ * `tool_calls` only on a turn that replays them and `images` only on a multimodal
+ * turn); `options` and `tools` are only present when configured.
+ */
+export interface WireChatRequest {
+	readonly model: string
+	readonly messages: readonly {
+		readonly role: string
+		readonly content: string
+		readonly tool_calls?: readonly {
+			readonly function: {
+				readonly name: string
+				readonly arguments: Readonly<Record<string, unknown>>
+			}
+		}[]
+		readonly images?: readonly string[]
+	}[]
+	readonly stream: boolean
+	readonly keep_alive: string | number
+	readonly think: boolean
+	readonly options?: Readonly<Record<string, unknown>>
+	readonly tools?: readonly {
+		readonly type: 'function'
+		readonly function: {
+			readonly name: string
+			readonly description?: string
+			readonly parameters?: Readonly<Record<string, unknown>>
+		}
+	}[]
+}
+
+/**
  * Options for `createOllama` — the local Ollama backend's configuration.
  *
  * @remarks
@@ -34,7 +72,7 @@ export interface OllamaResponse {
  * talks straight to a local daemon over `globalThis.fetch` with only a JSON content
  * type, but a browser-side runtime can inject a custom transport AND a dynamic header
  * (e.g. an obfuscated bearer token) so requests route through the developer's OWN
- * server, which validates that header and forwards to the real LLM. taverna never
+ * server, which validates that header and forwards to the real LLM. Your app never
  * holds a real API key — the real key lives only on the developer's server; the
  * `headers` hook supplies whatever short-lived/obfuscated token that server expects.
  */
@@ -70,7 +108,7 @@ export interface OllamaOptions {
 	 * headers are merged into the request on top of the base `Content-Type`. Use it to
 	 * attach an authorization header — e.g. an obfuscated/generated bearer token the
 	 * developer's server validates before relaying to the real LLM — so a browser
-	 * runtime can authenticate WITHOUT taverna ever handling a real API key. Async so a
+	 * runtime can authenticate WITHOUT your app ever handling a real API key. Async so a
 	 * token can be refreshed/fetched per call. A returned `Content-Type` overrides the
 	 * default; other headers add to it. Omitted ⇒ only `Content-Type: application/json`.
 	 */

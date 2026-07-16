@@ -1,21 +1,21 @@
 {
-	"name": "@orkestrel/sqlite",
-	"version": "0.0.2",
-	"description": "A typed, synchronous SQLite wrapper for the @orkestrel line — prepared statements over node:sqlite. Part of the @orkestrel line.",
+	"name": "@orkestrel/ollama",
+	"version": "0.0.1",
+	"description": "A typed local-LLM provider for the @orkestrel line — a ProviderInterface over a local Ollama daemon's /api/chat with NDJSON streaming and guard-narrowed wire boundaries. Part of the @orkestrel line.",
 	"keywords": [
-		"database",
-		"node",
-		"node:sqlite",
+		"ai",
+		"llm",
+		"ollama",
+		"provider",
 		"server",
-		"sqlite",
 		"typescript"
 	],
-	"homepage": "https://github.com/orkestrel/sqlite#readme",
-	"bugs": "https://github.com/orkestrel/sqlite/issues",
+	"homepage": "https://github.com/orkestrel/ollama#readme",
+	"bugs": "https://github.com/orkestrel/ollama/issues",
 	"license": "MIT",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/orkestrel/sqlite.git"
+		"url": "git+https://github.com/orkestrel/ollama.git"
 	},
 	"files": [
 		"dist",
@@ -72,17 +72,9 @@
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.58.10",
 		"@orkestrel/abort": "^0.0.1",
-		"@orkestrel/console": "^0.0.1",
-		"@orkestrel/database": "^0.0.3",
-		"@orkestrel/emitter": "^0.0.1",
 		"@orkestrel/guide": "^0.0.1",
-		"@orkestrel/middleware": "^0.0.2",
-		"@orkestrel/reason": "^0.0.1",
-		"@orkestrel/relation": "^0.0.1",
-		"@orkestrel/server": "^0.0.3",
-		"@orkestrel/sse": "^0.0.1",
-		"@orkestrel/workflow": "^0.0.1",
 		"@types/node": "^26.1.1",
+		"ollama": "0.6.3",
 		"oxfmt": "^0.59.0",
 		"oxlint": "^1.74.0",
 		"typescript": "^6.0.3",

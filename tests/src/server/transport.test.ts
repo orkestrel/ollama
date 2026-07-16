@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest'
 import { isNumber, isRecord, isString } from '@orkestrel/contract'
 import { createAgent } from '@orkestrel/agent'
 import { createOllama } from '@src/server'
-import { flattenHeaders } from '../../setupOllama.js'
-import { OLLAMA_CONFIG } from '../../setupOllama.js'
+import { flattenHeaders } from '../../setupServer.js'
+import { OLLAMA_CONFIG } from '../../setupServer.js'
 
 // S2 — the BROWSER → OWN-SERVER → LLM deployment, end-to-end. The unit-level header-injection
 // + custom-fetch tests live in OllamaProvider.test.ts (against startOllamaStub); this hardens

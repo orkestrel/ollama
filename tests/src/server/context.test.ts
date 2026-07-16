@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import type { AgentResult, ContextFormatInterface, ConversationInterface, MessageInterface } from '@orkestrel/agent'
+import type {
+	AgentResult,
+	ContextFormatInterface,
+	ConversationInterface,
+	MessageInterface,
+} from '@orkestrel/agent'
 import {
 	CONVERSATION_RECAP_PREFIX,
 	createAgent,
@@ -12,7 +17,7 @@ import {
 import { createBudget } from '@orkestrel/budget'
 import { createOllama } from '@src/server'
 import { collect } from '../../setup.js'
-import { ATTEMPTS, createLiveProvider, OLLAMA_CONFIG, retryUntil } from '../../setupOllama.js'
+import { ATTEMPTS, createLiveProvider, OLLAMA_CONFIG, retryUntil } from '../../setupServer.js'
 
 // LIVE behavioral context tests — the src:ollama project hits a REAL warmed Ollama (AGENTS
 // §16: no mocks for the inference boundary; setupOllama.ts hard-requires + warms the model,

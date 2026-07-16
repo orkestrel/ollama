@@ -43,14 +43,14 @@ export const srcServer = (config?: UserConfig): UserConfig =>
 			test: {
 				name: { label: 'src:server', color: 'red' },
 				include: ['tests/src/server/**/*.test.ts'],
-				setupFiles: ['./tests/setup.ts', './tests/setupOllama.ts'],
+				setupFiles: ['./tests/setup.ts', './tests/setupServer.ts'],
 				environment: 'node',
 				browser: { enabled: false },
 				// The live Ollama tests warm + drive a real model; a cold load can take
 				// seconds, so the 5s default would flake. Serial so the suite never hits
 				// the daemon with concurrent files.
-				testTimeout: 60_000,
-				hookTimeout: 60_000,
+				testTimeout: 120_000,
+				hookTimeout: 120_000,
 				fileParallelism: false,
 			},
 		},

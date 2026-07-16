@@ -17,10 +17,13 @@ directory (AGENTS §22).
 
 ## Dependency reference
 
-[`src/contract.md`](src/contract.md) is a byte-identical mirror of the guide for
-`@orkestrel/contract` — this package's sole runtime dependency. It documents
-**that package's** surface (guards, combinators, parsers, and the shape DSL), not
-anything sourced in this repo; it is kept here so a reader of this package can see
+[`src/agent.md`](src/agent.md), [`src/budget.md`](src/budget.md),
+[`src/contract.md`](src/contract.md), [`src/ndjson.md`](src/ndjson.md), and
+[`src/timeout.md`](src/timeout.md) are byte-identical mirrors of the guides for
+`@orkestrel/agent`, `@orkestrel/budget`, `@orkestrel/contract`,
+`@orkestrel/ndjson`, and `@orkestrel/timeout` — this package's runtime
+dependencies. Each documents **that package's own** surface, not anything
+sourced in this repo; they are kept here so a reader of this package can see
 the primitives it is built from without leaving this guide set.
 
 [`src/guide.md`](src/guide.md) is a byte-identical mirror of the guide for

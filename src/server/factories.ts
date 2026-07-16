@@ -17,7 +17,7 @@ import { OllamaProvider } from './OllamaProvider.js'
  * The optional `fetch` + `headers` form a transport seam (see {@link OllamaOptions}):
  * point `url` at your own server, inject a custom `fetch`, and have `headers` attach a
  * generated/obfuscated bearer token your server validates — so a browser runtime
- * reaches the LLM through your middleware WITHOUT taverna ever handling the real API
+ * reaches the LLM through your middleware WITHOUT this library ever handling the real API
  * key. Both omitted ⇒ today's behaviour (the global `fetch`, only a JSON content type).
  *
  * The optional `format` is the provider's context-framing default — the PROVIDER-DEFAULT
@@ -34,8 +34,8 @@ import { OllamaProvider } from './OllamaProvider.js'
  *
  * @example
  * ```ts
- * import { createAbort } from '@src/core'
- * import { createOllama } from '@src/ollama'
+ * import { createAbort } from '@orkestrel/abort'
+ * import { createOllama } from '@src/server'
  *
  * const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M' })
  * const abort = createAbort()

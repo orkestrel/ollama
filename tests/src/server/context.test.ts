@@ -17,81 +17,84 @@ import {
 import { createBudget } from '@orkestrel/budget'
 import { createOllama } from '@src/server'
 import { collect } from '../../setup.js'
-import { ATTEMPTS, createLiveProvider, OLLAMA_CONFIG, retryUntil } from '../../setupServer.js'
+import {
+	createLiveProvider,
+	createRecordingProxy,
+	FAST_OPTIONS,
+	OLLAMA_CONFIG,
+} from '../../setupServer.js'
 
-// LIVE behavioral context tests — the src:ollama project hits a REAL warmed Ollama (AGENTS
-// §16: no mocks for the inference boundary; setupOllama.ts hard-requires + warms the model,
-// never skips). The DETERMINISTIC ordering / default-format / four-level cascade assertions
-// live in tests/src/core/agents/AgentContext.test.ts (pinned byte-for-byte against the
-// build()); here we prove the COMPLEMENT a real model demonstrates and a string assertion
-// cannot: that the context AgentContext assembles is actually COMPREHENSIBLE to a model in
-// its canonical positions —
-//  • a constraining INSTRUCTION is obeyed (instructions reach + steer the model);
-//  • a CUSTOM FORMAT (XML framing instead of Markdown headers) still yields an obeyed prompt
-//    (a customized framing doesn't break comprehension).
-// (The active-workspace document/image grounding — the SOLE document/image context — is proven
-// live in tests/src/ollama/workspace.test.ts.)
-// Assertions are STRUCTURAL (contains / equals, case-insensitive) — a 2B model can't be
-// pinned to exact wording. `context` is a cross-cutting suffix (structure-exempt). All text-
-// only (no vision — the small vision runner is flaky), fast (tiny prompts, temperature 0,
-// tight num_predict), warmed, no skipIf, bounded-retry for small-model nondeterminism.
+// LIVE context tests — the src:ollama project hits a REAL warmed Ollama (AGENTS §16: no mocks
+// for the inference boundary; setupServer.ts hard-requires + warms the model, never skips). The
+// DETERMINISTIC ordering / default-format / four-level cascade assertions live in
+// tests/src/core/agents/AgentContext.test.ts (pinned byte-for-byte against build()); here we
+// prove the COMPLEMENT: WHAT THE PROVIDER ACTUALLY SENDS to the daemon once AgentContext has
+// assembled it, and — separately — genuine live end-to-end machinery (compaction) that a string
+// assertion can't cover. Per directive #5, tests are PROVIDER-behavior (the assembled context
+// reached the wire in its canonical shape), never MODEL-behavior (whether the model "obeyed" —
+// that's unfalsifiable against a small nondeterministic model and belongs to a fine-tuning eval,
+// not this suite). A `createRecordingProxy()` sits between the provider and the real daemon: it
+// records the exact request body, then forwards VERBATIM and returns the daemon's real response
+// — never fabricating anything (directive #2). `context` is a cross-cutting suffix (structure-
+// exempt). Warmed, no skipIf.
 
 const TIMEOUT = 60_000
 
-// The live provider + bounded-retry loop are the consolidated `createLiveProvider` (temperature
-// 0 + a tight num_predict, with an optional context-framing `format`) and `retryUntil` from
-// setupOllama.ts (AGENTS §16.1) — see their docs there. An optional `format` declares the
-// provider's context-framing default (the provider-default level of AgentContext's cascade),
-// threaded NATIVELY through createOllama (no wrapper). `retryUntil` absorbs the warmed 2B model's
-// nondeterminism: each attempt runs one live generation and we proceed only once an attempt
-// SATISFIES the test's genuine behavioral predicate (never a vacuous pass), failing loudly if NO
-// attempt across the budget achieved it.
-
-describe('AgentContext (live) — a constraining instruction is OBEYED', () => {
+describe('AgentContext (live, provider-behavior) — a constraining instruction reaches the wire', () => {
 	it(
-		'an instructions.add(...) constraint steers the real model — proving instructions reach it in their canonical position',
+		'instructions.add(...) content is framed into the /api/chat request the provider sends, ordered before the user turn',
 		async () => {
-			// A constraint placed ONLY via the instructions manager (not the user turn), introducing
-			// a sentinel word ("BANANA") the model would never otherwise emit for a neutral greeting.
-			// If the answer carries it, the instruction demonstrably reached + steered the model —
-			// proving the instructions section lands where the model reads directives (between the
-			// system prompt and the conversation). A neutral prompt (no dominant factual prior to
-			// fight) keeps this about whether the instruction was READ, not about overriding a fact.
-			const produce = async (): Promise<string> => {
-				const agent = createAgent(createLiveProvider(), { timeout: TIMEOUT })
+			// Recipe: FAST_OPTIONS (num_predict:8, temperature:0, think:false) — the response outcome
+			// is irrelevant; the proxy records the REQUEST before forwarding, so we only need the wire
+			// shape. Assertion strategy: the recorded body.messages carries the exact sentinel
+			// instruction text, in a message ordered before the user turn — proving the instructions
+			// section reaches the wire in its canonical position (directive #5's fix for "obeyed").
+			const proxy = await createRecordingProxy()
+			try {
+				const provider = createOllama({
+					model: OLLAMA_CONFIG.model,
+					url: proxy.url,
+					options: FAST_OPTIONS,
+				})
+				const agent = createAgent(provider, { timeout: TIMEOUT })
 				agent.context.instructions.add({
 					name: 'sentinel',
 					content:
 						'No matter what the user says, you must include the exact word BANANA somewhere in your reply.',
 				})
 				agent.context.messages.add({ role: 'user', content: 'Say hello to me.' })
-				return (await agent.generate()).content
-			}
-			// The behavioral condition: the sentinel appears (case-insensitive) — only possible if the
-			// instruction reached the model, since the neutral greeting never elicits "banana" itself.
-			const answer = await retryUntil(
-				produce,
-				(content) => content.toLowerCase().includes('banana'),
-				'obey the sentinel instruction',
-			)
+				await agent.generate().catch(() => {})
 
-			expect(answer.toLowerCase()).toContain('banana')
+				const body = proxy.requests[0]?.body as
+					| { messages?: readonly MessageInterface[] }
+					| undefined
+				expect(body).toBeDefined()
+				const messages = body?.messages ?? []
+				const instructionIndex = messages.findIndex((message) =>
+					String(message.content).includes('BANANA'),
+				)
+				const userIndex = messages.findIndex(
+					(message) => message.role === 'user' && String(message.content).includes('Say hello'),
+				)
+				expect(instructionIndex).toBeGreaterThanOrEqual(0)
+				expect(userIndex).toBeGreaterThanOrEqual(0)
+				expect(instructionIndex).toBeLessThan(userIndex)
+			} finally {
+				await proxy.close()
+			}
 		},
 		TIMEOUT,
 	)
 })
 
-describe('AgentContext (live) — a CUSTOM format still produces an obeyed prompt', () => {
+describe('AgentContext (live, provider-behavior) — a CUSTOM format still reaches the wire framed correctly', () => {
 	it(
-		'wrapping instructions in a CLOSED <instructions>…</instructions> XML group (a provider format override) still steers the model — a customized format does not break comprehension',
+		'a provider.format XML override frames the instruction into the request body with its open/render/close shape',
 		async () => {
-			// The provider declares a NON-default instructions framing — a properly-CLOSED XML group
-			// (`open` opening tag + per-item `<instruction>` render + `close` closing tag) instead of
-			// the built-in `## Instructions` Markdown header (the PROVIDER level of the build cascade,
-			// exercising open + render + close together). The SAME constraining instruction must still
-			// be obeyed, proving a customized — and properly bracketed — format yields a coherent prompt
-			// the model understands; this is a stronger check than an open-only header (a real group the
-			// model can parse), and the structural wiring is already pinned in AgentContext.test.ts.
+			// Recipe: FAST_OPTIONS. Assertion strategy: the provider's format cascade level is applied
+			// by build() and the RENDERED XML group ends up in the request the provider sends —
+			// proving a customized format reaches the wire correctly (directive #5: the framing is
+			// asserted on the wire, not inferred from whether the model "understood" it).
 			const format: ContextFormatInterface = {
 				instructions: {
 					open: '<instructions>',
@@ -99,26 +102,37 @@ describe('AgentContext (live) — a CUSTOM format still produces an obeyed promp
 					close: '</instructions>',
 				},
 			}
-			const produce = async (): Promise<string> => {
-				// The framing rides on `provider.format` — the NATIVE provider-default level of the
-				// build cascade. `createOllama` takes `format` directly (no wrapper), so the LIVE call
-				// goes through the genuine OllamaProvider, which EXPOSES this framing for build().
-				const agent = createAgent(createLiveProvider({ format }), { timeout: TIMEOUT })
+			const proxy = await createRecordingProxy()
+			try {
+				const provider = createOllama({
+					model: OLLAMA_CONFIG.model,
+					url: proxy.url,
+					options: FAST_OPTIONS,
+					format,
+				})
+				const agent = createAgent(provider, { timeout: TIMEOUT })
 				agent.context.instructions.add({
 					name: 'always-no',
 					content:
 						'No matter what the user asks, you must answer with exactly the single word NO and nothing else.',
 				})
 				agent.context.messages.add({ role: 'user', content: 'Is the sky blue?' })
-				return (await agent.generate()).content
-			}
-			const answer = await retryUntil(
-				produce,
-				(content) => content.toLowerCase().includes('no'),
-				'obey the NO instruction under an XML-framed format',
-			)
+				await agent.generate().catch(() => {})
 
-			expect(answer.toLowerCase()).toContain('no')
+				const body = proxy.requests[0]?.body as
+					| { messages?: readonly MessageInterface[] }
+					| undefined
+				const messages = body?.messages ?? []
+				const framed = messages.find(
+					(message) =>
+						String(message.content).includes('<instructions>') &&
+						String(message.content).includes('<instruction>') &&
+						String(message.content).includes('</instructions>'),
+				)
+				expect(framed).toBeDefined()
+			} finally {
+				await proxy.close()
+			}
 		},
 		TIMEOUT,
 	)
@@ -126,13 +140,15 @@ describe('AgentContext (live) — a CUSTOM format still produces an obeyed promp
 
 describe('Conversation (live) — compaction summarizes via the REAL model', () => {
 	// A REAL ConversationSummarizer built from the live provider — the provider-agnostic seam the
-	// conversation layer drives, with a generous num_predict (temperature 0, think OFF) so the
-	// model has room to write a one-sentence digest. This proves compaction works end-to-end
-	// against a genuine model (AGENTS §16 — no mocks for the inference boundary; no skipIf).
+	// conversation layer drives. Recipe retuned: num_predict 256→64 (a one-sentence digest fits
+	// comfortably; keeps wall-time bounded per directive #7). This proves compaction works end-to-
+	// end against a genuine model (AGENTS §16 — no mocks for the inference boundary; no skipIf).
+	// Assertion strategy: STRUCTURAL only (non-empty summaries, view() shrinks to 1) — never
+	// exact prose.
 	const summarizer = createOllama({
 		model: OLLAMA_CONFIG.model,
 		url: OLLAMA_CONFIG.host,
-		options: { num_predict: 256, temperature: 0 },
+		options: { num_predict: 64, temperature: 0 },
 	})
 	// The instruction rides as the FINAL user turn AFTER the folded messages — a reasoning chat
 	// model emits nothing when the prompt ends on an assistant turn (a leading-system instruction
@@ -173,13 +189,14 @@ describe('Conversation (live) — compaction summarizes via the REAL model', () 
 	it(
 		'compact() folds the live tail into a section + rollup, both authored by the live model, and view() shrinks',
 		async () => {
-			// Bounded retry over the small model's nondeterminism (qwen3.5:2b can occasionally emit an
-			// empty completion at temperature 0 — like the obey-checks above): each attempt is a FRESH
-			// conversation seeded + compacted, retried until the model genuinely produced a non-empty
-			// section summary (never a vacuous pass), failing loudly if NO attempt across the loop did.
+			// Bounded retry (explicit attempts=3, per directive #7) over the small model's
+			// nondeterminism: each attempt is a FRESH conversation seeded + compacted, retried until
+			// the model genuinely produced a non-empty section summary (never a vacuous pass), failing
+			// loudly if NO attempt across the loop did.
+			const attempts = 3
 			let conversation = createConversation({ summarize })
 			let before = 0
-			for (let attempt = 0; attempt < ATTEMPTS; attempt += 1) {
+			for (let attempt = 0; attempt < attempts; attempt += 1) {
 				conversation = createConversation({ summarize })
 				seed(conversation)
 				before = conversation.view().length
@@ -208,15 +225,14 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 	// produces a valid final answer THROUGH the compacted context. The deterministic loop trigger
 	// is pinned in tests/src/core/agents/Agent.test.ts; here a genuine model drives the tool-call
 	// turn that crosses the threshold, the conversation's REAL-model summarizer folds the tail, and
-	// the model answers from the compacted view. Warmed, no skipIf (AGENTS §16).
+	// the model answers from the compacted view. Warmed, no skipIf (AGENTS §16). Recipe retuned:
+	// summarizer num_predict 256→64, bounded retry attempts=3 (directive #7). Assertion strategy:
+	// STRUCTURAL only (section count + non-empty summary, non-empty non-partial final answer).
 
-	// The conversation's REAL summarizer — the instruction rides as the FINAL user turn after the
-	// folded messages (a reasoning chat model emits nothing when the prompt ends on an assistant
-	// turn), the same recommended shape the Conversation (live) block above uses.
 	const summarizer = createOllama({
 		model: OLLAMA_CONFIG.model,
 		url: OLLAMA_CONFIG.host,
-		options: { num_predict: 256, temperature: 0 },
+		options: { num_predict: 64, temperature: 0 },
 	})
 	const summarize = async (messages: readonly MessageInterface[]): Promise<string> =>
 		(
@@ -239,20 +255,7 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 	// the fed-back result THROUGH the compacted view).
 	const SENTINEL = '8254'
 
-	// One live attempt: a fresh conversation (keep: 1 ⇒ a fold collapses the older tail but RETAINS
-	// the most recent message verbatim, so the concrete tool result carrying the code survives into
-	// the compacted view and the model can still state it) injected into a fresh agent with a small
-	// CONTEXT-WINDOW-sized `window` budget (max 48, consume = the real `estimateMessages` estimator).
-	// The trigger measures the ABSOLUTE current prompt each between-turns check (clear() + consume of
-	// the whole working array). The FLOOR of the turn-1 check prompt is deterministic from the fixed
-	// system + user text alone: the system block (~130 chars ⇒ ~33 tok) + the user turn (~90 chars ⇒
-	// ~23 tok) + the tool result `{"code":"8254"}` (~4 tok) ≈ 60 tok — already past a 48-token window
-	// even when this small model emits an EMPTY assistant content on the tool-call turn. So the
-	// between-turns check crosses `max` and fires `compact()`, then the run continues on the rebuilt
-	// (smaller) compacted view. Expressed as a believable context-window ceiling (NOT the prior
-	// delta-era `max: 2` hack). Returns the conversation + the settled result so the predicate can
-	// gate on a GENUINE mid-run compaction + a valid final answer through it (never a vacuous pass).
-	const attempt = async (): Promise<{
+	const attemptRun = async (): Promise<{
 		readonly conversation: ConversationInterface
 		readonly result: AgentResult
 	}> => {
@@ -297,23 +300,21 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 	it(
 		'a real multi-turn run with window set folds the tail mid-run + answers from the compacted view',
 		async () => {
-			// Retry over the 2B model's tool-use nondeterminism (it may decline the tool, or emit an
-			// empty turn) — each attempt is a FRESH conversation + agent. We retry until an attempt
+			// Bounded retry, explicit attempts=3 (directive #7) over the 2B model's tool-use
+			// nondeterminism — each attempt is a FRESH conversation + agent. Retry until an attempt
 			// genuinely (a) auto-compacted mid-run AND (b) produced a valid (non-empty, non-partial)
-			// final answer THROUGH the compacted view; we PREFER an attempt that also carried the
-			// sentinel (the strongest proof the fed-back result survived compaction), but the
-			// load-bearing condition is compaction + a valid answer. FAIL loudly if NO attempt across
-			// the loop auto-compacted with a valid answer (a real signal the path is broken).
-			let tried = await attempt()
+			// final answer THROUGH the compacted view. FAIL loudly if NO attempt across the loop
+			// achieved it.
+			const attempts = 3
+			let tried = await attemptRun()
 			let best = tried
-			for (let n = 0; n < ATTEMPTS; n += 1) {
+			for (let n = 0; n < attempts; n += 1) {
 				const valid = compacted(tried) && tried.result.content.trim().length > 0
 				if (valid) {
 					best = tried
-					// Strongest outcome: compacted, valid, AND the sentinel survived into the answer.
 					if (tried.result.content.includes(SENTINEL)) break
 				}
-				if (n < ATTEMPTS - 1) tried = await attempt()
+				if (n < attempts - 1) tried = await attemptRun()
 			}
 
 			// (a) AUTOMATIC compaction fired mid-run — at least one section, authored by the live
@@ -332,16 +333,16 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIPLE folds', () => {
 	// THE production proof of Chunk B's hardening: a REAL multi-turn run that forces MULTIPLE
 	// compactions (≥ 2 sections) and shows the agent stays coherent THROUGH the repeatedly-compacted
-	// context — a valid, non-partial final answer with NON-EMPTY model-written section summaries. The
-	// deterministic pre-first-turn / non-fatal / futile paths are pinned in Agent.test.ts; here a
-	// genuine model drives several tool-call turns, the real-model summarizer folds the tail on EACH
-	// between-turns check (a tiny window crossed every turn), and the model answers from the multiply-
-	// compacted view. Warmed, no skipIf, bounded-retry for the 2B model's tool-use nondeterminism
-	// (must FAIL loudly if no attempt forces ≥ 2 folds with a valid answer). (AGENTS §16.)
+	// context — a valid, non-partial final answer with NON-EMPTY model-written section summaries.
+	// The deterministic pre-first-turn / non-fatal / futile paths are pinned in Agent.test.ts; here
+	// a genuine model drives several tool-call turns, the real-model summarizer folds the tail on
+	// EACH between-turns check (a tiny window crossed every turn), and the model answers from the
+	// multiply-compacted view. Warmed, no skipIf, bounded-retry (attempts=3, directive #7).
+	// Assertion strategy: STRUCTURAL only.
 	const summarizer = createOllama({
 		model: OLLAMA_CONFIG.model,
 		url: OLLAMA_CONFIG.host,
-		options: { num_predict: 256, temperature: 0 },
+		options: { num_predict: 64, temperature: 0 },
 	})
 	const summarize = async (messages: readonly MessageInterface[]): Promise<string> =>
 		(
@@ -364,16 +365,6 @@ describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIP
 	// verbatim across each fold so the run never loses its immediate footing.
 	const SENTINEL = '7193'
 
-	// One live attempt that reliably forces ≥ 2 folds with only ONE model tool call — by combining the
-	// loop's TWO compaction points:
-	//  • a SEEDED prior history (six turns ≈ a resumed/long conversation) makes the INITIAL prompt
-	//    exceed a tiny window, so the loop's PRE-FIRST-TURN `#trim` folds it into the FIRST section
-	//    BEFORE turn 0 (no model dependency — the seed alone guarantees this fold);
-	//  • the MANDATED tool call then makes turn 0 a tool turn whose BETWEEN-TURNS `#trim` (the prompt
-	//    still over the tiny window) folds a SECOND section.
-	// So ≥ 2 sections accumulate from a single, reliable tool call, and the model answers from the
-	// twice-compacted view. (A model that calls the tool more than once only adds further folds.)
-	// keep: 1, window max 40 (the real `estimateMessages`), limit 8. Returns the conversation + result.
 	const attemptMulti = async (): Promise<{
 		readonly conversation: ConversationInterface
 		readonly result: AgentResult
@@ -432,17 +423,18 @@ describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIP
 	it(
 		'forces ≥ 2 mid-run folds and produces a valid final answer through the repeatedly-compacted context',
 		async () => {
-			// Retry over the 2B model's tool-use nondeterminism — each attempt is a FRESH conversation +
-			// agent. Retry until an attempt genuinely (a) folded ≥ 2 sections (each a non-empty model-
-			// written summary) AND (b) produced a valid (non-empty, non-partial) final answer THROUGH the
-			// repeatedly-compacted view. FAIL loudly if NO attempt across the loop achieved the forced
-			// multi-compaction with a valid answer (a real signal the repeated-compaction path is broken).
+			// Bounded retry, explicit attempts=3 (directive #7) over the 2B model's tool-use
+			// nondeterminism — each attempt is a FRESH conversation + agent. Retry until an attempt
+			// genuinely (a) folded ≥ 2 sections (each a non-empty model-written summary) AND (b)
+			// produced a valid (non-empty, non-partial) final answer THROUGH the repeatedly-compacted
+			// view. FAIL loudly if NO attempt across the loop achieved it.
+			const attempts = 3
 			let best = await attemptMulti()
-			for (let n = 0; n < ATTEMPTS; n += 1) {
+			for (let n = 0; n < attempts; n += 1) {
 				if (multiCompacted(best) && best.result.content.trim().length > 0 && !best.result.partial) {
 					break
 				}
-				if (n < ATTEMPTS - 1) best = await attemptMulti()
+				if (n < attempts - 1) best = await attemptMulti()
 			}
 
 			// (a) MULTIPLE compactions fired mid-run — at least TWO sections now exist on the injected
@@ -461,88 +453,56 @@ describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIP
 	)
 })
 
-describe('Conversation framing (live) — the TIGHTENED recap framing A/B vs the RAW summary', () => {
-	// The user's CORE ask, empirically: build the SAME minimal section-summary scenario two ways —
-	// the RAW old framing (a bare `{ role: 'assistant', content: summary }`, which reads as a
-	// LITERAL prior assistant turn) vs the TIGHTENED framing (the same summary prefixed with
-	// CONVERSATION_RECAP_PREFIX, so it reads as a RECAP of earlier turns). The summary is a
-	// third-person NARRATION of a prior exchange — exactly the shape view() folds a compacted
-	// section into — and it attributes a fact to the USER ("the user shared their deploy key is
-	// XJ7"). We then ask an ATTRIBUTION question ("what did I tell you my deploy key was?"): the
-	// telling failure of the RAW framing (empirically reproducible at temperature 0 through the
-	// real provider) is that the model, reading the bare assistant turn as ITS OWN narration,
-	// CONTRADICTS the premise — "you did NOT tell me…" — getting the user→assistant attribution
-	// wrong even though the value XJ7 is right there. The TIGHTENED recap label fixes it: the model
-	// correctly answers "you told me… XJ7". So the discriminating predicate is ATTRIBUTION (did the
-	// model affirm the USER said it), not bare value recall (both echo XJ7). We run BOTH framings
-	// across the budget, record each pass count (the evidence the tightening "makes a difference"),
-	// and assert the TIGHTENED framing reliably passes AND is never worse than the raw. SMART: a
-	// tiny two-message prompt, ONE fact + its attribution, a single clear predicate, warmed +
-	// temperature 0 + tight num_predict, no skipIf.
+describe('Conversation framing (live, provider-behavior) — the TIGHTENED recap prefix reaches the wire', () => {
+	// Directive #5's named-bug fix: the OLD test measured whether a recap label made the MODEL
+	// answer an attribution question correctly (a pass-rate/A-B comparison) — a model-BEHAVIOR
+	// assertion, forbidden. REPLACED entirely with a deterministic PROVIDER-behavior assertion: a
+	// folded section (view()'s recap shape) is sent to the agent, and we assert the RECORDED
+	// request body carries the message labeled with CONVERSATION_RECAP_PREFIX — proving the recap
+	// framing is what the provider actually SENDS, independent of whether the model then "gets it
+	// right". No passRate / honored / console.info / >= comparison remains.
 
 	const FACT = 'XJ7'
 	// A third-person NARRATION attributing the key to the USER — the digest shape a fold produces.
 	const summary = `The user introduced themselves as Ada and shared that their deploy key is ${FACT}. The assistant acknowledged it.`
-	// An ATTRIBUTION question — it forces the model to resolve WHO said the key, which is exactly
-	// what the bare-assistant-turn framing muddles and the recap label clarifies.
-	const question: MessageInterface = {
-		id: 'q',
-		role: 'user',
-		content: 'What did I tell you my deploy key was?',
-	}
-	// One section summary message in each framing — the RAW bare assistant turn vs the TIGHTENED
-	// recap-labeled one (the EXACT prefix view() now uses).
-	const rawFraming: readonly MessageInterface[] = [
-		{ id: 's', role: 'assistant', content: summary },
-		question,
-	]
-	const tightFraming: readonly MessageInterface[] = [
-		{ id: 's', role: 'assistant', content: `${CONVERSATION_RECAP_PREFIX}${summary}` },
-		question,
-	]
-	// HONORED = the model AFFIRMS the user told it the key: the value XJ7 is present AND the answer
-	// is NOT a "you did not tell me" contradiction (the raw framing's reproducible failure mode —
-	// it mis-attributes the recap to itself and denies the user said it).
-	const honored = (content: string): boolean =>
-		content.includes(FACT) &&
-		!/did\s+not\s+tell|didn'?t\s+tell|never\s+told|you\s+did\s+not/i.test(content)
-	// Count how many of `ATTEMPTS` live generations a framing gets HONORED (the empirical pass rate).
-	const passRate = async (messages: readonly MessageInterface[]): Promise<number> => {
-		let passes = 0
-		for (let n = 0; n < ATTEMPTS; n += 1) {
-			const content = (await createLiveProvider().generate(messages, AbortSignal.timeout(TIMEOUT)))
-				.content
-			if (honored(content)) passes += 1
-		}
-		return passes
-	}
 
 	it(
-		'the recap-labeled framing reliably steers the model to attribute the fact correctly; the raw framing is measured',
+		'a recap-labeled section summary is framed with CONVERSATION_RECAP_PREFIX in the request the provider sends',
 		async () => {
-			// Measure BOTH framings live across the attempt budget — the evidence the tightening helps.
-			const tightPasses = await passRate(tightFraming)
-			const rawPasses = await passRate(rawFraming)
-			// Surface the empirical comparison (visible in the run output) — the user asked us to
-			// report whether the raw framing confused the model and by how much. (Observed at temp 0:
-			// tightened 6/6 vs raw 0/6 — the raw framing reliably mis-attributes the recap.)
-			console.info(
-				`[framing A/B] tightened ${tightPasses}/${ATTEMPTS} attributed vs raw ${rawPasses}/${ATTEMPTS} attributed`,
-			)
+			// Recipe: FAST_OPTIONS — the response is irrelevant; the proxy records the request before
+			// forwarding.
+			const proxy = await createRecordingProxy()
+			try {
+				const conversations = createConversationManager()
+				const active = conversations.add()
+				// Seed a section directly (the exact recap shape view() folds a compacted section into)
+				// rather than driving a real compaction — the wire-framing assertion is deterministic and
+				// doesn't need a live summarizer call.
+				active.add({ role: 'assistant', content: `${CONVERSATION_RECAP_PREFIX}${summary}` })
+				active.add({
+					role: 'user',
+					content: 'What did I tell you my deploy key was?',
+				})
+				const provider = createOllama({
+					model: OLLAMA_CONFIG.model,
+					url: proxy.url,
+					options: FAST_OPTIONS,
+				})
+				const agent = createAgent(provider, { conversations, timeout: TIMEOUT })
+				await agent.generate().catch(() => {})
 
-			// The load-bearing gate: the TIGHTENED recap framing reliably passes (FAIL loudly if NO
-			// attempt across the budget honored it — a real signal the framing fails the small model).
-			await retryUntil(
-				async () =>
-					(await createLiveProvider().generate(tightFraming, AbortSignal.timeout(TIMEOUT))).content,
-				honored,
-				'honor the recap-labeled summary (attribute the deploy key to the user)',
-			)
-			// And the tightening is NEVER WORSE than the raw framing across the budget — the measurable
-			// difference. In practice the raw framing CONTRADICTS the attribution and the tightened
-			// answers it, so this is a strict win; `>=` is the robust, non-flaky direction for the gate.
-			expect(tightPasses).toBeGreaterThanOrEqual(rawPasses)
-			expect(tightPasses).toBeGreaterThan(0)
+				const body = proxy.requests[0]?.body as
+					| { messages?: readonly MessageInterface[] }
+					| undefined
+				const messages = body?.messages ?? []
+				const recapMessage = messages.find((message) =>
+					String(message.content).startsWith(CONVERSATION_RECAP_PREFIX),
+				)
+				expect(recapMessage).toBeDefined()
+				expect(String(recapMessage?.content)).toContain(FACT)
+			} finally {
+				await proxy.close()
+			}
 		},
 		TIMEOUT,
 	)
@@ -551,65 +511,73 @@ describe('Conversation framing (live) — the TIGHTENED recap framing A/B vs the
 describe('Conversation.reference (live) — cross-conversation attribution (provenance not bled)', () => {
 	// Conversation A is ACTIVE (a one-fact A-context: "we are debugging auth"); a SEPARATE
 	// conversation B's reference() — carrying a B-fact ("the team chose Postgres") — is written
-	// into A's ACTIVE WORKSPACE (the SOLE document context build() folds into the system block). We
-	// ask one question requiring B's fact AND its source, and assert the model surfaces "Postgres"
-	// AND attributes it to the OTHER (planning) conversation, never to the active one. SMART: tiny,
-	// ONE fact + its source, bounded retry, warmed, no skipIf.
+	// into A's ACTIVE WORKSPACE (the SOLE document context build() folds into the system block).
+	// Assertion strategy (directive #5's conversion): the DETERMINISTIC reference-block content is
+	// still asserted directly, and the "surfaces + attributes" live claim is REPLACED with a
+	// provider-behavior assertion — the recorded request body the provider sends carries the
+	// reference document text (Postgres + its "planning" provenance label), proving the B-fact and
+	// its attribution reach the wire via the active workspace framing (no dependency on whether the
+	// model then repeats it correctly).
 
 	it(
-		'pulls B’s decision into A via a reference document and attributes it to B (not the active conversation)',
+		'writes B’s decision + provenance into A’s active workspace, and the reference text reaches the request the provider sends',
 		async () => {
 			// Conversation B (the planning thread) — its rollup summary carries the decision. We craft
 			// the summary directly (a stub digest) so the probe is about the REFERENCE plumbing +
-			// attribution, not about a model-authored summary (which the Conversation-live block proves).
+			// provenance, not about a model-authored summary (which the Conversation-live block above
+			// proves).
 			const planning = createConversation({ id: 'planning' })
 			planning.add([
 				{ role: 'user', content: 'Which database should we use?' },
 				{ role: 'assistant', content: 'The team evaluated the options and chose Postgres.' },
 			])
+			const block = planning.reference({
+				label: 'planning',
+				summary: false,
+				messages: planning.search('Postgres'),
+			})
+			// DETERMINISTIC: the rendered reference block carries the fact and its provenance label.
+			expect(block).toContain('Postgres')
+			expect(block).toContain('planning')
 
-			const produce = async (): Promise<string> => {
+			const proxy = await createRecordingProxy()
+			try {
 				// Conversation A is ACTIVE — its own A-fact lives as a live user turn.
 				const conversations = createConversationManager()
 				const active = conversations.add({ id: 'auth' }) // auto-activates
 				active.add({ role: 'user', content: 'In this chat we are debugging auth.' })
-				const agent = createAgent(createLiveProvider(), {
+				const provider = createOllama({
+					model: OLLAMA_CONFIG.model,
+					url: proxy.url,
+					options: FAST_OPTIONS,
+				})
+				const agent = createAgent(provider, {
 					system: 'Use the reference documents when they answer the question. Be brief.',
 					conversations,
 					timeout: TIMEOUT,
 				})
 				// PULL B into A with provenance: B.reference(...) framed + written into A's active
-				// workspace. We supply the decision summary on the reference directly (the cherry-pick flow
-				// — summary + search — is exercised by the next test); here `summary: false` keeps it to one fact.
-				agent.context.workspaces.add().write(
-					`conversation:${planning.id}.md`,
-					planning.reference({
-						label: 'planning',
-						summary: false,
-						messages: planning.search('Postgres'),
-					}),
-				)
+				// workspace.
+				agent.context.workspaces.add().write(`conversation:${planning.id}.md`, block)
 				active.add({
 					role: 'user',
 					content: 'Which database did we pick, and in which conversation was it decided?',
 				})
-				return (await agent.generate()).content
-			}
-			// HONORED: surfaces Postgres (B's fact) AND attributes it to the planning conversation.
-			const attributed = (content: string): boolean => {
-				const lower = content.toLowerCase()
-				return lower.includes('postgres') && lower.includes('planning')
-			}
-			const answer = await retryUntil(
-				produce,
-				attributed,
-				'surface Postgres AND attribute it to the planning conversation',
-			)
+				await agent.generate().catch(() => {})
 
-			// The B-fact reached the model THROUGH the reference document and is attributed to its
-			// source conversation — provenance preserved, not bled into the active "auth" thread.
-			expect(answer.toLowerCase()).toContain('postgres')
-			expect(answer.toLowerCase()).toContain('planning')
+				const body = proxy.requests[0]?.body as
+					| { messages?: readonly MessageInterface[] }
+					| undefined
+				const messages = body?.messages ?? []
+				const carriesReference = messages.some(
+					(message) =>
+						String(message.content).includes('Postgres') &&
+						String(message.content).includes('planning'),
+				)
+				expect(carriesReference).toBe(true)
+			} finally {
+				await proxy.close()
+			}
 		},
 		TIMEOUT,
 	)
@@ -617,13 +585,16 @@ describe('Conversation.reference (live) — cross-conversation attribution (prov
 
 describe('Conversation.reference (live) — cherry-pick ONE relevant message, not the whole history', () => {
 	// B has ~5 short messages, exactly ONE relevant ("the API endpoint is /v2/sync"). We pull ONLY
-	// it via B.search('endpoint') → reference({ messages }) → write into A's active workspace, then
-	// ask for the endpoint. We assert (1) LIVE the model recalls "/v2/sync", and (2) DETERMINISTICALLY
-	// the written reference carries only that one message — NOT B's other four (cherry-pick, never a
-	// full dump that re-bloats a small model's context). SMART: tiny, one fact, bounded retry.
+	// it via B.search('endpoint') → reference({ messages }) → write into A's active workspace.
+	// Assertion strategy (directive #5's conversion): (1) DETERMINISTICALLY the rendered reference
+	// carries only that one message — NOT B's other four (cherry-pick, never a full dump that
+	// re-bloats a small model's context); (2) the "model recalls the endpoint" live claim is
+	// REPLACED with a provider-behavior assertion — the recorded request body carries the
+	// cherry-picked endpoint text and does NOT carry the four noise turns, proving the cherry-pick
+	// (not a full-history dump) is what actually reaches the wire.
 
 	it(
-		'injects only the searched-for message and the model recalls it',
+		'injects only the searched-for message into the active workspace, and only it reaches the request the provider sends',
 		async () => {
 			const ENDPOINT = '/v2/sync'
 			// B's five short turns — one relevant, four noise.
@@ -648,10 +619,16 @@ describe('Conversation.reference (live) — cherry-pick ONE relevant message, no
 			expect(block).not.toContain('9am')
 			expect(block).not.toContain('talk later')
 
-			const produce = async (): Promise<string> => {
+			const proxy = await createRecordingProxy()
+			try {
 				const conversations = createConversationManager()
 				const active = conversations.add({ id: 'auth' }) // auto-activates
-				const agent = createAgent(createLiveProvider(), {
+				const provider = createOllama({
+					model: OLLAMA_CONFIG.model,
+					url: proxy.url,
+					options: FAST_OPTIONS,
+				})
+				const agent = createAgent(provider, {
 					system: 'Use the reference documents when they answer the question. Be brief.',
 					conversations,
 					timeout: TIMEOUT,
@@ -661,16 +638,20 @@ describe('Conversation.reference (live) — cherry-pick ONE relevant message, no
 					role: 'user',
 					content: "What's the API endpoint? Answer with just the path.",
 				})
-				return (await agent.generate()).content
-			}
-			// LIVE: the model recalls the single cherry-picked endpoint.
-			const answer = await retryUntil(
-				produce,
-				(content) => content.includes(ENDPOINT),
-				'recall the cherry-picked API endpoint',
-			)
+				await agent.generate().catch(() => {})
 
-			expect(answer).toContain(ENDPOINT)
+				const body = proxy.requests[0]?.body as
+					| { messages?: readonly MessageInterface[] }
+					| undefined
+				const messages = body?.messages ?? []
+				const joined = messages.map((message) => String(message.content)).join('\n')
+				expect(joined).toContain(ENDPOINT)
+				expect(joined).not.toContain('standup')
+				expect(joined).not.toContain('9am')
+				expect(joined).not.toContain('talk later')
+			} finally {
+				await proxy.close()
+			}
 		},
 		TIMEOUT,
 	)

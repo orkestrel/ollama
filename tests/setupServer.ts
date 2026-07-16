@@ -1,26 +1,23 @@
-import type { IncomingMessage, Server, ServerResponse } from 'node:http'
 import type {
 	ContextFormatInterface,
 	ProviderDelta,
 	ProviderInterface,
 	ProviderResult,
 } from '@orkestrel/agent'
-import { createServer } from 'node:http'
-import { isNumber, isRecord } from '@orkestrel/contract'
+import { isRecord } from '@orkestrel/contract'
+import { createDispatcher } from '@orkestrel/router'
+import { createServer } from '@orkestrel/server'
 import { OllamaProvider } from '@src/server'
 
 /**
- * Lowercase and flatten an `IncomingMessage` header bag to single string values — the
- * shape transport / stub tests assert on when recording proxied requests.
+ * Lowercase and flatten a fetch-standard `Headers` bag to single string values — the
+ * shape transport / proxy tests assert on when recording proxied requests.
  */
-export function flattenHeaders(
-	headers: IncomingMessage['headers'],
-): Readonly<Record<string, string>> {
+export function flattenHeaders(headers: Headers): Readonly<Record<string, string>> {
 	const result: Record<string, string> = {}
-	for (const [key, value] of Object.entries(headers)) {
-		if (value === undefined) continue
-		result[key.toLowerCase()] = Array.isArray(value) ? value.join(', ') : value
-	}
+	headers.forEach((value, key) => {
+		result[key.toLowerCase()] = value
+	})
 	return result
 }
 
@@ -156,6 +153,7 @@ async function warmup(): Promise<void> {
 	} catch (error) {
 		throw new Error(
 			`Ollama warmup could not reach ${OLLAMA_CONFIG.host} for model ${OLLAMA_CONFIG.model} — a live Ollama daemon with the model pulled is required (${String(error)})`,
+			{ cause: error },
 		)
 	}
 	if (!response.ok) {
@@ -167,162 +165,123 @@ async function warmup(): Promise<void> {
 	await response.text()
 }
 
-// ── Stub Ollama daemon (deterministic provider tests) ──────────────────────────
-// A REAL local HTTP server that answers `POST /api/chat` with crafted responses —
-// the deterministic counterpart to the live tests above (AGENTS §16: a genuine
-// third-party HTTP round-trip over the real `fetch` + `TextDecoder` + `NDJSONParser` path,
-// NOT a mock of the provider). It lets the OllamaProvider tests pin the behaviours a
-// small quantized model can't make deterministic — the exact request wire shape, a
-// non-OK status's error text, a malformed / empty / absent body, the §14 `arguments`
-// narrowing (a JSON-string / id-less / garbage tool call), and the streaming decoder's
-// multi-byte + partial-line reassembly (raw bytes split mid-character). Centralized
-// here per §16.1 (a node-only, Ollama-specific test helper); each test starts its own
-// server and `close()`s it.
+// ── Live request recipes (fixed `options` bags per behavioral category) ─────────
+// AGENTS §16.1: one frozen recipe per test category, tuned against the live daemon
+// measurements captured on qwen3.5:2b-q4_K_M @ CPU ~14 tok/s (see the dispatch's
+// "Live daemon measurements" section) — the minimal `num_predict` that reliably
+// exercises each behavior, kept deterministic with `temperature: 0`. `think` is a
+// provider/per-call flag, never part of these option bags — callers set it directly.
 
-/** How a {@link OllamaStub} should answer the next `POST /api/chat`. */
-export interface StubBehavior {
-	/** Respond with this HTTP status (defaults to `200`). A non-2xx exercises the error path. */
-	readonly status?: number
-	/** The non-streaming JSON body to send verbatim (used when `chunks` is absent). */
-	readonly body?: unknown
-	/** A raw string body sent as-is (for malformed-JSON / empty-body cases) — overrides `body`. */
-	readonly raw?: string
-	/**
-	 * Send a `204 No Content` with NO body — `fetch` exposes this as `response.body ===
-	 * null`, exercising the stream's "no response body" guard (a 200 with no written
-	 * body yields a non-null stream that simply ends, a different case).
-	 */
-	readonly empty?: boolean
-	/**
-	 * Stream these raw byte chunks one-by-one (each flushed separately) instead of a
-	 * single JSON body — for the NDJSON streaming path. Splitting a multi-byte UTF-8
-	 * character or a `\n` across two chunks exercises the `TextDecoder` + `NDJSONParser` pair.
-	 */
-	readonly chunks?: readonly Uint8Array[]
-	/**
-	 * After streaming `chunks`, keep the connection open WITHOUT ending it — so the
-	 * provider's own armed deadline is what trips the read. The test must use a tiny
-	 * `timeout` to bound it.
-	 */
-	readonly hang?: boolean
-}
+/** Content / usage / thinking-off round-trips — warm ~1.4s at `num_predict: 8`. */
+export const FAST_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0 })
 
-/** One captured `POST /api/chat` request — its method, path, headers, and parsed JSON body. */
-export interface CapturedRequest {
+/** Multi-delta streaming round-trips (more than one NDJSON content line). */
+export const STREAM_OPTIONS = Object.freeze({ num_predict: 16, temperature: 0 })
+
+/** Tool-call turns — probe measured a 3/3 hit rate at this cap with `think: false`. */
+export const TOOL_OPTIONS = Object.freeze({ num_predict: 32, temperature: 0 })
+
+/** Mid-stream client abort + provider-deadline partial-response round-trips. */
+export const ABORT_OPTIONS = Object.freeze({ num_predict: 64, temperature: 0 })
+
+/** Determinism round-trips — `seed: 42` reproduced byte-identical content (2/2 probe runs). */
+export const SEED_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0, seed: 42 })
+
+/** Used WITH `think: true` — thinking drains the budget first, so content may be empty. */
+export const THINK_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0 })
+
+// ── Recording proxy (real wire-shape assertions) ─────────────────────────────────
+// A REAL pass-through HTTP server, built on `@orkestrel/server` + `@orkestrel/router`,
+// that RECORDS every `POST /api/chat` it receives and forwards it VERBATIM to the real
+// Ollama daemon, returning the daemon's real response (including a streamed body)
+// UNALTERED. It never fabricates or mutates a response — the only thing it adds is
+// observation, so tests can assert WHAT THE PROVIDER SENDS (context framing, headers,
+// body shape) without depending on model behavior for that assertion. Centralized here
+// per §16.1 (a node-only, Ollama-specific test helper); each test starts its own proxy
+// and `close()`s it.
+
+/** One recorded `POST /api/chat` request — its method, path, headers, and parsed JSON body. */
+export interface RecordedRequest {
 	readonly method: string
 	readonly path: string
-	readonly contentType: string | undefined
-	/**
-	 * Every request header (node lowercases the names), captured so a transport-seam
-	 * test can assert a dynamically-injected header (an obfuscated bearer) reached the
-	 * "server" — and that the base `content-type` is still present alongside it.
-	 */
 	readonly headers: Readonly<Record<string, string>>
 	readonly body: Record<string, unknown>
 }
 
-/** A running stub Ollama daemon — its base `url`, the requests it `captured`, and `close`. */
-export interface OllamaStub {
+/** A running recording proxy — its base `url`, the requests it `requests`, and `close`. */
+export interface RecordingProxyInterface {
 	readonly url: string
-	readonly captured: readonly CapturedRequest[]
+	readonly requests: readonly RecordedRequest[]
 	close(): Promise<void>
 }
 
-// Read the whole request body, then parse it as JSON (an unparseable / empty body
-// yields `{}` — the capture is best-effort, never throwing).
-async function readBody(request: IncomingMessage): Promise<Record<string, unknown>> {
-	const parts: Buffer[] = []
-	for await (const part of request) parts.push(Buffer.from(part))
-	const text = Buffer.concat(parts).toString('utf8')
+// Parse a request body's raw text as JSON, defensively narrowing to a record — an
+// unparseable / non-object body yields `{}` (the capture is best-effort, never throwing).
+function parseRequestBody(text: string): Record<string, unknown> {
 	try {
 		const parsed: unknown = JSON.parse(text)
-		return parsed !== null && typeof parsed === 'object' ? { ...parsed } : {}
+		return isRecord(parsed) ? parsed : {}
 	} catch {
 		return {}
 	}
 }
 
-// Write the configured response — a streamed sequence of raw byte chunks (optionally
-// left hanging), a raw string, an explicit empty body, or a single JSON body.
-async function respond(response: ServerResponse, behavior: StubBehavior): Promise<void> {
-	response.statusCode = behavior.status ?? 200
-	if (behavior.chunks !== undefined) {
-		response.setHeader('Content-Type', 'application/x-ndjson')
-		for (const chunk of behavior.chunks) {
-			response.write(Buffer.from(chunk))
-			// Flush each chunk on its own task turn so the client reads them as distinct
-			// reads — the only way to genuinely split a record across `reader.read()`s.
-			await new Promise((resolve) => setImmediate(resolve))
-		}
-		if (behavior.hang === true) return // never end — the provider's deadline must trip
-		response.end()
-		return
-	}
-	if (behavior.empty === true) {
-		// 204 No Content → `fetch` surfaces a null `response.body` (a 200 with no body is
-		// a non-null stream that just ends — not the guard this exercises).
-		response.statusCode = 204
-		response.end()
-		return
-	}
-	if (behavior.raw !== undefined) {
-		response.end(behavior.raw)
-		return
-	}
-	response.setHeader('Content-Type', 'application/json')
-	response.end(JSON.stringify(behavior.body ?? {}))
+// Clone a forwarded request's headers, dropping `host` / `content-length` so `fetch`
+// recomputes them for the new upstream connection — every other header (including
+// `authorization`) passes through unchanged.
+function forwardedHeaders(headers: Headers): Headers {
+	const forwarded = new Headers(headers)
+	forwarded.delete('host')
+	forwarded.delete('content-length')
+	return forwarded
 }
 
 /**
- * Start a stub Ollama daemon on an ephemeral port that answers the NEXT (and every)
- * `POST /api/chat` per `behavior`, capturing each request for assertion.
+ * Start a real pass-through recording proxy on an ephemeral port. Every `POST
+ * /api/chat` is recorded, then forwarded VERBATIM to `upstream` — the daemon's real
+ * response (status, headers, and streamed body) is returned UNALTERED.
  *
- * @param behavior - How to answer `/api/chat` (status / body / raw / empty / chunks / hang)
- * @returns The running {@link OllamaStub} — its `url`, the `captured` requests, and `close`
+ * @param upstream - The real Ollama daemon base URL to forward to; defaults to {@link OLLAMA_CONFIG.host}
+ * @returns The running {@link RecordingProxyInterface} — its `url`, the `requests`, and `close`
  */
-export async function startOllamaStub(behavior: StubBehavior): Promise<OllamaStub> {
-	const captured: CapturedRequest[] = []
-	const server: Server = createServer((request, response) => {
-		void handle(request, response)
-	})
-	async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-		const body = await readBody(request)
-		captured.push({
-			method: request.method ?? '',
-			path: request.url ?? '',
-			contentType: request.headers['content-type'],
-			headers: flattenHeaders(request.headers),
-			body,
-		})
-		await respond(response, behavior)
-	}
-	await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-	// `server.address()` is `AddressInfo | string | null`; narrow to the numeric port
-	// off the object form (§14, no `as`) — an ephemeral listen always yields it.
-	const address: unknown = server.address()
-	const port = isRecord(address) && isNumber(address.port) ? address.port : 0
-	return {
-		url: `http://127.0.0.1:${port}`,
-		get captured() {
-			return captured
-		},
-		close() {
-			return new Promise<void>((resolve, reject) => {
-				server.close((error) => (error === undefined ? resolve() : reject(error)))
+export async function createRecordingProxy(
+	upstream: string = OLLAMA_CONFIG.host,
+): Promise<RecordingProxyInterface> {
+	const requests: RecordedRequest[] = []
+	const dispatcher = createDispatcher<Record<string, never>>()
+	dispatcher.add({
+		method: 'POST',
+		path: '/api/chat',
+		async handler(request) {
+			const text = await request.text()
+			requests.push({
+				method: request.method,
+				path: new URL(request.url).pathname,
+				headers: flattenHeaders(request.headers),
+				body: parseRequestBody(text),
+			})
+			const upstreamResponse = await fetch(`${upstream}/api/chat`, {
+				method: 'POST',
+				headers: forwardedHeaders(request.headers),
+				body: text,
+			})
+			return new Response(upstreamResponse.body, {
+				status: upstreamResponse.status,
+				headers: upstreamResponse.headers,
 			})
 		},
+	})
+	const server = createServer({ dispatcher, state: () => ({}) })
+	const port = await server.start()
+	return {
+		url: `http://127.0.0.1:${port}`,
+		get requests() {
+			return requests
+		},
+		close() {
+			return server.stop()
+		},
 	}
-}
-
-/**
- * Serialize a record to one NDJSON line (a `\n`-terminated JSON object) as UTF-8
- * bytes — the unit an Ollama stream sends per line.
- *
- * @param record - The line's JSON object
- * @returns The `\n`-terminated UTF-8 bytes
- */
-export function ndjsonLine(record: Record<string, unknown>): Uint8Array {
-	return new TextEncoder().encode(`${JSON.stringify(record)}\n`)
 }
 
 // ── Provider stream driver (Ollama-project test helper) ─────────────────────────

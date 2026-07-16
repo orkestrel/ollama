@@ -64,7 +64,7 @@ describe('S2 — browser → own server (obfuscated token) → live LLM, end-to-
 				// replaces) — so the forwarded request is a valid JSON /api/chat call.
 				expect(inbound.headers['content-type']).toBe('application/json')
 			} finally {
-				await proxy.close()
+				await proxy.stop()
 			}
 		},
 		TIMEOUT,
@@ -103,7 +103,7 @@ describe('S2 — browser → own server (obfuscated token) → live LLM, end-to-
 				if (inbound === undefined) throw new Error('proxy never recorded an /api/chat request')
 				expect(inbound.headers.authorization).toBe(OBFUSCATED)
 			} finally {
-				await proxy.close()
+				await proxy.stop()
 			}
 		},
 		TIMEOUT,

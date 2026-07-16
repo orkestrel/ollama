@@ -12,6 +12,7 @@ import {
 	drive,
 	FAST_OPTIONS,
 	OLLAMA_CONFIG,
+	retryUntil,
 	SEED_OPTIONS,
 	STREAM_OPTIONS,
 	THINK_OPTIONS,
@@ -54,7 +55,7 @@ describe('OllamaProvider (live — generate)', () => {
 	// Recipe: 'Say hello.' / num_predict:8 (FAST_OPTIONS) / think:false.
 	// Assertion: structural — non-empty content.
 	it('returns assembled content for a prompt', async () => {
-		const provider = createLiveOllama({ numPredict: FAST_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: FAST_OPTIONS.num_predict })
 		const abort = createAbort()
 
 		const result = await provider.generate([createUserMessage('Say hello.')], abort.signal)
@@ -67,7 +68,7 @@ describe('OllamaProvider (live — generate)', () => {
 	// Assertion: structural — non-empty content (never asserts the model OBEYED the
 	// prompt's wording — that would be a model-behavior assertion, forbidden by doctrine).
 	it('a constrained short prompt yields non-empty content', async () => {
-		const provider = createLiveOllama({ numPredict: FAST_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: FAST_OPTIONS.num_predict })
 		const abort = createAbort()
 
 		const result = await provider.generate(
@@ -81,7 +82,7 @@ describe('OllamaProvider (live — generate)', () => {
 	// Recipe: 'Say hello.' / num_predict:8 (FAST_OPTIONS) / think:false.
 	// Assertion: structural — usage counters positive and consistent.
 	it('reports token usage with prompt + completion summing to total', async () => {
-		const provider = createLiveOllama({ numPredict: FAST_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: FAST_OPTIONS.num_predict })
 		const abort = createAbort()
 
 		const result = await provider.generate([createUserMessage('Say hello.')], abort.signal)
@@ -97,7 +98,7 @@ describe('OllamaProvider (live — generate)', () => {
 	// Recipe: 'Reply with exactly: ok' / num_predict:8 (FAST_OPTIONS) / think:false.
 	// Assertion: structural — no <think> reasoning trace leaks into content.
 	it('keeps thinking OFF — no <think> reasoning trace leaks into content', async () => {
-		const provider = createLiveOllama({ numPredict: FAST_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: FAST_OPTIONS.num_predict })
 		const abort = createAbort()
 
 		const result = await provider.generate(
@@ -116,24 +117,19 @@ describe('OllamaProvider (live — generate)', () => {
 	// but a small sample, so each attempt reissues the SAME call until one carries at
 	// least one tool call; the strict shape assertions then run on that response.
 	it('populates result.tools when the model calls a tool (id/name/arguments)', async () => {
-		const provider = createLiveOllama({ numPredict: TOOL_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: TOOL_OPTIONS.num_predict })
 
-		const attempts = 3
-		let result: Awaited<ReturnType<typeof provider.generate>> | undefined
-		for (let attempt = 0; attempt < attempts; attempt += 1) {
-			const abort = createAbort()
-			result = await provider.generate(
-				[createUserMessage('What is the weather in Paris? Use the get_weather tool.')],
-				abort.signal,
-				[WEATHER_TOOL],
-			)
-			if ((result.tools ?? []).length > 0) break
-		}
-		if (result === undefined || (result.tools ?? []).length === 0) {
-			throw new Error(
-				'model produced no tool_calls in 3 attempts — tool plumbing or model regression',
-			)
-		}
+		const result = await retryUntil(
+			() =>
+				provider.generate(
+					[createUserMessage('What is the weather in Paris? Use the get_weather tool.')],
+					createAbort().signal,
+					[WEATHER_TOOL],
+				),
+			(value) => (value.tools ?? []).length > 0,
+			'produce a tool_call for get_weather',
+			3,
+		)
 
 		const tools = result.tools ?? []
 		expect(tools.length).toBeGreaterThan(0)
@@ -147,7 +143,7 @@ describe('OllamaProvider (live — generate)', () => {
 	// Recipe: 'Say hi.' / num_predict:8 (FAST_OPTIONS) / think:false, no thinking.
 	// Assertion: structural — no empty `thinking` optional when none was produced.
 	it('omits thinking when the turn produced none', async () => {
-		const provider = createLiveOllama({ numPredict: FAST_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: FAST_OPTIONS.num_predict })
 		const abort = createAbort()
 
 		const result = await provider.generate([createUserMessage('Say hi.')], abort.signal)
@@ -160,7 +156,7 @@ describe('OllamaProvider (live — generate)', () => {
 	// non-empty, content carries no raw <think> tags (native message.thinking channel).
 	// Content may be empty under this small cap (thinking drains the budget first).
 	it('surfaces native thinking on result.thinking when think:true, with clean content', async () => {
-		const provider = createLiveOllama({ numPredict: THINK_OPTIONS.num_predict, format: undefined })
+		const provider = createLiveOllama({ predict: THINK_OPTIONS.num_predict, format: undefined })
 		const abort = createAbort()
 
 		const result = await provider.generate(
@@ -199,7 +195,7 @@ describe('OllamaProvider (live — stream)', () => {
 	// Assertion: structural — deltas non-empty, result.content equals joined deltas,
 	// usage present (usage present ⇒ total===prompt+completion invariant).
 	it('yields content ProviderDeltas and RETURNS the assembled result', async () => {
-		const provider = createLiveOllama({ numPredict: STREAM_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: STREAM_OPTIONS.num_predict })
 		const abort = createAbort()
 
 		const { deltas, result } = await drive(
@@ -220,7 +216,7 @@ describe('OllamaProvider (live — stream)', () => {
 	// (STREAM_OPTIONS) / think:false. Assertion: structural — more than one delta
 	// arrives (proves incremental streaming, not one lump).
 	it('streams a longer answer incrementally — more than one content delta', async () => {
-		const provider = createLiveOllama({ numPredict: STREAM_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: STREAM_OPTIONS.num_predict })
 		const abort = createAbort()
 
 		const { deltas, result } = await drive(
@@ -241,27 +237,23 @@ describe('OllamaProvider (live — stream)', () => {
 	// but a small sample, so each attempt reissues the SAME call until one carries at
 	// least one tool call; the strict shape assertions then run on that response.
 	it('assembles tool calls from a streamed turn', async () => {
-		const provider = createLiveOllama({ numPredict: TOOL_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: TOOL_OPTIONS.num_predict })
 
-		const attempts = 3
-		let result: Awaited<ReturnType<typeof drive>>['result'] | undefined
-		for (let attempt = 0; attempt < attempts; attempt += 1) {
-			const abort = createAbort()
-			const driven = await drive(
-				provider.stream(
-					[createUserMessage('What is the weather in Tokyo? Use the get_weather tool.')],
-					abort.signal,
-					[WEATHER_TOOL],
-				),
-			)
-			result = driven.result
-			if ((result.tools ?? []).length > 0) break
-		}
-		if (result === undefined || (result.tools ?? []).length === 0) {
-			throw new Error(
-				'model produced no tool_calls in 3 attempts — tool plumbing or model regression',
-			)
-		}
+		const result = await retryUntil(
+			async () =>
+				(
+					await drive(
+						provider.stream(
+							[createUserMessage('What is the weather in Tokyo? Use the get_weather tool.')],
+							createAbort().signal,
+							[WEATHER_TOOL],
+						),
+					)
+				).result,
+			(value) => (value.tools ?? []).length > 0,
+			'produce a tool_call for get_weather',
+			3,
+		)
 
 		const tools = result.tools ?? []
 		expect(tools.length).toBeGreaterThan(0)
@@ -294,7 +286,7 @@ describe('OllamaProvider (live — stream)', () => {
 
 describe('OllamaProvider (live — abort)', () => {
 	it('rejects generate when the signal is already aborted', async () => {
-		const provider = createLiveOllama({ numPredict: FAST_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: FAST_OPTIONS.num_predict })
 		const abort = createAbort()
 		abort.abort()
 
@@ -304,7 +296,7 @@ describe('OllamaProvider (live — abort)', () => {
 	})
 
 	it('rejects stream when the signal is already aborted (before any content)', async () => {
-		const provider = createLiveOllama({ numPredict: FAST_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: FAST_OPTIONS.num_predict })
 		const abort = createAbort()
 		abort.abort()
 
@@ -317,7 +309,7 @@ describe('OllamaProvider (live — abort)', () => {
 	// delta arrives — mid-stream cancellation. Assertion: structural —
 	// ProviderAbortError carrying non-empty partial content.
 	it('throws ProviderAbortError with the partial content when aborted mid-stream', async () => {
-		const provider = createLiveOllama({ numPredict: ABORT_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: ABORT_OPTIONS.num_predict })
 		const abort = createAbort()
 
 		const generator = provider.stream(
@@ -480,7 +472,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 				},
 			])
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -502,7 +494,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 			expect('options' in body).toBe(false)
 			expect('tools' in body).toBe(false)
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -525,7 +517,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 			expect(proxy.requests[0]?.body.think).toBe(true)
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -544,7 +536,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 			expect(proxy.requests[0]?.body.think).toBe(false)
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -569,7 +561,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 			expect(proxy.requests[0]?.body.think).toBe(false)
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -590,7 +582,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 			expect(proxy.requests[0]?.body.think).toBe(true)
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -609,7 +601,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 			expect('tools' in (proxy.requests[0]?.body ?? {})).toBe(false)
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -630,7 +622,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 			expect(proxy.requests[0]?.body.stream).toBe(true)
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -670,7 +662,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 				{ role: 'tool', content: 'sunny' },
 			])
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -689,7 +681,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 			expect(proxy.requests[0]?.body.messages).toEqual([])
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -716,7 +708,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 				{ role: 'user', content: 'No image here.' },
 			])
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -738,7 +730,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 			expect(proxy.requests[0]?.body.messages).toEqual([{ role: 'user', content: 'hi' }])
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -762,7 +754,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 
 			expect('format' in (proxy.requests[0]?.body ?? {})).toBe(false)
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -794,7 +786,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 				{ role: 'user', content: 'What is your favorite color?' },
 			])
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 })
@@ -820,7 +812,7 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 			expect(request.headers.authorization).toBe('Bearer obfuscated-xyz')
 			expect(request.headers['content-type']).toBe('application/json')
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -848,7 +840,7 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 			expect(request.headers['x-extra']).toBe('1')
 			expect(request.headers['content-type']).toBe('application/json')
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -869,7 +861,7 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 
 			expect(proxy.requests[0]?.headers['content-type']).toBe('application/json; charset=utf-8')
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -893,7 +885,7 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 			expect(proxy.requests[0]?.headers.authorization).toBe('Bearer stream-token')
 			expect(proxy.requests[0]?.headers['content-type']).toBe('application/json')
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -913,7 +905,7 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 			expect(request.headers['content-type']).toBe('application/json')
 			expect(request.headers.authorization).toBeUndefined()
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 })
@@ -944,7 +936,7 @@ describe('OllamaProvider (recording proxy — transport seam custom fetch)', () 
 			expect(result.content.length).toBeGreaterThan(0)
 			expect(proxy.requests.length).toBe(1)
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -969,7 +961,7 @@ describe('OllamaProvider (recording proxy — transport seam custom fetch)', () 
 			expect(calls.count).toBe(1)
 			expect(result.content.length).toBeGreaterThan(0)
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 })
@@ -1014,7 +1006,7 @@ describe('OllamaProvider (transport seam — orthogonal to the deadline)', () =>
 				expect(vi.getTimerCount()).toBe(0)
 				expect(proxy.requests.length).toBe(0)
 			} finally {
-				await proxy.close()
+				await proxy.stop()
 			}
 		} finally {
 			vi.useRealTimers()
@@ -1089,7 +1081,7 @@ describe('OllamaProvider (live error status)', () => {
 	// then a fresh FAST_OPTIONS generate() on the SAME provider still succeeds —
 	// guarding the stream's `finally` reader-cancel so the freed connection is reusable.
 	it('an early consumer break completes promptly and leaves the provider reusable', async () => {
-		const provider = createLiveOllama({ numPredict: ABORT_OPTIONS.num_predict })
+		const provider = createLiveOllama({ predict: ABORT_OPTIONS.num_predict })
 		const abort = createAbort()
 
 		const generator = provider.stream(

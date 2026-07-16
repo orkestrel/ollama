@@ -19,9 +19,11 @@ import { createOllama } from '@src/server'
 import { collect } from '../../setup.js'
 import {
 	createLiveProvider,
+	createLiveSummarizer,
 	createRecordingProxy,
 	FAST_OPTIONS,
 	OLLAMA_CONFIG,
+	retryUntil,
 } from '../../setupServer.js'
 
 // LIVE context tests — the src:ollama project hits a REAL warmed Ollama (AGENTS §16: no mocks
@@ -80,7 +82,7 @@ describe('AgentContext (live, provider-behavior) — a constraining instruction 
 				expect(userIndex).toBeGreaterThanOrEqual(0)
 				expect(instructionIndex).toBeLessThan(userIndex)
 			} finally {
-				await proxy.close()
+				await proxy.stop()
 			}
 		},
 		TIMEOUT,
@@ -131,7 +133,7 @@ describe('AgentContext (live, provider-behavior) — a CUSTOM format still reach
 				)
 				expect(framed).toBeDefined()
 			} finally {
-				await proxy.close()
+				await proxy.stop()
 			}
 		},
 		TIMEOUT,
@@ -145,29 +147,11 @@ describe('Conversation (live) — compaction summarizes via the REAL model', () 
 	// end against a genuine model (AGENTS §16 — no mocks for the inference boundary; no skipIf).
 	// Assertion strategy: STRUCTURAL only (non-empty summaries, view() shrinks to 1) — never
 	// exact prose.
-	const summarizer = createOllama({
-		model: OLLAMA_CONFIG.model,
-		url: OLLAMA_CONFIG.host,
-		options: { num_predict: 64, temperature: 0 },
-	})
 	// The instruction rides as the FINAL user turn AFTER the folded messages — a reasoning chat
 	// model emits nothing when the prompt ends on an assistant turn (a leading-system instruction
 	// leaves the template thinking the turn is already answered), so the trailing user turn is
 	// what reliably elicits the digest. (Documented as the recommended summarizer shape.)
-	const summarize = async (messages: readonly MessageInterface[]): Promise<string> =>
-		(
-			await summarizer.generate(
-				[
-					...messages,
-					{
-						id: 'sum',
-						role: 'user',
-						content: 'Summarize the conversation so far concisely in one sentence.',
-					},
-				],
-				AbortSignal.timeout(TIMEOUT),
-			)
-		).content
+	const summarize = createLiveSummarizer(TIMEOUT)
 
 	// The folded turns — enough that a one-sentence summary is meaningfully shorter than the
 	// originals (so the post-compaction view() is provably smaller).
@@ -193,16 +177,18 @@ describe('Conversation (live) — compaction summarizes via the REAL model', () 
 			// nondeterminism: each attempt is a FRESH conversation seeded + compacted, retried until
 			// the model genuinely produced a non-empty section summary (never a vacuous pass), failing
 			// loudly if NO attempt across the loop did.
-			const attempts = 3
-			let conversation = createConversation({ summarize })
-			let before = 0
-			for (let attempt = 0; attempt < attempts; attempt += 1) {
-				conversation = createConversation({ summarize })
-				seed(conversation)
-				before = conversation.view().length
-				const section = await conversation.compact()
-				if (section !== undefined && section.summary.trim().length > 0) break
-			}
+			const { conversation, before } = await retryUntil(
+				async () => {
+					const attempt = createConversation({ summarize })
+					seed(attempt)
+					const attemptBefore = attempt.view().length
+					const section = await attempt.compact()
+					return { conversation: attempt, before: attemptBefore, section }
+				},
+				(value) => value.section !== undefined && value.section.summary.trim().length > 0,
+				'produce a non-empty compaction section summary',
+				3,
+			)
 
 			// The model authored a NON-EMPTY section summary (a real digest of the folded turns) and a
 			// NON-EMPTY rollup (a second real summarizer call over the section summaries).
@@ -229,25 +215,7 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 	// summarizer num_predict 256→64, bounded retry attempts=3 (directive #7). Assertion strategy:
 	// STRUCTURAL only (section count + non-empty summary, non-empty non-partial final answer).
 
-	const summarizer = createOllama({
-		model: OLLAMA_CONFIG.model,
-		url: OLLAMA_CONFIG.host,
-		options: { num_predict: 64, temperature: 0 },
-	})
-	const summarize = async (messages: readonly MessageInterface[]): Promise<string> =>
-		(
-			await summarizer.generate(
-				[
-					...messages,
-					{
-						id: 'sum',
-						role: 'user',
-						content: 'Summarize the conversation so far concisely in one sentence.',
-					},
-				],
-				AbortSignal.timeout(TIMEOUT),
-			)
-		).content
+	const summarize = createLiveSummarizer(TIMEOUT)
 
 	// A no-args lookup tool returning a sentinel the model cannot derive on its own — so a final
 	// answer carrying it proves the multi-turn round-trip survived compaction (the model called the
@@ -339,25 +307,7 @@ describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIP
 	// EACH between-turns check (a tiny window crossed every turn), and the model answers from the
 	// multiply-compacted view. Warmed, no skipIf, bounded-retry (attempts=3, directive #7).
 	// Assertion strategy: STRUCTURAL only.
-	const summarizer = createOllama({
-		model: OLLAMA_CONFIG.model,
-		url: OLLAMA_CONFIG.host,
-		options: { num_predict: 64, temperature: 0 },
-	})
-	const summarize = async (messages: readonly MessageInterface[]): Promise<string> =>
-		(
-			await summarizer.generate(
-				[
-					...messages,
-					{
-						id: 'sum',
-						role: 'user',
-						content: 'Summarize the conversation so far concisely in one sentence.',
-					},
-				],
-				AbortSignal.timeout(TIMEOUT),
-			)
-		).content
+	const summarize = createLiveSummarizer(TIMEOUT)
 
 	// The forced tool call (the proven reliable pattern from the block above): a no-arg lookup the
 	// system prompt MANDATES, returning a sentinel the model cannot derive — so a final answer that
@@ -501,7 +451,7 @@ describe('Conversation framing (live, provider-behavior) — the TIGHTENED recap
 				expect(recapMessage).toBeDefined()
 				expect(String(recapMessage?.content)).toContain(FACT)
 			} finally {
-				await proxy.close()
+				await proxy.stop()
 			}
 		},
 		TIMEOUT,
@@ -576,7 +526,7 @@ describe('Conversation.reference (live) — cross-conversation attribution (prov
 				)
 				expect(carriesReference).toBe(true)
 			} finally {
-				await proxy.close()
+				await proxy.stop()
 			}
 		},
 		TIMEOUT,
@@ -650,7 +600,7 @@ describe('Conversation.reference (live) — cherry-pick ONE relevant message, no
 				expect(joined).not.toContain('9am')
 				expect(joined).not.toContain('talk later')
 			} finally {
-				await proxy.close()
+				await proxy.stop()
 			}
 		},
 		TIMEOUT,

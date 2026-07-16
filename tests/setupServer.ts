@@ -1,5 +1,6 @@
 import type {
 	ContextFormatInterface,
+	MessageInterface,
 	ProviderDelta,
 	ProviderInterface,
 	ProviderResult,
@@ -7,7 +8,7 @@ import type {
 import { isRecord } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
-import { OllamaProvider } from '@src/server'
+import { createOllama, OllamaProvider } from '@src/server'
 
 /**
  * Lowercase and flatten a fetch-standard `Headers` bag to single string values — the
@@ -64,8 +65,8 @@ export const OLLAMA_CONFIG = {
 
 /** Tuning for a live Ollama test provider — all optional; see {@link createLiveProvider}. */
 export interface LiveProviderOptions {
-	/** The `num_predict` sampling cap (a small value keeps round-trips fast); defaults to `32`. */
-	readonly numPredict?: number
+	/** The sampling cap, mapped to Ollama's `num_predict` (a small value keeps round-trips fast); defaults to `32`. */
+	readonly predict?: number
 	/** The sampling `temperature` (0 ⇒ greedy / reproducible); defaults to `0`. */
 	readonly temperature?: number
 	/** The provider's optional context-framing default (the provider-default cascade level). */
@@ -85,7 +86,7 @@ export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider 
 	return new OllamaProvider({
 		model: OLLAMA_CONFIG.model,
 		url: OLLAMA_CONFIG.host,
-		options: { num_predict: options?.numPredict ?? 32, temperature: options?.temperature ?? 0 },
+		options: { num_predict: options?.predict ?? 32, temperature: options?.temperature ?? 0 },
 		format: options?.format,
 	})
 }
@@ -101,6 +102,43 @@ export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider 
  */
 export function createLiveProvider(options?: LiveProviderOptions): ProviderInterface {
 	return createLiveOllama(options)
+}
+
+/**
+ * Build a summarizer function backed by a live warmed {@link OllamaProvider} — the shared
+ * `ConversationManagerOptions['summarize']` fixture triplicated across the live compaction
+ * tests (AGENTS §16.1). Frames the folded `messages` with a fixed one-sentence-digest
+ * instruction as the FINAL user turn (a reasoning chat model reliably answers there, not
+ * after a leading instruction), bounded by `timeoutMs`, and returns the generation's
+ * `.content`.
+ *
+ * @param timeoutMs - The generation deadline in ms
+ * @param predict - The `num_predict` cap for the summarizer's generation; defaults to `64`
+ * @returns A `summarize` function over `readonly MessageInterface[]` returning the digest
+ */
+export function createLiveSummarizer(
+	timeoutMs: number,
+	predict = 64,
+): (messages: readonly MessageInterface[]) => Promise<string> {
+	const summarizer = createOllama({
+		model: OLLAMA_CONFIG.model,
+		url: OLLAMA_CONFIG.host,
+		options: { num_predict: predict, temperature: 0 },
+	})
+	return async (messages) =>
+		(
+			await summarizer.generate(
+				[
+					...messages,
+					{
+						id: 'sum',
+						role: 'user',
+						content: 'Summarize the conversation so far concisely in one sentence.',
+					},
+				],
+				AbortSignal.timeout(timeoutMs),
+			)
+		).content
 }
 
 // Whether a local Ollama daemon answers `GET /api/tags` within 5s — the readiness
@@ -208,11 +246,11 @@ export interface RecordedRequest {
 	readonly body: Record<string, unknown>
 }
 
-/** A running recording proxy — its base `url`, the requests it `requests`, and `close`. */
+/** A running recording proxy — its base `url`, the requests it `requests`, and `stop`. */
 export interface RecordingProxyInterface {
 	readonly url: string
 	readonly requests: readonly RecordedRequest[]
-	close(): Promise<void>
+	stop(): Promise<void>
 }
 
 // Parse a request body's raw text as JSON, defensively narrowing to a record — an
@@ -242,7 +280,7 @@ function forwardedHeaders(headers: Headers): Headers {
  * response (status, headers, and streamed body) is returned UNALTERED.
  *
  * @param upstream - The real Ollama daemon base URL to forward to; defaults to {@link OLLAMA_CONFIG.host}
- * @returns The running {@link RecordingProxyInterface} — its `url`, the `requests`, and `close`
+ * @returns The running {@link RecordingProxyInterface} — its `url`, the `requests`, and `stop`
  */
 export async function createRecordingProxy(
 	upstream: string = OLLAMA_CONFIG.host,
@@ -278,7 +316,7 @@ export async function createRecordingProxy(
 		get requests() {
 			return requests
 		},
-		close() {
+		stop() {
 			return server.stop()
 		},
 	}

@@ -468,15 +468,15 @@ export class OllamaProvider implements ProviderInterface {
 		const out: ToolCall[] = []
 		for (const entry of calls) {
 			if (!isRecord(entry)) continue
-			const fn = Reflect.get(entry, 'function')
-			if (!isRecord(fn)) continue
-			const name = Reflect.get(fn, 'name')
+			const callable = Reflect.get(entry, 'function')
+			if (!isRecord(callable)) continue
+			const name = Reflect.get(callable, 'name')
 			if (!isString(name)) continue
 			const id = Reflect.get(entry, 'id')
 			out.push({
 				id: isString(id) ? id : crypto.randomUUID(),
 				name,
-				arguments: this.#arguments(Reflect.get(fn, 'arguments')),
+				arguments: this.#arguments(Reflect.get(callable, 'arguments')),
 			})
 		}
 		return out

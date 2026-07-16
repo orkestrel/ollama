@@ -111,7 +111,7 @@ describe('createOllama (defaults)', () => {
 			expect('options' in body).toBe(false)
 			expect('tools' in body).toBe(false)
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 
@@ -131,7 +131,7 @@ describe('createOllama (defaults)', () => {
 			expect(body.keep_alive).toBe(0)
 			expect(body.options).toEqual({ seed: 7, num_predict: 12 })
 		} finally {
-			await proxy.close()
+			await proxy.stop()
 		}
 	})
 })

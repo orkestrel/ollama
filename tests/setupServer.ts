@@ -274,10 +274,21 @@ function forwardedHeaders(headers: Headers): Headers {
 	return forwarded
 }
 
+// Whether a fetch rejection was caused by an `AbortSignal` firing (either the
+// client's own disconnect or the proxy's own `stop()`) — narrow, no `any`, so an
+// abort-shaped rejection can be told apart from a genuine upstream failure.
+function isAbortError(error: unknown): boolean {
+	return error instanceof Error && error.name === 'AbortError'
+}
+
 /**
  * Start a real pass-through recording proxy on an ephemeral port. Every `POST
  * /api/chat` is recorded, then forwarded VERBATIM to `upstream` — the daemon's real
- * response (status, headers, and streamed body) is returned UNALTERED.
+ * response (status, headers, and streamed body) is returned UNALTERED. A client
+ * abort (the request's own `signal`) propagates to the upstream fetch, and `stop()`
+ * aborts any in-flight upstream request before tearing down the server — so neither
+ * a client disconnect nor a proxy shutdown leaves an orphaned upstream generation
+ * running.
  *
  * @param upstream - The real Ollama daemon base URL to forward to; defaults to {@link OLLAMA_CONFIG.host}
  * @returns The running {@link RecordingProxyInterface} — its `url`, the `requests`, and `stop`
@@ -286,6 +297,7 @@ export async function createRecordingProxy(
 	upstream: string = OLLAMA_CONFIG.host,
 ): Promise<RecordingProxyInterface> {
 	const requests: RecordedRequest[] = []
+	const upstreamAbort = new AbortController()
 	const dispatcher = createDispatcher<Record<string, never>>()
 	dispatcher.add({
 		method: 'POST',
@@ -298,11 +310,18 @@ export async function createRecordingProxy(
 				headers: flattenHeaders(request.headers),
 				body: parseRequestBody(text),
 			})
-			const upstreamResponse = await fetch(`${upstream}/api/chat`, {
-				method: 'POST',
-				headers: forwardedHeaders(request.headers),
-				body: text,
-			})
+			let upstreamResponse: Response
+			try {
+				upstreamResponse = await fetch(`${upstream}/api/chat`, {
+					method: 'POST',
+					headers: forwardedHeaders(request.headers),
+					body: text,
+					signal: AbortSignal.any([request.signal, upstreamAbort.signal]),
+				})
+			} catch (error) {
+				if (isAbortError(error)) return new Response(undefined, { status: 499 })
+				throw error
+			}
 			return new Response(upstreamResponse.body, {
 				status: upstreamResponse.status,
 				headers: upstreamResponse.headers,
@@ -317,6 +336,7 @@ export async function createRecordingProxy(
 			return requests
 		},
 		stop() {
+			upstreamAbort.abort()
 			return server.stop()
 		},
 	}

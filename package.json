@@ -63,7 +63,7 @@
 		"prepublishOnly": "npm run format:check && npm run lint:check && npm run check && npm run check:src && npm run build && npm test"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.2",
+		"@orkestrel/agent": "^0.0.4",
 		"@orkestrel/budget": "^0.0.1",
 		"@orkestrel/contract": "^0.0.1",
 		"@orkestrel/ndjson": "^0.0.1",

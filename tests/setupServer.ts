@@ -38,10 +38,21 @@ export function env(name: string, fallback: string): string {
 	return value !== undefined && value.length > 0 ? value : fallback
 }
 
-// Ollama's own CLI/env convention accepts a scheme-less `host:port` for `OLLAMA_HOST`
-// (e.g. `127.0.0.1:11434`); `fetch` requires a full URL, so a value that doesn't
-// already start with `http://` / `https://` is prefixed with `http://` here.
-function withScheme(value: string): string {
+/**
+ * Prefix a scheme-less `host:port` with `http://` — Ollama's own CLI/env convention
+ * accepts a scheme-less value for `OLLAMA_HOST` (e.g. `127.0.0.1:11434`), but `fetch`
+ * requires a full URL. A value that already starts with `http://` / `https://` passes
+ * through unchanged.
+ *
+ * @param value - The host value to normalize, with or without a scheme
+ * @returns `value` unchanged if it already has a scheme, otherwise `http://${value}`
+ * @example
+ * ```ts
+ * withScheme('127.0.0.1:11434') // 'http://127.0.0.1:11434'
+ * withScheme('https://ollama.example.com') // 'https://ollama.example.com'
+ * ```
+ */
+export function withScheme(value: string): string {
 	return value.startsWith('http://') || value.startsWith('https://') ? value : `http://${value}`
 }
 
@@ -169,6 +180,8 @@ if (!available) {
 }
 await warmup()
 
+// The file's one-shot module-load gate — invoked once by the top-level await above,
+// deliberately not exported.
 // Load the model into memory with a minimal generation. Bounded by a 60s deadline (a
 // cold pull of a quantized model can take a while); any non-OK / network failure
 // throws so a broken daemon surfaces loudly here rather than mid-test.
@@ -253,31 +266,70 @@ export interface RecordingProxyInterface {
 	stop(): Promise<void>
 }
 
-// Parse a request body's raw text as JSON, defensively narrowing to a record — an
-// unparseable / non-object body yields `{}` (the capture is best-effort, never throwing).
-function parseRequestBody(text: string): Record<string, unknown> {
+/**
+ * Parse a request body's raw text as JSON, coercing to a record. Invalid JSON and
+ * valid-but-non-record JSON (an array, string, number, `null`, …) both yield
+ * `undefined` — the capture is best-effort, never throwing.
+ *
+ * @param text - The raw request body text to parse
+ * @returns The parsed record, or `undefined` if `text` isn't valid JSON or isn't a record
+ * @example
+ * ```ts
+ * parseRequestBody('{"model":"qwen"}') // { model: 'qwen' }
+ * parseRequestBody('[1,2]') // undefined
+ * ```
+ */
+export function parseRequestBody(text: string): Record<string, unknown> | undefined {
 	try {
 		const parsed: unknown = JSON.parse(text)
-		return isRecord(parsed) ? parsed : {}
+		return isRecord(parsed) ? parsed : undefined
 	} catch {
-		return {}
+		return undefined
 	}
 }
 
-// Clone a forwarded request's headers, dropping `host` / `content-length` so `fetch`
-// recomputes them for the new upstream connection — every other header (including
-// `authorization`) passes through unchanged.
-function forwardedHeaders(headers: Headers): Headers {
+/**
+ * Clone a forwarded request's `Headers`, dropping `host` / `content-length` so `fetch`
+ * recomputes them for the new upstream connection — every other header (including
+ * `authorization`) passes through unchanged. Distinct from {@link flattenHeaders}:
+ * `flattenHeaders` lowercases and flattens `Headers` into a plain record for
+ * RECORDING / assertion, while this clones the `Headers` object itself (case
+ * preserved) for upstream FORWARDING.
+ *
+ * @param headers - The inbound request's `Headers` to clone and filter
+ * @returns A new `Headers` with `host` / `content-length` removed
+ * @example
+ * ```ts
+ * forwardHeaders(new Headers({ host: 'localhost:11434', authorization: 'Bearer x' }))
+ * // Headers without 'host', 'authorization' preserved
+ * ```
+ */
+export function forwardHeaders(headers: Headers): Headers {
 	const forwarded = new Headers(headers)
 	forwarded.delete('host')
 	forwarded.delete('content-length')
 	return forwarded
 }
 
-// Whether a fetch rejection was caused by an `AbortSignal` firing (either the
-// client's own disconnect or the proxy's own `stop()`) — narrow, no `any`, so an
-// abort-shaped rejection can be told apart from a genuine upstream failure.
-function isAbortError(error: unknown): boolean {
+/**
+ * Narrow a fetch rejection to the raw `AbortSignal`-fired shape undici's `fetch`
+ * rejects with (either the client's own disconnect or the proxy's own `stop()`).
+ * Deliberately distinct from `isProviderAbortError` (`@orkestrel/agent`), which
+ * narrows the provider-layer `ProviderAbortError` class — this guard operates one
+ * layer lower, on the raw fetch/DOM abort rejection itself. `error is Error` is
+ * complete for the default abort reason: DOMException subclasses `Error` in modern
+ * Node, so `instanceof Error` catches the DOMException `'AbortError'` undici rejects
+ * with, as well as historical plain-`Error` aborts.
+ *
+ * @param error - The unknown rejection value to narrow
+ * @returns `true` if `error` is an `Error` named `'AbortError'`
+ * @example
+ * ```ts
+ * isAbortError(AbortSignal.abort().reason) // true
+ * isAbortError(new Error('boom')) // false
+ * ```
+ */
+export function isAbortError(error: unknown): error is Error {
 	return error instanceof Error && error.name === 'AbortError'
 }
 
@@ -308,13 +360,13 @@ export async function createRecordingProxy(
 				method: request.method,
 				path: new URL(request.url).pathname,
 				headers: flattenHeaders(request.headers),
-				body: parseRequestBody(text),
+				body: parseRequestBody(text) ?? {},
 			})
 			let upstreamResponse: Response
 			try {
 				upstreamResponse = await fetch(`${upstream}/api/chat`, {
 					method: 'POST',
-					headers: forwardedHeaders(request.headers),
+					headers: forwardHeaders(request.headers),
 					body: text,
 					signal: AbortSignal.any([request.signal, upstreamAbort.signal]),
 				})

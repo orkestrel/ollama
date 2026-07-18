@@ -7,8 +7,10 @@
 # scripts/cursor.sh. All three are registered in .claude/settings.json and run
 # IN PARALLEL at session start, so the daemon boots while npm installs.
 #
-#   0. Multi-environment guard -- this repo serves several cloud environments;
-#      this script exits quietly wherever the ollama binary isn't installed.
+#   0. Guards -- the orchestration set (hooks included) is mirrored
+#      byte-identical across every @orkestrel repo, and this repo serves
+#      several cloud environments: exit quietly in any repo that isn't
+#      @orkestrel/ollama, and wherever the ollama binary isn't installed.
 #   1. Starts `ollama serve`  -- the environment cache snapshots FILES, not
 #      running processes, so the daemon must be restarted every session.
 #   2. Self-heals a known container defect -- this container class advertises
@@ -31,7 +33,13 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
   exit 0
 fi
 
-# --- 0. Multi-environment guard ---------------------------------------------
+# --- 0. Guards ---------------------------------------------------------------
+# The daemon only serves the ollama package; every other @orkestrel repo
+# carries this script as part of the mirrored hook set and must skip silently.
+PKG_JSON="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/.." && pwd)}/package.json"
+if ! grep -Eq '"name"[[:space:]]*:[[:space:]]*"@orkestrel/ollama"' "$PKG_JSON" 2>/dev/null; then
+  exit 0
+fi
 if ! command -v ollama >/dev/null 2>&1; then
   echo "ollama.sh: ollama not installed in this environment — no local model daemon."
   exit 0

@@ -36,6 +36,7 @@ never yours to interpret.
    no commit, no push, no new dependencies, no tree-wide format/lint-fix/build,
    no touching credentials or env values. Cursor reads AGENTS.md itself; restate
    the criticals anyway.
+
 5. Locate the worktree (`git worktree list --porcelain`) and capture, scoped to it:
    `git -C <worktree> status --porcelain` and `git -C <worktree> diff --stat`.
 

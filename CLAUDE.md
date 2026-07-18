@@ -57,20 +57,20 @@ builder's dispatch is execution-shaped, not exploration-shaped.
 
 ### Routing table
 
-| Work                                                   | Model                   |
-| ------------------------------------------------------ | ----------------------- |
-| Repo map, find-the-files, "what exists / what to read" | Sonnet                  |
-| Small commands, evidence capture, log gathering        | Sonnet                  |
-| Implement a specified, bounded unit                    | Sonnet                  |
-| Scoped verification / authoritative gate sweep         | Sonnet                  |
-| Checklist / conformance review                         | Sonnet                  |
-| Orkestrel terrain map, cross-package audit, release coordination | Sonnet — the `orkestrel` specialist |
-| Deep research, unknown-unknowns, root-cause analysis   | Opus                    |
-| Implementation planning for non-trivial work           | Opus                    |
-| Judgment review (correctness, design, security)        | Opus                    |
-| Decisions, integration, final acceptance               | Fable — never delegated |
-| Fully-specified mechanical bulk — scaffold, rename, boilerplate | Composer (Cursor) — external, worktree-isolated; fallback: builder |
-| Heavier independent second-opinion / adversarial pass  | Grok (Cursor) — external, ask-only; fallback: reviewer |
+| Work                                                             | Model                                                              |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Repo map, find-the-files, "what exists / what to read"           | Sonnet                                                             |
+| Small commands, evidence capture, log gathering                  | Sonnet                                                             |
+| Implement a specified, bounded unit                              | Sonnet                                                             |
+| Scoped verification / authoritative gate sweep                   | Sonnet                                                             |
+| Checklist / conformance review                                   | Sonnet                                                             |
+| Orkestrel terrain map, cross-package audit, release coordination | Sonnet — the `orkestrel` specialist                                |
+| Deep research, unknown-unknowns, root-cause analysis             | Opus                                                               |
+| Implementation planning for non-trivial work                     | Opus                                                               |
+| Judgment review (correctness, design, security)                  | Opus                                                               |
+| Decisions, integration, final acceptance                         | Fable — never delegated                                            |
+| Fully-specified mechanical bulk — scaffold, rename, boilerplate  | Composer (Cursor) — external, worktree-isolated; fallback: builder |
+| Heavier independent second-opinion / adversarial pass            | Grok (Cursor) — external, ask-only; fallback: reviewer             |
 
 ### Model configuration — mechanics
 

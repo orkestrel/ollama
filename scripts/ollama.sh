@@ -1,18 +1,17 @@
 #!/bin/bash
 # ============================================================================
-# scripts/start-ollama.sh  —  SessionStart hook
+# scripts/ollama.sh — SessionStart hook: Ollama ONLY
 # ----------------------------------------------------------------------------
-# WHERE THIS GOES: commit to your repo at scripts/start-ollama.sh, then
-#   chmod +x scripts/start-ollama.sh
-# Wired up by .claude/settings.json (SessionStart hook).
+# One job: bring the local-model daemon up for this session, healthy.
+# Project dependencies live in scripts/deps.sh; the Cursor bench check lives in
+# scripts/cursor.sh. All three are registered in .claude/settings.json and run
+# IN PARALLEL at session start, so the daemon boots while npm installs.
 #
-# WHAT IT DOES, and why each half is here rather than in the setup script:
+#   0. Multi-environment guard -- this repo serves several cloud environments;
+#      this script exits quietly wherever the ollama binary isn't installed.
 #   1. Starts `ollama serve`  -- the environment cache snapshots FILES, not
 #      running processes, so the daemon must be restarted every session.
-#   2. Installs project deps  -- the setup script does not run inside your repo
-#      checkout, so `npm ci` there has no package.json/package-lock.json to
-#      read. $CLAUDE_PROJECT_DIR here always points at the real checkout.
-#   3. Self-heals a known container defect -- this container class advertises
+#   2. Self-heals a known container defect -- this container class advertises
 #      AMX CPU flags but blocks AMX tile-state permissions at the kernel /
 #      seccomp level. Ollama's dynamic CPU-backend loader picks its only
 #      AMX-capable variant (libggml-cpu-sapphirerapids.so) on such hosts, and
@@ -21,12 +20,20 @@
 #      this failure; if it fires, we disable that .so and restart the daemon
 #      so the loader falls back to the next-best AVX-512 variant.
 #
-# No `set -e`: a dependency hiccup (or a self-heal misfire) should not stop
-# Ollama from coming up.
+# SessionStart stdout is injected into Claude's context: keep stdout to terse
+# status lines (they tell Claude what this environment offers); diagnostics go
+# to stderr / /tmp/ollama.log. No `set -e`: a self-heal misfire should not
+# stop Ollama from coming up.
 # ============================================================================
 
 # Run only in cloud sessions. Locally you manage your own Ollama, so skip.
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
+  exit 0
+fi
+
+# --- 0. Multi-environment guard ---------------------------------------------
+if ! command -v ollama >/dev/null 2>&1; then
+  echo "ollama.sh: ollama not installed in this environment — no local model daemon."
   exit 0
 fi
 
@@ -39,25 +46,11 @@ export OLLAMA_HOST="${OLLAMA_HOST:-127.0.0.1:11434}"
 # here. Uncomment if anything still hits Ollama from a browser:
 # export OLLAMA_ORIGINS="*"
 
-# --- 1. Kick Ollama off first, so it boots while npm is installing ----------
+# --- 1. Start the daemon ----------------------------------------------------
 if ! curl -sf "http://${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
   nohup ollama serve >/tmp/ollama.log 2>&1 &
 fi
 
-# --- 2. Project dependencies -----------------------------------------------
-cd "$CLAUDE_PROJECT_DIR" || exit 0
-# Skip when deps are already present (e.g. a resumed session) to cut latency.
-if [ -f package.json ] && [ ! -d node_modules ]; then
-  if [ -f package-lock.json ]; then
-    npm ci
-  else
-    echo "ollama.sh: no package-lock.json found — falling back to npm install." >&2
-    echo "Commit your lockfile to get reproducible installs (and real 'npm ci')." >&2
-    npm install
-  fi
-fi
-
-# --- 3. Confirm Ollama actually came up ------------------------------------
 ollama_ready=0
 for i in $(seq 1 30); do
   if curl -sf "http://${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
@@ -74,8 +67,8 @@ if [ "$ollama_ready" != "1" ]; then
   exit 0
 fi
 
-# --- 4. Self-heal the AMX/XTILE-blocked-container defect --------------------
-# See header note 3. A minimal chat call against whatever model is already
+# --- 2. Self-heal the AMX/XTILE-blocked-container defect --------------------
+# See header note 2. A minimal chat call against whatever model is already
 # installed both warms that model for the session AND tells us whether this
 # container hit the AMX-tile-permission wall. If it did, disable the
 # AMX-only CPU backend variant and restart the daemon so the loader falls
@@ -139,7 +132,7 @@ if echo "$probe_response" | grep -qi 'segmentation fault\|llama-server process h
         if echo "$retry_response" | grep -qi 'segmentation fault\|llama-server process has terminated'; then
           echo "ollama.sh: self-heal restart complete, but the retry probe still failed. See /tmp/ollama.log." >&2
         else
-          echo "ollama.sh: self-heal succeeded -- model warm after AVX-512 fallback." >&2
+          echo "ollama.sh: self-heal succeeded -- model warm (${model}) after AVX-512 fallback."
         fi
       else
         echo "ollama.sh: daemon did not report ready after self-heal restart (see /tmp/ollama.log)." >&2
@@ -151,7 +144,7 @@ if echo "$probe_response" | grep -qi 'segmentation fault\|llama-server process h
     echo "ollama.sh: warning -- AMX-only CPU backend not found at expected path; cannot self-heal automatically." >&2
   fi
 elif echo "$probe_response" | grep -q '"message"\|"content"\|"done":true'; then
-  echo "ollama.sh: model warm (${model}) -- warmup probe succeeded, no AMX/XTILE defect detected." >&2
+  echo "ollama.sh: model warm (${model}) -- warmup probe succeeded."
 else
   echo "ollama.sh: warning -- warmup probe returned an unexpected response (not a segfault, but no message/done payload either):" >&2
   echo "ollama.sh: ${probe_response}" | head -c 500 >&2

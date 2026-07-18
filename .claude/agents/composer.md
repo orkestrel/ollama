@@ -29,7 +29,7 @@ never yours to interpret.
 3. Pick a worktree name from the unit id, e.g. `composer-<unit-id>`.
 4. Run, from the repo root:
 
-   `agent -p --trust --force -w "composer-<unit-id>" -m "$CURSOR_COMPOSER_MODEL" "<dispatch>"`
+   `agent -p --trust --force -w "composer-<unit-id>" --model "$CURSOR_COMPOSER_MODEL" "<dispatch>"`
 
    The `<dispatch>` you pass restates: the unit spec verbatim, the owned files
    (write NOTHING else), the AGENTS.md §1 non-negotiables, and the hard bans —

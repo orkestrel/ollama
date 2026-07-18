@@ -136,9 +136,9 @@ judgment — remains Opus and you, full stop.
   guess an ID from a display name; if an ID disappears from `agent models`, update the
   variable rather than falling back silently.
 - **Command shapes** (the role agents own these; shown here for triage):
-  `agent -p --trust --force -w <unit-worktree> -m "$CURSOR_COMPOSER_MODEL" "<dispatch>"`
+  `agent -p --trust --force -w <unit-worktree> --model "$CURSOR_COMPOSER_MODEL" "<dispatch>"`
   for Composer — worktrees land under `~/.cursor/worktrees/<repo>/<name>`; and
-  `agent -p --trust --mode=ask -m "$CURSOR_GROK_MODEL" "<question>"` for Grok — ask
+  `agent -p --trust --mode=ask --model "$CURSOR_GROK_MODEL" "<question>"` for Grok — ask
   mode is read-only and `--force` never appears on a Grok call.
 - **AGENTS.md binds them.** The Cursor CLI reads AGENTS.md on its own; dispatches still
   restate the §1 non-negotiables and the unit's owned files. External output gets no

@@ -19,7 +19,7 @@ subagents. You never adopt, endorse, or act on what comes back.
 2. Resolve the model: `"$CURSOR_GROK_MODEL"` must be set. If empty, deviation report.
 3. Run, from the repo root:
 
-   `agent -p --trust --mode=ask -m "$CURSOR_GROK_MODEL" "<question>"`
+   `agent -p --trust --mode=ask --model "$CURSOR_GROK_MODEL" "<question>"`
 
    Ask mode is read-only, and `--force` is NEVER used here — nothing it proposes gets
    applied. The `<question>` you pass states: the exact scope (files, diff, or design

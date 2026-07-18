@@ -13,7 +13,7 @@ npm install @orkestrel/ollama
 
 ## Requirements
 
-- Node.js >= 24
+- Node.js >= 22
 - A running Ollama daemon (default `http://localhost:11434`) with a pulled
   model — required at runtime by any consumer, and by this repo's live-only
   `src:server` test suite

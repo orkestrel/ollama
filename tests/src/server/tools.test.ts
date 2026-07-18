@@ -1,0 +1,273 @@
+import type { MessageInterface } from '@orkestrel/agent'
+import { createAgent, createAuthority, createToolManager } from '@orkestrel/agent'
+import { createOllama } from '@src/server'
+import { describe, expect, it } from 'vitest'
+import { createRecorder } from '../../setup.js'
+import {
+	createLiveProvider,
+	createLookupTool,
+	createRecordingProxy,
+	createThrowingTool,
+	driveAgent,
+	LOOKUP_DATUM,
+	OLLAMA_CONFIG,
+	retryUntil,
+	THROWING_TOOL_MESSAGE,
+	TOOL_LOOP_OPTIONS,
+} from '../../setupServer.js'
+
+// LIVE tool-calling machinery tests — the real OllamaProvider driving the agent's tool
+// loop against the warmed local model (AGENTS §16: no mocks for the inference boundary).
+// Every assertion here rides on LOOP WIRING (chunk / event / recorder / proxy / partial
+// mechanics) — never on "the model was smart", per directive: a failure here indicates
+// OUR packages (agent / ollama) mishandled a tool call. Every model-choice-dependent step
+// is wrapped in `retryUntil` (bounded at 3 attempts) since the small 2B model does not
+// reliably choose to call a tool on every single attempt. `tools` is a cross-cutting
+// suffix (structure-exempt). Warmed, no skipIf.
+
+const TIMEOUT = 60_000
+
+describe('Agent tool loop (live) — dispatch by name', () => {
+	it(
+		'a steered call to the registered `lookup` tool dispatches by name, feeds its result back, and never touches the sibling `fail` tool',
+		async () => {
+			const lookupRecorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+			const failRecorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+
+			const driven = await retryUntil(
+				async () => {
+					lookupRecorder.clear()
+					failRecorder.clear()
+					const tools = createToolManager()
+					tools.add(createLookupTool(lookupRecorder))
+					tools.add(createThrowingTool(failRecorder))
+					const agent = createAgent(createLiveProvider(), {
+						system:
+							'You MUST call the lookup tool with query "datum" to answer. Never call the fail tool.',
+						tools,
+						timeout: TIMEOUT,
+						limit: 4,
+					})
+					agent.context.messages.add({
+						role: 'user',
+						content:
+							'Call the lookup tool with query "datum", then tell me exactly what it returned.',
+					})
+					const stream = agent.stream()
+					return driveAgent(stream)
+				},
+				(value) => value.tools.some((tool) => tool.call.name === 'lookup'),
+				'call the lookup tool by name',
+				3,
+			)
+
+			const dispatched = driven.tools.find((tool) => tool.call.name === 'lookup')
+			expect(dispatched).toBeDefined()
+			expect(dispatched?.result.value).toBe(LOOKUP_DATUM)
+			expect(lookupRecorder.count).toBeGreaterThanOrEqual(1)
+			expect(failRecorder.count).toBe(0)
+		},
+		TIMEOUT,
+	)
+})
+
+describe('Agent tool loop (live) — tool-result feedback reaches the wire', () => {
+	it(
+		'a tool result is fed back into the loop as a second /api/chat request carrying the tool datum',
+		async () => {
+			const proxy = await createRecordingProxy()
+			try {
+				const attempt = await retryUntil(
+					async () => {
+						const tools = createToolManager()
+						tools.add(createLookupTool())
+						const provider = createOllama({
+							model: OLLAMA_CONFIG.model,
+							url: proxy.url,
+							options: TOOL_LOOP_OPTIONS,
+						})
+						const agent = createAgent(provider, {
+							system:
+								'You MUST call the lookup tool with query "datum" to answer, then state the exact returned value in your final reply.',
+							tools,
+							timeout: TIMEOUT,
+							limit: 4,
+						})
+						agent.context.messages.add({
+							role: 'user',
+							content:
+								'Call the lookup tool with query "datum", then tell me exactly what it returned.',
+						})
+						return agent.generate()
+					},
+					() => {
+						if (proxy.requests.length < 2) return false
+						return proxy.requests.some((request) => {
+							const body = request.body as { messages?: readonly MessageInterface[] }
+							const messages = body.messages ?? []
+							return messages.some((message) => String(message.content).includes(LOOKUP_DATUM))
+						})
+					},
+					're-send the tool result to the model on a subsequent request',
+					3,
+				)
+
+				expect(proxy.requests.length).toBeGreaterThanOrEqual(2)
+				const carriesResult = proxy.requests.some((request) => {
+					const body = request.body as { messages?: readonly MessageInterface[] }
+					const messages = body.messages ?? []
+					return messages.some((message) => String(message.content).includes(LOOKUP_DATUM))
+				})
+				expect(carriesResult).toBe(true)
+				expect(attempt.partial).toBe(false)
+			} finally {
+				await proxy.stop()
+			}
+		},
+		TIMEOUT,
+	)
+})
+
+describe('Agent tool loop (live) — a thrown tool error is isolated', () => {
+	it(
+		'the fail tool throwing surfaces as a ToolResult.error, and the loop still settles to a resolved, non-partial finish',
+		async () => {
+			const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+
+			const driven = await retryUntil(
+				async () => {
+					recorder.clear()
+					const tools = createToolManager()
+					tools.add(createThrowingTool(recorder))
+					const agent = createAgent(createLiveProvider(), {
+						system: 'You MUST call the fail tool to proceed, then report what happened.',
+						tools,
+						timeout: TIMEOUT,
+						limit: 4,
+					})
+					agent.context.messages.add({
+						role: 'user',
+						content: 'Call the fail tool now, then tell me what happened.',
+					})
+					const stream = agent.stream()
+					return driveAgent(stream)
+				},
+				(value) => value.tools.some((tool) => tool.call.name === 'fail'),
+				'call the fail tool',
+				3,
+			)
+
+			const failed = driven.tools.find((tool) => tool.call.name === 'fail')
+			expect(failed).toBeDefined()
+			expect(failed?.result.error).toContain(THROWING_TOOL_MESSAGE)
+			expect(failed?.result.value).toBeUndefined()
+			expect(recorder.count).toBeGreaterThanOrEqual(1)
+			// The loop CONTINUED past the thrown error to a resolved, non-rejected finish.
+			expect(driven.result.partial).toBe(false)
+		},
+		TIMEOUT,
+	)
+})
+
+describe('Agent tool loop (live) — authority denial blocks execution', () => {
+	it(
+		'a denylisted lookup call never executes, fires a `deny` event, and the run still resolves',
+		async () => {
+			const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+			const denyRecorder = createRecorder<[unknown, string | undefined]>()
+			const authority = createAuthority({
+				rules: [
+					{
+						match: (context) => context.call.name === 'lookup',
+						zone: 'restricted',
+						allowed: false,
+						reason: 'denied for test',
+					},
+				],
+			})
+
+			const driven = await retryUntil(
+				async () => {
+					recorder.clear()
+					denyRecorder.clear()
+					const tools = createToolManager()
+					tools.add(createLookupTool(recorder))
+					const agent = createAgent(createLiveProvider(), {
+						system: 'You MUST call the lookup tool with query "datum" to answer.',
+						tools,
+						authority,
+						timeout: TIMEOUT,
+						limit: 4,
+						on: { deny: (call, reason) => denyRecorder.handler(call, reason) },
+					})
+					agent.context.messages.add({
+						role: 'user',
+						content: 'Call the lookup tool with query "datum", then tell me what it returned.',
+					})
+					const stream = agent.stream()
+					return driveAgent(stream)
+				},
+				() => denyRecorder.count > 0,
+				'fire a deny event for the lookup call',
+				3,
+			)
+
+			expect(denyRecorder.count).toBeGreaterThan(0)
+			// The tool NEVER executed — the authority denial short-circuited it.
+			expect(recorder.count).toBe(0)
+			expect(driven.result.partial).toBe(false)
+		},
+		TIMEOUT,
+	)
+})
+
+describe('Agent tool loop (live) — turn-limit exhaustion', () => {
+	it(
+		'limit caps provider turns without marking the result partial',
+		async () => {
+			// Source-verified semantics (dist/src/core/index.js #run loop): `partial: true` is set
+			// ONLY on abort-signal paths (external abort / timeout / budget). Limit exhaustion never
+			// sets partial — the loop just stops silently, non-partial, after `limit` provider turns.
+			// `limit: 1` + a forced tool call therefore consumes the sole provider turn, the loop
+			// stops (no second turn), and the run still resolves `partial: false`.
+			const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+			const turnRecorder = createRecorder<[number]>()
+
+			const driven = await retryUntil(
+				async () => {
+					recorder.clear()
+					turnRecorder.clear()
+					const tools = createToolManager()
+					tools.add(createLookupTool(recorder))
+					const agent = createAgent(createLiveProvider(), {
+						system: 'You MUST call the lookup tool with query "datum" immediately.',
+						tools,
+						limit: 1,
+						timeout: TIMEOUT,
+						on: { turn: (index) => turnRecorder.handler(index) },
+					})
+					agent.context.messages.add({
+						role: 'user',
+						content: 'Call the lookup tool with query "datum" right now.',
+					})
+					const stream = agent.stream()
+					return driveAgent(stream)
+				},
+				(value) => value.tools.length > 0,
+				'call the tool, consuming the single allowed turn',
+				3,
+			)
+
+			// The tool executed at least once — the sole provider turn `limit: 1` allows, but a
+			// single-turn parallel tool-call batch may legitimately execute more than one call. The
+			// limit contract itself is carried by the turn-event count === 1 and partial === false
+			// assertions below.
+			expect(recorder.count).toBeGreaterThanOrEqual(1)
+			// Exactly ONE 'turn' event fired — no second provider turn occurred after the limit.
+			expect(turnRecorder.count).toBe(1)
+			// The run RESOLVES, and the true contract holds: limit exhaustion never flags partial.
+			expect(driven.result.partial).toBe(false)
+		},
+		TIMEOUT,
+	)
+})

@@ -172,6 +172,44 @@ describe('OllamaProvider (live — generate)', () => {
 		expect(result.content).not.toContain('</think>')
 	})
 
+	// Recipe: 'Say only the word hello.' / inline { num_predict: 320, temperature: 0 }
+	// / think:true. Calibration note: a live probe at temperature:0 measured this
+	// prompt's full reasoning trace at eval_count≈206 tokens before content began — 320
+	// gives ~55% headroom so the trace can FINISH and the answer can land in content
+	// (do not shrink this back toward THINK_OPTIONS-scale; it will go vacuous again,
+	// per the sibling case above where content "may be empty"). Assertion: structural —
+	// thinking non-empty, content non-empty (the think→content transition seam: the
+	// model finished reasoning and the answer landed in the CONTENT channel, not lost
+	// or misrouted), and content does not contain the thinking text (channel
+	// separation). Bounded retry (attempts=3, directive #7) over the small model's
+	// nondeterminism at this budget.
+	it('finishes reasoning and lands the answer in content, not lost or misrouted (think→content seam)', async () => {
+		const result = await retryUntil(
+			async () => {
+				const provider = new OllamaProvider({
+					model: OLLAMA_CONFIG.model,
+					url: OLLAMA_CONFIG.host,
+					think: true,
+					options: { num_predict: 320, temperature: 0 },
+				})
+				return provider.generate(
+					[createUserMessage('Say only the word hello.')],
+					createAbort().signal,
+					undefined,
+					{ think: true },
+				)
+			},
+			(value) => (value.thinking ?? '').length > 0 && value.content.length > 0,
+			'finish reasoning AND land the answer in content within the calibrated think budget',
+			3,
+		)
+
+		expect((result.thinking ?? '').length).toBeGreaterThan(0)
+		expect(result.content.length).toBeGreaterThan(0)
+		const thinking = result.thinking ?? ''
+		expect(result.content).not.toContain(thinking)
+	})
+
 	// Recipe: 'Say hi.' / num_predict:8, temperature:0, seed:42 (SEED_OPTIONS) /
 	// think:false. Assertion: exact-match — seeded determinism (probe: 2/2 identical).
 	it('produces byte-identical content across two calls with the same seed', async () => {
@@ -259,6 +297,15 @@ describe('OllamaProvider (live — stream)', () => {
 		expect(tools.length).toBeGreaterThan(0)
 		expect(tools.every((call) => call.name === 'get_weather')).toBe(true)
 		expect(tools.every((call) => call.id.length > 0)).toBe(true)
+		// Usage is present and coherent on the SAME tool-call response — proving usage
+		// reporting isn't dropped when the streamed turn ends in a tool call rather than
+		// plain content.
+		expect(result.usage).toBeDefined()
+		const usage = result.usage
+		if (usage === undefined) throw new Error('usage missing')
+		expect(usage.prompt).toBeGreaterThan(0)
+		expect(usage.completion).toBeGreaterThan(0)
+		expect(usage.total).toBe(usage.prompt + usage.completion)
 	})
 
 	// Recipe: 'What color is the sky? Explain briefly.' / num_predict:8 (THINK_OPTIONS)

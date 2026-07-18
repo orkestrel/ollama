@@ -1,10 +1,18 @@
 import type {
+	AgentResult,
+	AgentStreamInterface,
 	ContextFormatInterface,
 	MessageInterface,
 	ProviderDelta,
 	ProviderInterface,
 	ProviderResult,
+	ToolCall,
+	ToolInterface,
+	ToolResult,
 } from '@orkestrel/agent'
+import type { TokenUsage } from '@orkestrel/budget'
+import type { TestRecorderInterface } from './setup.js'
+import { createTool } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
@@ -494,3 +502,110 @@ export async function retryUntil<T>(
 		`model did not ${description} in ${attempts} attempts (final value: ${JSON.stringify(last)})`,
 	)
 }
+
+// ── Agent stream driver (Ollama-project test helper) ─────────────────────────
+// Mirrors `drive` (the provider-level `stream()` generator drainer above) one layer
+// up: an agent's `stream()` returns an `AgentStreamInterface` — a pull `events`
+// AsyncIterable of `AgentChunk`s plus a settling `result` — rather than a bare
+// generator. AGENTS §16.1: shared by the sibling agent-loop test units.
+
+/** A `tool` {@link AgentChunk}'s payload — the dispatched call paired with its result. */
+export interface DrivenTool {
+	readonly call: ToolCall
+	readonly result: ToolResult
+}
+
+/**
+ * Drive an {@link AgentStreamInterface} to completion — draining `events` into
+ * type-bucketed arrays (`tokens` / `thoughts` / `tools` / `usages`) and awaiting the
+ * settled {@link AgentResult}.
+ *
+ * @param stream - The `AgentStreamInterface` handle returned by an agent's `stream()`
+ * @returns The bucketed chunks and the settled `result`
+ */
+export async function driveAgent(stream: AgentStreamInterface): Promise<{
+	readonly tokens: readonly string[]
+	readonly thoughts: readonly string[]
+	readonly tools: readonly DrivenTool[]
+	readonly usages: readonly TokenUsage[]
+	readonly result: AgentResult
+}> {
+	const tokens: string[] = []
+	const thoughts: string[] = []
+	const tools: DrivenTool[] = []
+	const usages: TokenUsage[] = []
+	for await (const chunk of stream.events) {
+		if (chunk.type === 'token') tokens.push(chunk.content)
+		else if (chunk.type === 'think') thoughts.push(chunk.content)
+		else if (chunk.type === 'tool') tools.push({ call: chunk.call, result: chunk.result })
+		else usages.push(chunk.usage)
+	}
+	const result = await stream.result
+	return { tokens, thoughts, tools, usages, result }
+}
+
+// ── Tool fixtures (Ollama-project test helper) ───────────────────────────────
+// AGENTS §16.1: the two recurring agent-loop tool shapes — a deterministic lookup
+// that returns a datum no model could produce by chance, and a tool that always
+// throws — folded into one factory each, both accepting an optional recorder so a
+// test can count executions without a mock.
+
+/** The fixed, distinctive datum {@link createLookupTool} always returns. */
+export const LOOKUP_DATUM = 'drizzle-42'
+
+/**
+ * Build a deterministic lookup tool — takes a single string `query` argument and
+ * always returns {@link LOOKUP_DATUM}, a datum distinctive enough that its presence
+ * in a model's answer proves the tool ran (AGENTS §16.1). An optional `recorder`
+ * (from `createRecorder`) records each `execute` call's arguments.
+ *
+ * @param recorder - An optional {@link TestRecorderInterface} to record each call
+ * @returns A working {@link ToolInterface} named `lookup`
+ */
+export function createLookupTool(
+	recorder?: TestRecorderInterface<[Readonly<Record<string, unknown>>]>,
+): ToolInterface {
+	return createTool({
+		name: 'lookup',
+		description: 'Look up a fixed reference datum for a query string.',
+		parameters: {
+			type: 'object',
+			properties: { query: { type: 'string' } },
+			required: ['query'],
+		},
+		execute: (args) => {
+			recorder?.handler(args)
+			return LOOKUP_DATUM
+		},
+	})
+}
+
+/** The message every {@link createThrowingTool} invocation throws. */
+export const THROWING_TOOL_MESSAGE = 'throwing-tool-always-fails'
+
+/**
+ * Build a tool whose `execute` always throws {@link THROWING_TOOL_MESSAGE} — the
+ * per-call error-isolation fixture (AGENTS §16.1). An optional `recorder` (from
+ * `createRecorder`) records each `execute` call's arguments before it throws.
+ *
+ * @param recorder - An optional {@link TestRecorderInterface} to record each call
+ * @returns A working {@link ToolInterface} named `fail` that always throws
+ */
+export function createThrowingTool(
+	recorder?: TestRecorderInterface<[Readonly<Record<string, unknown>>]>,
+): ToolInterface {
+	return createTool({
+		name: 'fail',
+		description: 'A tool that always fails, for error-isolation round-trips.',
+		parameters: { type: 'object', properties: {} },
+		execute: (args) => {
+			recorder?.handler(args)
+			throw new Error(THROWING_TOOL_MESSAGE)
+		},
+	})
+}
+
+// ── Tool-loop request recipe (Ollama-project test helper) ────────────────────
+
+/** A 2-turn tool-call loop (model calls a tool, then answers) — a looser cap than {@link TOOL_OPTIONS}. */
+export const TOOL_LOOP_OPTIONS = Object.freeze({ num_predict: 64, temperature: 0 })

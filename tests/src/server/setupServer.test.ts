@@ -1,10 +1,17 @@
+import type { AgentChunk, AgentResult, AgentStreamInterface } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
+import { createRecorder } from '../../setup.js'
 import {
+	createLookupTool,
+	createThrowingTool,
+	driveAgent,
 	env,
 	flattenHeaders,
 	forwardHeaders,
 	isAbortError,
+	LOOKUP_DATUM,
 	parseRequestBody,
+	THROWING_TOOL_MESSAGE,
 	withScheme,
 } from '../../setupServer.js'
 
@@ -171,5 +178,105 @@ describe('isAbortError', () => {
 
 	it('returns false for a plain object with a matching name field', () => {
 		expect(isAbortError({ name: 'AbortError' })).toBe(false)
+	})
+})
+
+// Build a real, hand-rolled AgentStreamInterface over a scripted chunk list — not a
+// mock library, a genuine small in-process implementation of the interface
+// (AGENTS §16.1).
+function createScriptedAgentStream(
+	chunks: readonly AgentChunk[],
+	result: AgentResult,
+): AgentStreamInterface {
+	async function* events(): AsyncGenerator<AgentChunk> {
+		for (const chunk of chunks) yield chunk
+	}
+	return {
+		events: events(),
+		result: Promise.resolve(result),
+		abort() {},
+	}
+}
+
+describe('driveAgent', () => {
+	it('buckets token, think, tool, and usage chunks and passes through the result', async () => {
+		const call = { id: 'c1', name: 'lookup', arguments: { query: 'weather' } }
+		const toolResult = { id: 'c1', name: 'lookup', value: LOOKUP_DATUM }
+		const usage = { prompt: 3, completion: 5, total: 8 }
+		const settled: AgentResult = { content: 'ab', partial: false }
+		const stream = createScriptedAgentStream(
+			[
+				{ type: 'think', content: 'reasoning-1' },
+				{ type: 'token', content: 'a' },
+				{ type: 'tool', call, result: toolResult },
+				{ type: 'token', content: 'b' },
+				{ type: 'usage', usage },
+			],
+			settled,
+		)
+
+		const driven = await driveAgent(stream)
+
+		expect(driven.tokens).toEqual(['a', 'b'])
+		expect(driven.thoughts).toEqual(['reasoning-1'])
+		expect(driven.tools).toEqual([{ call, result: toolResult }])
+		expect(driven.usages).toEqual([usage])
+		expect(driven.result).toBe(settled)
+	})
+
+	it('returns empty buckets for a stream with no chunks', async () => {
+		const settled: AgentResult = { content: '', partial: false }
+		const stream = createScriptedAgentStream([], settled)
+
+		const driven = await driveAgent(stream)
+
+		expect(driven.tokens).toEqual([])
+		expect(driven.thoughts).toEqual([])
+		expect(driven.tools).toEqual([])
+		expect(driven.usages).toEqual([])
+		expect(driven.result).toBe(settled)
+	})
+})
+
+describe('createLookupTool', () => {
+	it('always returns the fixed LOOKUP_DATUM', async () => {
+		const tool = createLookupTool()
+		const value = await tool.execute({ query: 'anything' })
+		expect(value).toBe(LOOKUP_DATUM)
+	})
+
+	it('records each call via an optional recorder', async () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+		const tool = createLookupTool(recorder)
+
+		await tool.execute({ query: 'weather' })
+		await tool.execute({ query: 'time' })
+
+		expect(recorder.count).toBe(2)
+		expect(recorder.calls[0]).toEqual([{ query: 'weather' }])
+		expect(recorder.calls[1]).toEqual([{ query: 'time' }])
+	})
+
+	it('works with no recorder passed', async () => {
+		const tool = createLookupTool()
+		const value = await tool.execute({ query: 'x' })
+		expect(value).toBe(LOOKUP_DATUM)
+	})
+})
+
+describe('createThrowingTool', () => {
+	it('always throws THROWING_TOOL_MESSAGE', () => {
+		const tool = createThrowingTool()
+		expect(() => tool.execute({})).toThrow(THROWING_TOOL_MESSAGE)
+	})
+
+	it('records the call before throwing, via an optional recorder', () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+		const tool = createThrowingTool(recorder)
+
+		expect(() => tool.execute({ x: 1 })).toThrow(THROWING_TOOL_MESSAGE)
+
+		expect(recorder.count).toBe(1)
+		expect(recorder.calls[0]).toEqual([{ x: 1 }])
 	})
 })

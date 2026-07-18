@@ -1,10 +1,10 @@
-import { describe, expect, it } from 'vitest'
 import type {
 	AgentResult,
 	ContextFormatInterface,
 	ConversationInterface,
 	MessageInterface,
 } from '@orkestrel/agent'
+import { describe, expect, it } from 'vitest'
 import {
 	CONVERSATION_RECAP_PREFIX,
 	createAgent,
@@ -17,10 +17,12 @@ import {
 import { createBudget } from '@orkestrel/budget'
 import { createOllama } from '@src/server'
 import { collect } from '../../setup.js'
+import type { DrivenTool } from '../../setupServer.js'
 import {
 	createLiveProvider,
 	createLiveSummarizer,
 	createRecordingProxy,
+	driveAgent,
 	FAST_OPTIONS,
 	OLLAMA_CONFIG,
 	retryUntil,
@@ -226,6 +228,7 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 	const attemptRun = async (): Promise<{
 		readonly conversation: ConversationInterface
 		readonly result: AgentResult
+		readonly tools: readonly DrivenTool[]
 	}> => {
 		const conversations = createConversationManager({ summarize, keep: 1 })
 		const conversation = conversations.add() // auto-activates — the agent's message source
@@ -253,9 +256,8 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 				'What is the secret access code? You MUST call the lookup_code tool, then tell me the code.',
 		})
 		const stream = agent.stream()
-		await collect(stream.events)
-		const result = await stream.result
-		return { conversation, result }
+		const { tools: driven, result } = await driveAgent(stream)
+		return { conversation, result, tools: driven }
 	}
 
 	// Whether an attempt genuinely auto-compacted mid-run: at least one section folded, authored by
@@ -273,17 +275,12 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 			// genuinely (a) auto-compacted mid-run AND (b) produced a valid (non-empty, non-partial)
 			// final answer THROUGH the compacted view. FAIL loudly if NO attempt across the loop
 			// achieved it.
-			const attempts = 3
-			let tried = await attemptRun()
-			let best = tried
-			for (let n = 0; n < attempts; n += 1) {
-				const valid = compacted(tried) && tried.result.content.trim().length > 0
-				if (valid) {
-					best = tried
-					if (tried.result.content.includes(SENTINEL)) break
-				}
-				if (n < attempts - 1) tried = await attemptRun()
-			}
+			const best = await retryUntil(
+				attemptRun,
+				(tried) => compacted(tried) && tried.result.content.trim().length > 0,
+				'auto-compact mid-run and produce a valid final answer through the compacted view',
+				3,
+			)
 
 			// (a) AUTOMATIC compaction fired mid-run — at least one section, authored by the live
 			// model (a non-empty summary), now exists on the injected conversation.
@@ -293,6 +290,14 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 			// not partial — proving the loop continued correctly on the compacted context.
 			expect(best.result.content.trim().length).toBeGreaterThan(0)
 			expect(best.result.partial).toBe(false)
+			// (c) The emitted `tool` chunk(s) from the SAME run carry [call, result] shape — the
+			// call names the registered tool, and its result is defined (never dropped) — proving
+			// the tool-chunk payload the agent stream emits, not just the eventual final answer.
+			expect(best.tools.length).toBeGreaterThan(0)
+			for (const driven of best.tools) {
+				expect(driven.call.name).toBe('lookup_code')
+				expect(driven.result).toBeDefined()
+			}
 		},
 		TIMEOUT,
 	)
@@ -378,14 +383,13 @@ describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIP
 			// genuinely (a) folded ≥ 2 sections (each a non-empty model-written summary) AND (b)
 			// produced a valid (non-empty, non-partial) final answer THROUGH the repeatedly-compacted
 			// view. FAIL loudly if NO attempt across the loop achieved it.
-			const attempts = 3
-			let best = await attemptMulti()
-			for (let n = 0; n < attempts; n += 1) {
-				if (multiCompacted(best) && best.result.content.trim().length > 0 && !best.result.partial) {
-					break
-				}
-				if (n < attempts - 1) best = await attemptMulti()
-			}
+			const best = await retryUntil(
+				attemptMulti,
+				(tried) =>
+					multiCompacted(tried) && tried.result.content.trim().length > 0 && !tried.result.partial,
+				'fold >= 2 sections and produce a valid, non-partial final answer through the repeatedly-compacted view',
+				3,
+			)
 
 			// (a) MULTIPLE compactions fired mid-run — at least TWO sections now exist on the injected
 			// conversation, EACH authored by the live model (a non-empty, real one-sentence digest).

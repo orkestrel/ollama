@@ -1,8 +1,14 @@
 import type { AgentChunk, AgentResult } from '@orkestrel/agent'
-import { createAgent } from '@orkestrel/agent'
+import { createAgent, createToolManager } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
 import { createRecorder } from '../../setup.js'
-import { ABORT_OPTIONS, createLiveProvider, retryUntil, STREAM_OPTIONS } from '../../setupServer.js'
+import {
+	ABORT_OPTIONS,
+	createLiveProvider,
+	createLookupTool,
+	retryUntil,
+	STREAM_OPTIONS,
+} from '../../setupServer.js'
 
 // Agent lifecycle (live) — the AGENT-LEVEL taxonomy (streaming chunk shape, `status`
 // transitions, `emitter` lifecycle events, and abort semantics) driven through the real
@@ -206,6 +212,82 @@ describe('Agent (live) — a construction-time timeout resolves partial, never r
 			// result RESOLVES (never rejects) with partial: true, and the emitter fired abort.
 			expect(partial).toBe(true)
 			expect(events).toBeGreaterThan(0)
+		},
+		TIMEOUT,
+	)
+})
+
+describe('Agent (live) — a per-run timeout override reaches the loop', () => {
+	it(
+		'run({ timeout: 1 }) on an agent constructed with NO timeout still resolves partial with an abort event',
+		async () => {
+			// AgentRunOptions.timeout (0.0.6) overrides AgentOptions.timeout for this run only —
+			// `??` semantics over the construction default. The agent here is constructed with NO
+			// timeout at all, so a partial+abort outcome proves the PER-RUN 1ms bound reached the
+			// loop, not any construction-time default.
+			const attempt = async (): Promise<{ readonly partial: boolean; readonly events: number }> => {
+				const provider = createLiveProvider({ predict: 32, temperature: 0 })
+				const agent = createAgent(provider, {})
+				agent.context.messages.add({ role: 'user', content: 'Say hello.' })
+
+				const abortEvents: unknown[] = []
+				agent.emitter.on('abort', (reason) => abortEvents.push(reason))
+
+				const result = await agent.generate({ timeout: 1 })
+				return { partial: result.partial, events: abortEvents.length }
+			}
+
+			const { partial, events } = await retryUntil(
+				attempt,
+				(value) => value.partial === true,
+				'settle a partial result under a per-run 1ms timeout override',
+				3,
+			)
+
+			expect(partial).toBe(true)
+			expect(events).toBeGreaterThan(0)
+		},
+		TIMEOUT,
+	)
+})
+
+describe('Agent (live) — a per-run limit override reaches the loop', () => {
+	it(
+		'run({ limit: 1 }) on an agent constructed with the default limit still exhausts at 1 turn, resolving partial with an exhaust event',
+		async () => {
+			// AgentRunOptions.limit (0.0.6) overrides AgentOptions.limit for this run only. The
+			// agent here is constructed WITHOUT a limit override (the constructed default applies),
+			// so an exhaust-at-1-turn outcome proves the PER-RUN limit reached the loop.
+			const attempt = async (): Promise<{
+				readonly partial: boolean
+				readonly exhausted: readonly number[]
+			}> => {
+				const tools = createToolManager()
+				tools.add(createLookupTool())
+				const exhaustRecorder = createRecorder<[number]>()
+				const agent = createAgent(createLiveProvider(), {
+					system: 'You MUST call the lookup tool with query "datum" immediately.',
+					tools,
+					timeout: TIMEOUT,
+					on: { exhaust: (turns) => exhaustRecorder.handler(turns) },
+				})
+				agent.context.messages.add({
+					role: 'user',
+					content: 'Call the lookup tool with query "datum" right now.',
+				})
+				const result = await agent.generate({ limit: 1 })
+				return { partial: result.partial, exhausted: exhaustRecorder.calls.map((call) => call[0]) }
+			}
+
+			const { partial, exhausted } = await retryUntil(
+				attempt,
+				(value) => value.exhausted.length > 0,
+				'exhaust the per-run limit override with unresolved tool intent',
+				3,
+			)
+
+			expect(partial).toBe(true)
+			expect(exhausted).toEqual([1])
 		},
 		TIMEOUT,
 	)

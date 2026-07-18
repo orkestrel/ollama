@@ -105,8 +105,9 @@ export class OllamaProvider implements ProviderInterface {
 		// The context-framing default (the provider-DEFAULT level of AgentContext's format
 		// cascade) — EXPOSE-ONLY: read by the Agent via `build(this.#provider.format)` and
 		// consumed by core's cascade, it NEVER enters `#body` / the `/api/chat` wire. It is
-		// NOT Ollama's structured-output `format` param (which this provider doesn't send) —
-		// only the shared word collides. Omitted ⇒ undefined ⇒ core's built-in framing.
+		// NOT Ollama's structured-output `format` wire param — that one IS sent in `#body`,
+		// but only when a per-call `ProviderStreamOptions.schema` is supplied; the two
+		// merely share a word. Omitted ⇒ undefined ⇒ core's built-in framing.
 		this.#format = options.format
 	}
 
@@ -122,8 +123,8 @@ export class OllamaProvider implements ProviderInterface {
 	 * @remarks
 	 * EXPOSE-ONLY — read by the Agent loop and consumed by core's cascade; it is NEVER sent
 	 * on the `/api/chat` wire (it is absent from `#body` / the request). This is NOT Ollama's
-	 * structured-output `format` wire parameter, which this provider does not send; only the
-	 * word collides.
+	 * structured-output `format` wire parameter — that one IS sent in `#body`, but only when
+	 * a per-call `ProviderStreamOptions.schema` is supplied; only the word collides.
 	 *
 	 * @returns The configured {@link ContextFormatInterface}, or `undefined` when none
 	 */
@@ -337,10 +338,12 @@ export class OllamaProvider implements ProviderInterface {
 		return headers
 	}
 
-	// The `/api/chat` request body — conditional `options` / `tools` only when set. The wire
-	// `think` flag honours a PER-CALL override (`options.think`) over the constructor default
+	// The `/api/chat` request body — conditional `options` / `tools` / `format` only when set. The
+	// wire `think` flag honours a PER-CALL override (`options.think`) over the constructor default
 	// (`#think`), so a caller can flip reasoning on / off for one turn without reconfiguring the
 	// provider; no per-call option ⇒ the constructed default, byte-for-byte the prior behaviour.
+	// `format` is the wire's structured-output constraint, forwarded verbatim from the per-call
+	// `ProviderStreamOptions.schema` — unrelated to `OllamaOptions.format` (prompt-context framing).
 	#body(
 		messages: readonly MessageInterface[],
 		stream: boolean,
@@ -354,6 +357,7 @@ export class OllamaProvider implements ProviderInterface {
 			keep_alive: this.#keepAlive,
 			think: options?.think ?? this.#think,
 			...(this.#options !== undefined ? { options: this.#options } : {}),
+			...(options?.schema !== undefined ? { format: options.schema } : {}),
 			...(tools !== undefined && tools.length > 0
 				? {
 						tools: tools.map(

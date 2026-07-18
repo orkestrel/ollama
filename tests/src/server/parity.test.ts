@@ -70,6 +70,10 @@ describe('official ollama type parity (compile-time gate)', () => {
 		expectTypeOf<Required<WireChatRequest>['tools'][number]>().toExtend<Tool>()
 	})
 
+	it('format (structured-output schema) we send is accepted by the official ChatRequest type', () => {
+		expectTypeOf<WireChatRequest['format']>().toExtend<ChatRequest['format']>()
+	})
+
 	// --- Response-read parity ---------------------------------------------------
 	// Every field our provider READS via @orkestrel/contract guards on `unknown`,
 	// declared locally here (there is no src type for it) and checked against the

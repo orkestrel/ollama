@@ -838,6 +838,78 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 	})
 })
 
+describe('OllamaProvider (recording proxy — structured-output schema)', () => {
+	// Recipe: 'Give me a city and its population.' / num_predict:64, temperature:0 /
+	// think:false / options.schema constraining {city:string, population:number}.
+	// Assertion: wire-truth — the recorded body carries `format` deep-equal to the
+	// schema (deterministic); response-shape — the assembled content JSON.parses to an
+	// object with a string `city` and a numeric `population` (bounded retry, attempts=3,
+	// per directive #7, over the small model's nondeterminism at this budget). Also
+	// proves the negative: a schema-less call on the SAME proxy carries no `format` key.
+	const SCHEMA = {
+		type: 'object',
+		properties: { city: { type: 'string' }, population: { type: 'number' } },
+		required: ['city', 'population'],
+	} as const
+
+	it('sends the schema as `format` on the wire and returns matching structured JSON; omits format when no schema is given', async () => {
+		const proxy = await createRecordingProxy()
+		try {
+			const provider = new OllamaProvider({
+				model: OLLAMA_CONFIG.model,
+				url: proxy.url,
+				options: { num_predict: 64, temperature: 0 },
+			})
+
+			const result = await retryUntil(
+				() =>
+					provider.generate(
+						[createUserMessage('Give me a city and its population.')],
+						createAbort().signal,
+						undefined,
+						{ think: false, schema: SCHEMA },
+					),
+				(value) => {
+					try {
+						const parsed: unknown = JSON.parse(value.content)
+						return (
+							isRecord(parsed) &&
+							typeof parsed.city === 'string' &&
+							typeof parsed.population === 'number'
+						)
+					} catch {
+						return false
+					}
+				},
+				'return content that JSON.parses to {city: string, population: number}',
+				3,
+			)
+
+			const schemaRequest = proxy.requests[proxy.requests.length - 1]
+			if (schemaRequest === undefined) throw new Error('no recorded request')
+			expect(schemaRequest.body.format).toEqual(SCHEMA)
+
+			const parsed: unknown = JSON.parse(result.content)
+			if (!isRecord(parsed)) throw new Error('content did not parse to an object')
+			expect(typeof parsed.city).toBe('string')
+			expect(typeof parsed.population).toBe('number')
+
+			const abort = createAbort()
+			const expectedCount = proxy.requests.length + 1
+			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})
+			await waitForRequest(proxy, expectedCount)
+			abort.abort()
+			await pending
+
+			const noSchemaRequest = proxy.requests[proxy.requests.length - 1]
+			if (noSchemaRequest === undefined) throw new Error('no recorded request')
+			expect('format' in noSchemaRequest.body).toBe(false)
+		} finally {
+			await proxy.stop()
+		}
+	})
+})
+
 describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 	// bounded by abort-once-recorded, no generation awaited.
 	it('merges a dynamically-injected header onto the request (the obfuscated token reaches the server)', async () => {

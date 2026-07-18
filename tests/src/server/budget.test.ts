@@ -106,6 +106,56 @@ describe('Agent budget (live) — an exhausted token budget trips the loop', () 
 	)
 })
 
+describe('Agent budget (live) — an exhausted token budget trips MID-GENERATION', () => {
+	it(
+		'a tiny completion-token budget aborts mid-stream (no tool loop needed) with partial: true, an abort event, and content bounded by the budget arithmetic',
+		async () => {
+			// 0.0.6: content deltas are charged to the budget INCREMENTALLY as estimated tokens
+			// (ceil(chars/4)) DURING a turn — so an exhausted budget now aborts mid-generation, no
+			// tool loop required. Recipe: max: 5 completion tokens (tiny relative to a real
+			// completion), NO tools, a prompt inviting a long answer, num_predict: 512 (headroom so
+			// the daemon would otherwise keep generating well past the budget), temperature: 0.
+			// Content-bound arithmetic: the estimator charges ceil(chars/4) per delta, so the budget
+			// (5 tokens) trips once ~20 chars have streamed; one more in-flight delta may land before
+			// the abort signal is observed. Even a generous few-hundred-char slack keeps this WELL
+			// under the ~2000 chars a full 512-token completion would produce — 1000 is an honest,
+			// non-brittle upper bound that still proves the trip happened mid-stream, not at natural
+			// completion.
+			const attemptMidStreamTrip = async (): Promise<{
+				readonly partial: boolean
+				readonly aborted: number
+				readonly length: number
+			}> => {
+				const recorder = createRecorder<[reason: unknown]>()
+				const budget = createTokenBudget({ max: 5, scope: 'completion' })
+				const agent = createAgent(createLiveProvider({ predict: 512, temperature: 0 }), {
+					budget,
+					timeout: TIMEOUT,
+					on: { abort: recorder.handler },
+				})
+				agent.context.messages.add({
+					role: 'user',
+					content: 'Write a long, detailed essay about the history of the printing press.',
+				})
+				const { result } = await driveAgent(agent.stream())
+				return { partial: result.partial, aborted: recorder.count, length: result.content.length }
+			}
+
+			const tripped = await retryUntil(
+				attemptMidStreamTrip,
+				(value) => value.partial === true && value.aborted > 0,
+				'trip the token budget mid-generation (no tool loop)',
+				3,
+			)
+
+			expect(tripped.partial).toBe(true)
+			expect(tripped.aborted).toBeGreaterThan(0)
+			expect(tripped.length).toBeLessThan(1000)
+		},
+		TIMEOUT,
+	)
+})
+
 describe('Agent usage (live) — multi-turn usage accumulates across provider calls', () => {
 	it(
 		'a ≥2-turn tool-loop run reports result.usage.total at least as large as each individual chunk',

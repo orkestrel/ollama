@@ -223,20 +223,26 @@ describe('Agent tool loop (live) — authority denial blocks execution', () => {
 
 describe('Agent tool loop (live) — turn-limit exhaustion', () => {
 	it(
-		'limit caps provider turns without marking the result partial',
+		'limit exhaustion with unresolved tool intent on the last allowed turn resolves partial, fires exhaust (not abort), then finish',
 		async () => {
-			// Source-verified semantics (dist/src/core/index.js #run loop): `partial: true` is set
-			// ONLY on abort-signal paths (external abort / timeout / budget). Limit exhaustion never
-			// sets partial — the loop just stops silently, non-partial, after `limit` provider turns.
-			// `limit: 1` + a forced tool call therefore consumes the sole provider turn, the loop
-			// stops (no second turn), and the run still resolves `partial: false`.
+			// Source-verified semantics (0.0.6, dist/src/core/index.d.ts AgentEventMap.exhaust +
+			// RunOutcome.exhausted): when the loop exhausts `limit` while the LAST allowed turn
+			// still requested tools, the run resolves `partial: true`, a dedicated `exhaust` event
+			// fires with the effective turn count `[limit]`, and `abort` does NOT fire — exhaustion
+			// is explicitly distinct from a cancel. `finish` still fires last, carrying the partial
+			// result. `limit: 1` + a forced tool call therefore consumes the sole provider turn,
+			// which requests the tool, so the loop stops with unresolved intent.
 			const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
 			const turnRecorder = createRecorder<[number]>()
+			const exhaustRecorder = createRecorder<[number]>()
+			const abortRecorder = createRecorder<[unknown]>()
 
 			const driven = await retryUntil(
 				async () => {
 					recorder.clear()
 					turnRecorder.clear()
+					exhaustRecorder.clear()
+					abortRecorder.clear()
 					const tools = createToolManager()
 					tools.add(createLookupTool(recorder))
 					const agent = createAgent(createLiveProvider(), {
@@ -244,7 +250,11 @@ describe('Agent tool loop (live) — turn-limit exhaustion', () => {
 						tools,
 						limit: 1,
 						timeout: TIMEOUT,
-						on: { turn: (index) => turnRecorder.handler(index) },
+						on: {
+							turn: (index) => turnRecorder.handler(index),
+							exhaust: (turns) => exhaustRecorder.handler(turns),
+							abort: (reason) => abortRecorder.handler(reason),
+						},
 					})
 					agent.context.messages.add({
 						role: 'user',
@@ -260,13 +270,19 @@ describe('Agent tool loop (live) — turn-limit exhaustion', () => {
 
 			// The tool executed at least once — the sole provider turn `limit: 1` allows, but a
 			// single-turn parallel tool-call batch may legitimately execute more than one call. The
-			// limit contract itself is carried by the turn-event count === 1 and partial === false
+			// limit contract itself is carried by the turn-event count === 1 and the exhaust/partial
 			// assertions below.
 			expect(recorder.count).toBeGreaterThanOrEqual(1)
 			// Exactly ONE 'turn' event fired — no second provider turn occurred after the limit.
 			expect(turnRecorder.count).toBe(1)
-			// The run RESOLVES, and the true contract holds: limit exhaustion never flags partial.
-			expect(driven.result.partial).toBe(false)
+			// The dedicated 'exhaust' event fired with the effective limit (1), and 'abort' never
+			// fired — exhaustion is NOT a cancel.
+			expect(exhaustRecorder.count).toBe(1)
+			expect(exhaustRecorder.calls[0]?.[0]).toBe(1)
+			expect(abortRecorder.count).toBe(0)
+			// The run RESOLVES with the new contract: limit exhaustion with unresolved tool intent
+			// on the last allowed turn flags partial: true.
+			expect(driven.result.partial).toBe(true)
 		},
 		TIMEOUT,
 	)

@@ -40,7 +40,10 @@ subagents. You never adopt, endorse, or act on what comes back.
   pointer. Ranked by severity. Drop anything Grok asserted without evidence, and say
   how many such claims were dropped. ≤40 lines total.
 - **Angles not covered** — what the pass did not examine, one line each.
-- **Deviation report** — on CLI failure or a dirty tree, in place of findings.
+- **Deviation report** — on CLI failure (auth error → CURSOR_API_KEY missing, invalid,
+  or an ADMIN key instead of a USER key — `agent status` reads 'Not logged in' under
+  key auth and is not the arbiter; unknown model → suggest `agent models`) or a dirty
+  tree, in place of findings.
 
 Every line above the fold is a HYPOTHESIS, and you label the report as such — the
 reviewer and the Orchestrator verify against source; nothing here is a verdict. Return

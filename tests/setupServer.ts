@@ -13,7 +13,7 @@ import type {
 import type { TokenUsage } from '@orkestrel/budget'
 import type { TestRecorderInterface } from './setup.js'
 import { createTool } from '@orkestrel/agent'
-import { isRecord } from '@orkestrel/contract'
+import { arrayOf, isRecord, isString } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
 import { createOllama, OllamaProvider } from '@src/server'
@@ -294,6 +294,73 @@ export function parseRequestBody(text: string): Record<string, unknown> | undefi
 	} catch {
 		return undefined
 	}
+}
+
+/** One wire-protocol chat message narrowed from a {@link RecordedRequest.body} — role + content only. */
+export interface WireMessage {
+	readonly role: string
+	readonly content: string
+}
+
+// Total guard for a single wire message: a record with string `role` + `content`.
+const isWireMessage = (value: unknown): value is WireMessage =>
+	isRecord(value) && isString(value.role) && isString(value.content)
+
+// Total guard for the whole `messages` array on a recorded request body.
+const isWireMessageArray = arrayOf(isWireMessage)
+
+/**
+ * Safely narrow a {@link RecordedRequest}'s `body.messages` to its wire-protocol shape,
+ * without `as` casts — mirrors {@link parseRequestBody}'s guard-first approach. Absent or
+ * malformed `messages` (missing, not an array, or any element lacking string `role` /
+ * `content`) yields an empty array rather than throwing.
+ *
+ * @param request - The {@link RecordedRequest} whose body to narrow
+ * @returns The request's wire messages, or `[]` when absent / malformed
+ * @example
+ * ```ts
+ * wireMessages({ ...request, body: { messages: [{ role: 'user', content: 'hi' }] } })
+ * // [{ role: 'user', content: 'hi' }]
+ * ```
+ */
+export function wireMessages(request: RecordedRequest): readonly WireMessage[] {
+	const { messages } = request.body
+	return isWireMessageArray(messages) ? messages : []
+}
+
+/**
+ * Join every {@link wireMessages} content with `'\n'` — the flat text a contains/not-contains
+ * assertion runs against, without caring which turn carried which fragment.
+ *
+ * @param request - The {@link RecordedRequest} to extract wire text from
+ * @returns Every wire message's `content`, joined by `'\n'`
+ * @example
+ * ```ts
+ * wireText({ ...request, body: { messages: [{ role: 'user', content: 'a' }, { role: 'system', content: 'b' }] } })
+ * // 'a\nb'
+ * ```
+ */
+export function wireText(request: RecordedRequest): string {
+	return wireMessages(request)
+		.map((message) => message.content)
+		.join('\n')
+}
+
+/**
+ * The FIRST {@link wireMessages} entry's `content` when its role is `'system'`, else `''` —
+ * for asserting context-order / section placement (a system prompt must lead the wire).
+ *
+ * @param request - The {@link RecordedRequest} to extract the leading system text from
+ * @returns The first message's `content` when it is a `system` turn, else `''`
+ * @example
+ * ```ts
+ * systemText({ ...request, body: { messages: [{ role: 'system', content: 'rules' }] } }) // 'rules'
+ * systemText({ ...request, body: { messages: [{ role: 'user', content: 'hi' }] } }) // ''
+ * ```
+ */
+export function systemText(request: RecordedRequest): string {
+	const [first] = wireMessages(request)
+	return first !== undefined && first.role === 'system' ? first.content : ''
 }
 
 /**
@@ -601,6 +668,37 @@ export function createThrowingTool(
 		execute: (args) => {
 			recorder?.handler(args)
 			throw new Error(THROWING_TOOL_MESSAGE)
+		},
+	})
+}
+
+/** The result every {@link createInsatiableTool} invocation returns, instructing another call. */
+export const INSATIABLE_TOOL_RESULT =
+	'Partial data received. You MUST call the more tool again now to get the rest.'
+
+/**
+ * Build a tool named `more` whose `execute` always returns {@link INSATIABLE_TOOL_RESULT} — a
+ * result that explicitly tells the model to call it again, for sustained tool-call-pressure /
+ * limit-exhaustion round-trips (AGENTS §16.1). Follows {@link createLookupTool}'s structure;
+ * an optional `recorder` (from `createRecorder`) records each `execute` call's arguments.
+ *
+ * @param recorder - An optional {@link TestRecorderInterface} to record each call
+ * @returns A working {@link ToolInterface} named `more` that never signals completion
+ */
+export function createInsatiableTool(
+	recorder?: TestRecorderInterface<[Readonly<Record<string, unknown>>]>,
+): ToolInterface {
+	return createTool({
+		name: 'more',
+		description:
+			'Returns the next chunk of the requested data. The data is never complete — call this tool again after every result.',
+		parameters: {
+			type: 'object',
+			properties: { cursor: { type: 'string' } },
+		},
+		execute: (args) => {
+			recorder?.handler(args)
+			return INSATIABLE_TOOL_RESULT
 		},
 	})
 }

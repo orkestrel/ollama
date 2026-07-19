@@ -1,19 +1,48 @@
-import type { AgentChunk, AgentResult, AgentStreamInterface } from '@orkestrel/agent'
+import type {
+	AgentChunk,
+	AgentResult,
+	AgentStreamInterface,
+	WorkspaceInterface,
+} from '@orkestrel/agent'
+import { createWorkspace } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
-import { createRecorder } from '../../setup.js'
 import {
+	buildTurns,
+	createRecorder,
+	createThrowingSummarizer,
+	fillWorkspace,
+	THROWING_SUMMARIZER_MESSAGE,
+} from '../../setup.js'
+import {
+	createInsatiableTool,
 	createLookupTool,
 	createThrowingTool,
 	driveAgent,
 	env,
 	flattenHeaders,
 	forwardHeaders,
+	INSATIABLE_TOOL_RESULT,
 	isAbortError,
 	LOOKUP_DATUM,
 	parseRequestBody,
+	systemText,
 	THROWING_TOOL_MESSAGE,
+	wireMessages,
+	wireText,
 	withScheme,
 } from '../../setupServer.js'
+
+// Build a minimal RecordedRequest-shaped value for the wire-narrowing helper tests
+// below — method/path/headers are irrelevant to wireMessages/wireText/systemText, so
+// only `body` varies per case.
+function requestWithBody(body: Record<string, unknown>): {
+	readonly method: string
+	readonly path: string
+	readonly headers: Readonly<Record<string, string>>
+	readonly body: Record<string, unknown>
+} {
+	return { method: 'POST', path: '/api/chat', headers: {}, body }
+}
 
 // The Ollama-project setup helpers as pure units (AGENTS §16 — no mocks, real
 // values). These are the recording-proxy internals + config normalizers
@@ -278,5 +307,171 @@ describe('createThrowingTool', () => {
 
 		expect(recorder.count).toBe(1)
 		expect(recorder.calls[0]).toEqual([{ x: 1 }])
+	})
+})
+
+describe('createInsatiableTool', () => {
+	it('always returns INSATIABLE_TOOL_RESULT', async () => {
+		const tool = createInsatiableTool()
+		const value = await tool.execute({})
+		expect(value).toBe(INSATIABLE_TOOL_RESULT)
+	})
+
+	it('records each call via an optional recorder', async () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+		const tool = createInsatiableTool(recorder)
+
+		await tool.execute({ cursor: 'a' })
+		await tool.execute({ cursor: 'b' })
+
+		expect(recorder.count).toBe(2)
+		expect(recorder.calls[0]).toEqual([{ cursor: 'a' }])
+		expect(recorder.calls[1]).toEqual([{ cursor: 'b' }])
+	})
+
+	it('works with no recorder passed', async () => {
+		const tool = createInsatiableTool()
+		const value = await tool.execute({})
+		expect(value).toBe(INSATIABLE_TOOL_RESULT)
+	})
+})
+
+describe('wireMessages', () => {
+	it('narrows a well-formed messages array', () => {
+		const request = requestWithBody({
+			messages: [
+				{ role: 'system', content: 'rules' },
+				{ role: 'user', content: 'hi' },
+			],
+		})
+
+		expect(wireMessages(request)).toEqual([
+			{ role: 'system', content: 'rules' },
+			{ role: 'user', content: 'hi' },
+		])
+	})
+
+	it('returns [] when messages is absent', () => {
+		expect(wireMessages(requestWithBody({}))).toEqual([])
+	})
+
+	it('returns [] when messages is not an array', () => {
+		expect(wireMessages(requestWithBody({ messages: 'nope' }))).toEqual([])
+	})
+
+	it('returns [] when an element is malformed (missing content)', () => {
+		expect(wireMessages(requestWithBody({ messages: [{ role: 'user' }] }))).toEqual([])
+	})
+
+	it('returns [] when an element is not a record', () => {
+		expect(wireMessages(requestWithBody({ messages: ['nope'] }))).toEqual([])
+	})
+})
+
+describe('wireText', () => {
+	it('joins every wire message content with a newline', () => {
+		const request = requestWithBody({
+			messages: [
+				{ role: 'system', content: 'rules' },
+				{ role: 'user', content: 'hi' },
+			],
+		})
+
+		expect(wireText(request)).toBe('rules\nhi')
+	})
+
+	it('returns an empty string when there are no messages', () => {
+		expect(wireText(requestWithBody({}))).toBe('')
+	})
+})
+
+describe('systemText', () => {
+	it("returns the first message's content when its role is system", () => {
+		const request = requestWithBody({
+			messages: [
+				{ role: 'system', content: 'rules' },
+				{ role: 'user', content: 'hi' },
+			],
+		})
+
+		expect(systemText(request)).toBe('rules')
+	})
+
+	it('returns an empty string when the first message is not a system turn', () => {
+		const request = requestWithBody({ messages: [{ role: 'user', content: 'hi' }] })
+
+		expect(systemText(request)).toBe('')
+	})
+
+	it('returns an empty string when there are no messages', () => {
+		expect(systemText(requestWithBody({}))).toBe('')
+	})
+})
+
+describe('buildTurns', () => {
+	it('alternates user/assistant roles, starting with user', () => {
+		const turns = buildTurns(4)
+
+		expect(turns.map((turn) => turn.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+	})
+
+	it('varies content deterministically by index', () => {
+		const first = buildTurns(2)
+		const second = buildTurns(2)
+
+		expect(first.map((turn) => turn.content)).toEqual(second.map((turn) => turn.content))
+		expect(first[0]?.content).not.toBe(first[1]?.content)
+	})
+
+	it('returns an empty array for count 0', () => {
+		expect(buildTurns(0)).toEqual([])
+	})
+})
+
+describe('createThrowingSummarizer', () => {
+	it('rejects with the default message', async () => {
+		const summarizer = createThrowingSummarizer()
+		await expect(summarizer([])).rejects.toThrow(THROWING_SUMMARIZER_MESSAGE)
+	})
+
+	it('rejects with a custom message', async () => {
+		const summarizer = createThrowingSummarizer('custom-failure')
+		await expect(summarizer([])).rejects.toThrow('custom-failure')
+	})
+})
+
+describe('fillWorkspace', () => {
+	function paths(workspace: WorkspaceInterface): readonly string[] {
+		return workspace.files().map((file) => file.path)
+	}
+
+	it('writes the default count of doc-NN.md files', () => {
+		const workspace = createWorkspace()
+		fillWorkspace(workspace)
+
+		const names = paths(workspace)
+		expect(names).toHaveLength(12)
+		expect(names).toContain('doc-01.md')
+		expect(names).toContain('doc-12.md')
+	})
+
+	it('honors a custom count and approximate byte size', () => {
+		const workspace = createWorkspace()
+		fillWorkspace(workspace, { count: 3, bytesEach: 100 })
+
+		const names = paths(workspace)
+		expect(names).toEqual(['doc-01.md', 'doc-02.md', 'doc-03.md'])
+		const file = workspace.file('doc-01.md')
+		const content = file?.content
+		expect(content !== undefined && 'text' in content ? content.text.length : -1).toBe(100)
+	})
+
+	it('writes an optional sentinel file alongside the filler docs', () => {
+		const workspace = createWorkspace()
+		fillWorkspace(workspace, { count: 2, sentinelPath: 'find-me.md', sentinelText: 'needle' })
+
+		expect(paths(workspace)).toContain('find-me.md')
+		const content = workspace.file('find-me.md')?.content
+		expect(content !== undefined && 'text' in content ? content.text : undefined).toBe('needle')
 	})
 })

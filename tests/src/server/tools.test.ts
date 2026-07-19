@@ -4,6 +4,7 @@ import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { createRecorder } from '../../setup.js'
 import {
+	createInsatiableTool,
 	createLiveProvider,
 	createLookupTool,
 	createRecordingProxy,
@@ -283,6 +284,115 @@ describe('Agent tool loop (live) — turn-limit exhaustion', () => {
 			// The run RESOLVES with the new contract: limit exhaustion with unresolved tool intent
 			// on the last allowed turn flags partial: true.
 			expect(driven.result.partial).toBe(true)
+		},
+		TIMEOUT,
+	)
+})
+
+describe('Agent tool loop (live) — default limit exhaustion under sustained pressure', () => {
+	it('a two-turn limit exhausts under sustained tool pressure', async () => {
+		// Source-verified (0.0.7): the loop's exhaustion contract (partial: true, `exhaust`
+		// fires with the effective limit, `abort` never fires) is the SAME whether the limit
+		// is 1, 2, or the default 10 — only the number of forced turns before exhaustion
+		// changes. Live-model evidence: the warmed 2B model reliably calls the insatiable
+		// `more` tool twice under sustained pressure, then answers in text — 10 sustained
+		// rounds is unreachable model capacity, not a loop defect, so `limit: 2` is the
+		// live-reachable proof of this contract under sustained (not single-forced-turn)
+		// pressure. The default limit of 10 is covered by the it.todo below.
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+		const exhaustRecorder = createRecorder<[number]>()
+		const abortRecorder = createRecorder<[unknown]>()
+
+		const driven = await retryUntil(
+			async () => {
+				recorder.clear()
+				exhaustRecorder.clear()
+				abortRecorder.clear()
+				const tools = createToolManager()
+				tools.add(createInsatiableTool(recorder))
+				const agent = createAgent(createLiveProvider({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
+					system:
+						'You MUST call the more tool right now. Do not write any text response. After every single tool result you receive, immediately call the more tool again — never write a text answer, only call the more tool, every turn without exception.',
+					tools,
+					limit: 2,
+					timeout: TIMEOUT,
+					on: {
+						exhaust: (turns) => exhaustRecorder.handler(turns),
+						abort: (reason) => abortRecorder.handler(reason),
+					},
+				})
+				agent.context.messages.add({
+					role: 'user',
+					content: 'Fetch all of the data.',
+				})
+				const stream = agent.stream()
+				return driveAgent(stream)
+			},
+			(value) =>
+				value.result.partial === true && exhaustRecorder.count > 0 && abortRecorder.count === 0,
+			'exhaust a two-turn limit under sustained tool pressure',
+			3,
+		)
+
+		expect(driven.result.partial).toBe(true)
+		expect(exhaustRecorder.count).toBe(1)
+		// The recorded exhaust payload carries the effective limit (2).
+		expect(exhaustRecorder.calls[0]?.[0]).toBe(2)
+		expect(abortRecorder.count).toBe(0)
+		// The model called the tool on both allowed turns.
+		expect(recorder.count).toBeGreaterThanOrEqual(2)
+	}, 120_000)
+
+	it.todo(
+		'the default limit of 10 exhausts under sustained tool pressure — the 2.3B live model self-terminates after ~2 forced tool rounds, so default-limit exhaustion is not reliably reachable live; the default value is exercised by the agent package unit suite',
+	)
+})
+
+describe('Agent tool loop (live) — a single turn carries multiple tool calls', () => {
+	it(
+		'a single turn can carry multiple tool calls',
+		async () => {
+			const lookupRecorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+			const moreRecorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+
+			const attempt = await retryUntil(
+				async () => {
+					lookupRecorder.clear()
+					moreRecorder.clear()
+					const tools = createToolManager()
+					tools.add(createLookupTool(lookupRecorder))
+					tools.add(createInsatiableTool(moreRecorder))
+					const agent = createAgent(
+						createLiveProvider({ predict: TOOL_LOOP_OPTIONS.num_predict }),
+						{
+							system:
+								'You MUST call BOTH the lookup tool (with query "datum") AND the more tool in the SAME turn, immediately, before saying anything else.',
+							tools,
+							timeout: TIMEOUT,
+							limit: 2,
+						},
+					)
+					agent.context.messages.add({
+						role: 'user',
+						content: 'Call both the lookup tool and the more tool right now, in the same turn.',
+					})
+					const stream = agent.stream()
+					await driveAgent(stream)
+					// The provider replays each requested turn as a stored assistant message
+					// carrying its `calls` — a message with 2+ calls proves a SINGLE turn
+					// dispatched multiple tool calls together (structurally observable via the
+					// conversation store, not inferred from ordering).
+					const multiCallTurn = agent.context.messages
+						.messages()
+						.some((message) => message.role === 'assistant' && (message.calls?.length ?? 0) >= 2)
+					return multiCallTurn
+				},
+				(multiCallTurn) => multiCallTurn,
+				'dispatch both tools within a single turn',
+				3,
+			)
+
+			expect(attempt).toBe(true)
 		},
 		TIMEOUT,
 	)

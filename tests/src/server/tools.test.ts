@@ -1,4 +1,3 @@
-import type { MessageInterface } from '@orkestrel/agent'
 import { createAgent, createAuthority, createToolManager } from '@orkestrel/agent'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
@@ -15,6 +14,7 @@ import {
 	retryUntil,
 	THROWING_TOOL_MESSAGE,
 	TOOL_LOOP_OPTIONS,
+	wireMessages,
 } from '../../setupServer.js'
 
 // LIVE tool-calling machinery tests — the real OllamaProvider driving the agent's tool
@@ -104,8 +104,7 @@ describe('Agent tool loop (live) — tool-result feedback reaches the wire', () 
 					() => {
 						if (proxy.requests.length < 2) return false
 						return proxy.requests.some((request) => {
-							const body = request.body as { messages?: readonly MessageInterface[] }
-							const messages = body.messages ?? []
+							const messages = wireMessages(request)
 							return messages.some((message) => String(message.content).includes(LOOKUP_DATUM))
 						})
 					},
@@ -115,8 +114,7 @@ describe('Agent tool loop (live) — tool-result feedback reaches the wire', () 
 
 				expect(proxy.requests.length).toBeGreaterThanOrEqual(2)
 				const carriesResult = proxy.requests.some((request) => {
-					const body = request.body as { messages?: readonly MessageInterface[] }
-					const messages = body.messages ?? []
+					const messages = wireMessages(request)
 					return messages.some((message) => String(message.content).includes(LOOKUP_DATUM))
 				})
 				expect(carriesResult).toBe(true)

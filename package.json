@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/ollama",
-	"version": "0.0.5",
+	"version": "0.0.6",
 	"description": "A typed local-LLM provider for the @orkestrel line — a ProviderInterface over a local Ollama daemon's /api/chat with NDJSON streaming and guard-narrowed wire boundaries. Part of the @orkestrel line.",
 	"keywords": [
 		"ai",
@@ -64,7 +64,7 @@
 		"prepublishOnly": "npm run format:check && npm run lint:check && npm run check && npm run check:src && npm run build"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.7",
+		"@orkestrel/agent": "^0.0.8",
 		"@orkestrel/budget": "^0.0.3",
 		"@orkestrel/contract": "^0.0.5",
 		"@orkestrel/ndjson": "^0.0.3",

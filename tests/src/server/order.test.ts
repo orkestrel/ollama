@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createAgent } from '@orkestrel/agent'
+import { createAgent, createInstructionManager } from '@orkestrel/agent'
 import { createOllama } from '@src/server'
 import {
 	createRecordingProxy,
@@ -32,12 +32,14 @@ describe('AgentContext (live, provider-behavior) — canonical assembly order on
 					url: proxy.url,
 					options: FAST_OPTIONS,
 				})
+				const instructions = createInstructionManager()
+				instructions.add({ name: 'one', content: 'Be terse.' })
+				instructions.add({ name: 'two', content: 'Be polite.' })
 				const agent = createAgent(provider, {
 					system: 'SENTINEL-SYSTEM-PROMPT-7182',
+					instructions,
 					timeout: TIMEOUT,
 				})
-				agent.context.instructions.add({ name: 'one', content: 'Be terse.' })
-				agent.context.instructions.add({ name: 'two', content: 'Be polite.' })
 				agent.context.workspaces.add().write('notes.md', 'workspace filler text')
 				agent.context.messages.add({ role: 'user', content: 'What is the weather?' })
 				agent.generate().catch(() => {})
@@ -77,22 +79,23 @@ describe('AgentContext (live, provider-behavior) — canonical assembly order on
 					url: proxy.url,
 					options: FAST_OPTIONS,
 				})
-				const agent = createAgent(provider, { timeout: TIMEOUT })
-				agent.context.instructions.add({
+				const instructions = createInstructionManager()
+				instructions.add({
 					name: 'first-p5',
 					content: 'SENTINEL-FIRST-P5',
 					priority: 5,
 				})
-				agent.context.instructions.add({
+				instructions.add({
 					name: 'second-p5',
 					content: 'SENTINEL-SECOND-P5',
 					priority: 5,
 				})
-				agent.context.instructions.add({
+				instructions.add({
 					name: 'third-p1',
 					content: 'SENTINEL-THIRD-P1',
 					priority: 1,
 				})
+				const agent = createAgent(provider, { instructions, timeout: TIMEOUT })
 				agent.context.messages.add({ role: 'user', content: 'Hello.' })
 				agent.generate().catch(() => {})
 				await waitForRequest(proxy)

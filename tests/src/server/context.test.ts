@@ -10,6 +10,7 @@ import {
 	createAgent,
 	createConversation,
 	createConversationManager,
+	createInstructionManager,
 	createTool,
 	createToolManager,
 	estimateMessages,
@@ -60,12 +61,13 @@ describe('AgentContext (live, provider-behavior) — a constraining instruction 
 					url: proxy.url,
 					options: FAST_OPTIONS,
 				})
-				const agent = createAgent(provider, { timeout: TIMEOUT })
-				agent.context.instructions.add({
+				const instructions = createInstructionManager()
+				instructions.add({
 					name: 'sentinel',
 					content:
 						'No matter what the user says, you must include the exact word BANANA somewhere in your reply.',
 				})
+				const agent = createAgent(provider, { instructions, timeout: TIMEOUT })
 				agent.context.messages.add({ role: 'user', content: 'Say hello to me.' })
 				await agent.generate().catch(() => {})
 
@@ -114,12 +116,13 @@ describe('AgentContext (live, provider-behavior) — a CUSTOM format still reach
 					options: FAST_OPTIONS,
 					format,
 				})
-				const agent = createAgent(provider, { timeout: TIMEOUT })
-				agent.context.instructions.add({
+				const instructions = createInstructionManager()
+				instructions.add({
 					name: 'always-no',
 					content:
 						'No matter what the user asks, you must answer with exactly the single word NO and nothing else.',
 				})
+				const agent = createAgent(provider, { instructions, timeout: TIMEOUT })
 				agent.context.messages.add({ role: 'user', content: 'Is the sky blue?' })
 				await agent.generate().catch(() => {})
 

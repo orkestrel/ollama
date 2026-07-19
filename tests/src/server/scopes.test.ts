@@ -2,6 +2,7 @@ import type { RecordedRequest } from '../../setupServer.js'
 import {
 	createAgent,
 	createConversationManager,
+	createInstructionManager,
 	createScope,
 	createToolManager,
 } from '@orkestrel/agent'
@@ -65,8 +66,8 @@ describe('AgentContext scope (live, provider-behavior) — a tools allow-list fi
 				const tools = createToolManager()
 				tools.add(createLookupTool())
 				tools.add(createInsatiableTool())
-				const agent = createAgent(provider, { tools, timeout: TIMEOUT })
-				agent.context.scope = createScope({ name: 'lookup-only', tools: ['lookup'] })
+				const scope = createScope({ name: 'lookup-only', tools: ['lookup'] })
+				const agent = createAgent(provider, { tools, scope, timeout: TIMEOUT })
 				agent.context.messages.add({ role: 'user', content: 'Hello.' })
 				agent.generate().catch(() => {})
 				await waitForRequest(proxy)
@@ -95,10 +96,11 @@ describe('AgentContext scope (live, provider-behavior) — an instructions allow
 					url: proxy.url,
 					options: FAST_OPTIONS,
 				})
-				const agent = createAgent(provider, { timeout: TIMEOUT })
-				agent.context.instructions.add({ name: 'allowed', content: 'SENTINEL-ALLOWED-4471' })
-				agent.context.instructions.add({ name: 'blocked', content: 'SENTINEL-BLOCKED-9932' })
-				agent.context.scope = createScope({ name: 'allowed-only', instructions: ['allowed'] })
+				const instructions = createInstructionManager()
+				instructions.add({ name: 'allowed', content: 'SENTINEL-ALLOWED-4471' })
+				instructions.add({ name: 'blocked', content: 'SENTINEL-BLOCKED-9932' })
+				const scope = createScope({ name: 'allowed-only', instructions: ['allowed'] })
+				const agent = createAgent(provider, { instructions, scope, timeout: TIMEOUT })
 				agent.context.messages.add({ role: 'user', content: 'Hello.' })
 				agent.generate().catch(() => {})
 				await waitForRequest(proxy)
@@ -127,7 +129,8 @@ describe('AgentContext scope (live, provider-behavior) — a files allow-list fi
 					url: proxy.url,
 					options: FAST_OPTIONS,
 				})
-				const agent = createAgent(provider, { timeout: TIMEOUT })
+				const scope = createScope({ name: 'sentinel-only', files: ['find-me.md'] })
+				const agent = createAgent(provider, { scope, timeout: TIMEOUT })
 				const workspace = agent.context.workspaces.add()
 				fillWorkspace(workspace, {
 					count: 2,
@@ -135,7 +138,6 @@ describe('AgentContext scope (live, provider-behavior) — a files allow-list fi
 					sentinelPath: 'find-me.md',
 					sentinelText: 'SENTINEL-FIND-ME-6603',
 				})
-				agent.context.scope = createScope({ name: 'sentinel-only', files: ['find-me.md'] })
 				agent.context.messages.add({ role: 'user', content: 'Hello.' })
 				agent.generate().catch(() => {})
 				await waitForRequest(proxy)
@@ -167,10 +169,10 @@ describe('AgentContext scope (live, provider-behavior) — an empty allow-list d
 				const tools = createToolManager()
 				tools.add(createLookupTool())
 				tools.add(createInsatiableTool())
-				const agent = createAgent(provider, { tools, timeout: TIMEOUT })
+				const scope = createScope({ name: 'none', tools: [] })
+				const agent = createAgent(provider, { tools, scope, timeout: TIMEOUT })
 				agent.context.messages.add({ role: 'user', content: 'Hello.' })
 
-				agent.context.scope = createScope({ name: 'none', tools: [] })
 				agent.generate().catch(() => {})
 				await waitForRequest(proxy, 1)
 				const emptyRequest = proxy.requests[0]
@@ -225,12 +227,13 @@ describe('AgentContext scope (live, behavioral) — switching scopes changes the
 			})
 			const conversations = createConversationManager()
 			conversations.add({ id: 'run-a' }) // auto-activates
-			const agent = createAgent(provider, { conversations, timeout: TIMEOUT })
-			agent.context.instructions.add(APRICOT)
-			agent.context.instructions.add(COBALT)
+			const instructions = createInstructionManager()
+			instructions.add(APRICOT)
+			instructions.add(COBALT)
+			const scope = createScope({ name: 'apricot-scope', instructions: ['apricot-rule'] })
+			const agent = createAgent(provider, { conversations, instructions, scope, timeout: TIMEOUT })
 			agent.context.messages.add({ role: 'user', content: 'Reply with one short sentence.' })
 
-			agent.context.scope = createScope({ name: 'apricot-scope', instructions: ['apricot-rule'] })
 			const resultA = await agent.generate()
 			const requestA = proxy.requests[proxy.requests.length - 1]
 

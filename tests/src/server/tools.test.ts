@@ -341,9 +341,58 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 		expect(recorder.count).toBeGreaterThanOrEqual(2)
 	}, 120_000)
 
-	it.todo(
-		'the default limit of 10 exhausts under sustained tool pressure — the 2.3B live model self-terminates after ~2 forced tool rounds, so default-limit exhaustion is not reliably reachable live; the default value is exercised by the agent package unit suite',
-	)
+	it('the default limit exhausts under sustained tool pressure', async () => {
+		// Source-verified (0.0.7): the same exhaustion contract as the limit:2 test above,
+		// under NO explicit `limit` option — the loop's DEFAULT of 10. The `more` tool now
+		// reports concrete counting progress ("chunk n of 12") instead of a static "call
+		// again" instruction, giving the model an explicit unfinished plan to keep following
+		// at temperature 0 rather than self-terminating after a couple of rounds. 12 total
+		// chunks exceeds the default limit of 10, so the loop must exhaust before completion.
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+		const exhaustRecorder = createRecorder<[number]>()
+		const abortRecorder = createRecorder<[unknown]>()
+
+		const driven = await retryUntil(
+			async () => {
+				recorder.clear()
+				exhaustRecorder.clear()
+				abortRecorder.clear()
+				const tools = createToolManager()
+				tools.add(createInsatiableTool(recorder))
+				const agent = createAgent(createLiveProvider({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
+					system:
+						'You have a mission to fetch ALL 12 chunks of the requested data. You MUST call the more tool right now. Do not write any text response. After every single tool result you receive, immediately call the more tool again to get the next chunk — never write a text answer, only call the more tool, every turn without exception, until all 12 chunks have arrived.',
+					tools,
+					// A default-limit (10-turn) sustained round-trip needs far longer than the
+					// file's 60s TIMEOUT (tuned for 1-4 turn tests) — bounded well under the
+					// per-it 360_000ms timeout instead.
+					timeout: 300_000,
+					on: {
+						exhaust: (turns) => exhaustRecorder.handler(turns),
+						abort: (reason) => abortRecorder.handler(reason),
+					},
+				})
+				agent.context.messages.add({
+					role: 'user',
+					content: 'Fetch all 12 chunks of the data.',
+				})
+				const stream = agent.stream()
+				return driveAgent(stream)
+			},
+			(value) =>
+				value.result.partial === true && exhaustRecorder.count > 0 && abortRecorder.count === 0,
+			'exhaust the default limit under sustained tool pressure',
+			3,
+		)
+
+		expect(driven.result.partial).toBe(true)
+		expect(exhaustRecorder.count).toBe(1)
+		// The recorded exhaust payload carries the effective DEFAULT limit (10).
+		expect(exhaustRecorder.calls[0]?.[0]).toBe(10)
+		expect(abortRecorder.count).toBe(0)
+		// The model called the tool on more than one allowed turn.
+		expect(recorder.count).toBeGreaterThan(1)
+	}, 360_000)
 })
 
 describe('Agent tool loop (live) — a single turn carries multiple tool calls', () => {

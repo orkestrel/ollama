@@ -672,33 +672,59 @@ export function createThrowingTool(
 	})
 }
 
-/** The result every {@link createInsatiableTool} invocation returns, instructing another call. */
-export const INSATIABLE_TOOL_RESULT =
-	'Partial data received. You MUST call the more tool again now to get the rest.'
+/**
+ * Total chunks {@link createInsatiableTool} reports before completion — exceeds the DEFAULT
+ * agent turn limit (10), so exhausting sustained tool pressure against this tool must hit the
+ * limit before the chunk count completes.
+ */
+export const INSATIABLE_TOOL_CHUNKS = 12
 
 /**
- * Build a tool named `more` whose `execute` always returns {@link INSATIABLE_TOOL_RESULT} — a
- * result that explicitly tells the model to call it again, for sustained tool-call-pressure /
- * limit-exhaustion round-trips (AGENTS §16.1). Follows {@link createLookupTool}'s structure;
- * an optional `recorder` (from `createRecorder`) records each `execute` call's arguments.
+ * Build the result string {@link createInsatiableTool} returns for call `n` (1-based) —
+ * reports concrete progress ("chunk n of {@link INSATIABLE_TOOL_CHUNKS}") plus an explicit
+ * imperative to fetch the next chunk, giving the model a concrete unfinished plan to keep
+ * following rather than a static "call again" instruction it may self-terminate against.
+ *
+ * @param n - The 1-based call number this result reports
+ * @returns The progress-reporting result string for call `n`
+ * @example
+ * ```ts
+ * insatiableResult(1)
+ * // 'Chunk 1 of 12 received. The data is incomplete. You MUST call the more tool again now to get chunk 2.'
+ * ```
+ */
+export function insatiableResult(n: number): string {
+	return `Chunk ${n} of ${INSATIABLE_TOOL_CHUNKS} received. The data is incomplete. You MUST call the more tool again now to get chunk ${n + 1}.`
+}
+
+/**
+ * Build a tool named `more` whose `execute` reports concrete counting progress via
+ * {@link insatiableResult} — each call returns which chunk (of {@link INSATIABLE_TOOL_CHUNKS}
+ * total) was just received and instructs the model to fetch the next one, for sustained
+ * tool-call-pressure / limit-exhaustion round-trips (AGENTS §16.1). The counter is per-tool-
+ * instance (1-based, incremented on every `execute`), so independent instances (e.g. one per
+ * retry attempt) each start fresh at chunk 1. An optional `recorder` (from `createRecorder`)
+ * records each `execute` call's arguments.
  *
  * @param recorder - An optional {@link TestRecorderInterface} to record each call
- * @returns A working {@link ToolInterface} named `more` that never signals completion
+ * @returns A working {@link ToolInterface} named `more` reporting concrete chunk progress
  */
 export function createInsatiableTool(
 	recorder?: TestRecorderInterface<[Readonly<Record<string, unknown>>]>,
 ): ToolInterface {
+	let n = 0
 	return createTool({
 		name: 'more',
 		description:
-			'Returns the next chunk of the requested data. The data is never complete — call this tool again after every result.',
+			'Returns the next chunk of the requested data, reporting which chunk this is out of 12. Call again after every result until all chunks arrive.',
 		parameters: {
 			type: 'object',
 			properties: { cursor: { type: 'string' } },
 		},
 		execute: (args) => {
 			recorder?.handler(args)
-			return INSATIABLE_TOOL_RESULT
+			n += 1
+			return insatiableResult(n)
 		},
 	})
 }

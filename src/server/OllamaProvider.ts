@@ -185,29 +185,19 @@ export class OllamaProvider implements ProviderInterface {
 		// prompt scaffold) the splitter RECLASSIFIES the already-yielded prefix into `thinking`,
 		// so the result stays clean even though those deltas could not be recalled.
 		const splitter = createThinkSplitter()
-		let wired = ''
-		const calls: ToolCall[] = []
-		let usage: TokenUsage | undefined
-		// Per-record handling shared between the live loop and the post-loop NDJSON
-		// tail flush below — captured over `this` so a nested `function*` (not an
-		// arrow, which cannot be a generator) needs no rebinding.
-		const contentOf = (record: Record<string, unknown>): string => this.#content(record)
-		const thinkingOf = (record: Record<string, unknown>): string => this.#thinking(record)
-		const toolsOf = (record: Record<string, unknown>): readonly ToolCall[] => this.#tools(record)
-		const usageOf = (record: Record<string, unknown>): TokenUsage | undefined => this.#usage(record)
-		function* handle(record: Record<string, unknown>): Generator<ProviderDelta> {
-			const delta = splitter.split(contentOf(record))
-			if (delta.length > 0) yield { type: 'content', text: delta }
-			// The PRIMARY live reasoning channel: each native `message.thinking` wire delta is
-			// surfaced as a tagged `thinking` delta AND accumulated into `wired` for the assembled
-			// result (the two stay in lockstep). The ThinkSplitter's in-content reclassified spans
-			// have no per-delta hook — the final `ProviderResult.thinking` reconciles them; the
-			// native channel (think: true) is what streams live.
-			const thinking = thinkingOf(record)
-			if (thinking.length > 0) yield { type: 'thinking', text: thinking }
-			wired += thinking
-			calls.push(...toolsOf(record))
-			if (Reflect.get(record, 'done') === true) usage = usageOf(record)
+		// Mutable per-stream accumulator shared between the live loop and the post-loop
+		// NDJSON tail flush below — the SAME object reference threads through every
+		// `#deltas` call so `wired` / `calls` / `usage` accumulate across both sites.
+		const state: {
+			splitter: ThinkSplitterInterface
+			wired: string
+			calls: ToolCall[]
+			usage: TokenUsage | undefined
+		} = {
+			splitter,
+			wired: '',
+			calls: [],
+			usage: undefined,
 		}
 		try {
 			for (;;) {
@@ -216,7 +206,7 @@ export class OllamaProvider implements ProviderInterface {
 				// Pair the streaming decoder with the line parser: the decoder handles
 				// partial multi-byte CHARS, the parser handles partial LINES (§14).
 				for (const record of parser.parse(decoder.decode(value, { stream: true }))) {
-					yield* handle(record)
+					yield* this.#deltas(record, state)
 				}
 			}
 			// Flush the decoder's held partial multi-byte tail and feed it (plus a
@@ -224,7 +214,7 @@ export class OllamaProvider implements ProviderInterface {
 			// unterminated `done` line is recovered instead of silently dropped.
 			const decoderTail = decoder.decode()
 			for (const record of parser.parse(decoderTail.length > 0 ? `${decoderTail}\n` : '\n')) {
-				yield* handle(record)
+				yield* this.#deltas(record, state)
 			}
 			// Stream end: a held partial tag that never completed was real content — it is the
 			// final delta (the splitter folds it into its `content` too).
@@ -239,7 +229,12 @@ export class OllamaProvider implements ProviderInterface {
 				// any clean content that never crossed a tag boundary.
 				splitter.flush()
 				throw new ProviderAbortError(
-					this.#result(splitter.content, this.#thought(splitter, wired), calls, usage),
+					this.#result(
+						splitter.content,
+						this.#thought(splitter, state.wired),
+						state.calls,
+						state.usage,
+					),
 				)
 			}
 			throw error
@@ -256,7 +251,40 @@ export class OllamaProvider implements ProviderInterface {
 			parser.reset()
 			timeout.clear()
 		}
-		return this.#result(splitter.content, this.#thought(splitter, wired), calls, usage)
+		return this.#result(
+			splitter.content,
+			this.#thought(splitter, state.wired),
+			state.calls,
+			state.usage,
+		)
+	}
+
+	// Per-record streaming step shared between the live NDJSON loop and the post-loop
+	// tail flush in `stream()` — a `#` private method (not a free helper) because it
+	// calls sibling methods (`this.#content` / `#thinking` / `#tools` / `#usage`) and
+	// mutates the caller's `state` accumulator (`wired` / `calls` / `usage`) across
+	// repeated calls sharing the same object reference.
+	*#deltas(
+		record: Record<string, unknown>,
+		state: {
+			splitter: ThinkSplitterInterface
+			wired: string
+			calls: ToolCall[]
+			usage: TokenUsage | undefined
+		},
+	): Generator<ProviderDelta> {
+		const delta = state.splitter.split(this.#content(record))
+		if (delta.length > 0) yield { type: 'content', text: delta }
+		// The PRIMARY live reasoning channel: each native `message.thinking` wire delta is
+		// surfaced as a tagged `thinking` delta AND accumulated into `state.wired` for the
+		// assembled result (the two stay in lockstep). The ThinkSplitter's in-content
+		// reclassified spans have no per-delta hook — the final `ProviderResult.thinking`
+		// reconciles them; the native channel (think: true) is what streams live.
+		const thinking = this.#thinking(record)
+		if (thinking.length > 0) yield { type: 'thinking', text: thinking }
+		state.wired += thinking
+		state.calls.push(...this.#tools(record))
+		if (Reflect.get(record, 'done') === true) state.usage = this.#usage(record)
 	}
 
 	// Arm the deadline, POST `/api/chat`, and hand back the response + the handles

@@ -21,7 +21,7 @@ import {
 	env,
 	flattenHeaders,
 	forwardHeaders,
-	INSATIABLE_TOOL_RESULT,
+	insatiableResult,
 	isAbortError,
 	LOOKUP_DATUM,
 	parseRequestBody,
@@ -311,10 +311,17 @@ describe('createThrowingTool', () => {
 })
 
 describe('createInsatiableTool', () => {
-	it('always returns INSATIABLE_TOOL_RESULT', async () => {
+	it('reports chunk 1 on the first call', async () => {
 		const tool = createInsatiableTool()
 		const value = await tool.execute({})
-		expect(value).toBe(INSATIABLE_TOOL_RESULT)
+		expect(value).toBe(insatiableResult(1))
+	})
+
+	it('reports chunk 2 on the second call', async () => {
+		const tool = createInsatiableTool()
+		await tool.execute({})
+		const value = await tool.execute({})
+		expect(value).toBe(insatiableResult(2))
 	})
 
 	it('records each call via an optional recorder', async () => {
@@ -332,7 +339,19 @@ describe('createInsatiableTool', () => {
 	it('works with no recorder passed', async () => {
 		const tool = createInsatiableTool()
 		const value = await tool.execute({})
-		expect(value).toBe(INSATIABLE_TOOL_RESULT)
+		expect(value).toBe(insatiableResult(1))
+	})
+
+	it('keeps independent per-instance counters', async () => {
+		const toolA = createInsatiableTool()
+		const toolB = createInsatiableTool()
+
+		await toolA.execute({})
+		const first = await toolA.execute({})
+		const second = await toolB.execute({})
+
+		expect(first).toBe(insatiableResult(2))
+		expect(second).toBe(insatiableResult(1))
 	})
 })
 

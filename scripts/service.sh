@@ -42,8 +42,11 @@ if ! ollama list | awk 'NR > 1 { print $1 }' | grep --fixed-strings --line-regex
 	ollama pull "$model"
 fi
 
+# A cold first load can spend minutes in llama-server tensor transforms on CPU
+# hosts, and a disconnected warm client aborts the load itself, so the warm call
+# carries the load budget rather than a request budget.
 payload="$(printf '{"model":"%s","prompt":"hi","stream":false,"think":false,"keep_alive":"30m","options":{"num_predict":1}}' "$model")"
-if ! curl --fail --silent --show-error --max-time 120 \
+if ! curl --fail --silent --show-error --max-time 600 \
 	--header 'Content-Type: application/json' \
 	--data-binary "$payload" \
 	"$host/api/generate" >/dev/null; then

@@ -24,8 +24,9 @@ import {
 } from '../../setupServer.js'
 
 // LIVE scope tests — the src:ollama project hits a REAL warmed Ollama (AGENTS §16: no
-// mocks for the inference boundary). `context.scope` is a mutable {@link ScopeInterface}
-// per-category allow-list that `build()` applies before framing the wire request: tools
+// mocks for the inference boundary). `context.scope` is a readonly {@link ScopeInterface}
+// per-category allow-list changed through `context.apply()` and applied by `build()` before
+// framing the wire request: tools
 // filter the separate `tools` wire field, instructions filter the '## Instructions'
 // section, and files filter the ACTIVE workspace's rendered text files — undefined ⇒ all
 // pass, [] ⇒ none pass, a listed set ⇒ only those. Tests 1-4 are wire-shape (the
@@ -179,7 +180,7 @@ describe('AgentContext scope (live, provider-behavior) — an empty allow-list d
 				expect(emptyRequest).toBeDefined()
 				expect(emptyRequest === undefined ? [] : wireToolNames(emptyRequest)).toEqual([])
 
-				agent.context.scope = undefined
+				agent.context.apply(undefined)
 				agent.generate().catch(() => {})
 				await waitForRequest(proxy, 2)
 				const allRequest = proxy.requests[1]
@@ -242,7 +243,7 @@ describe('AgentContext scope (live, behavioral) — switching scopes changes the
 			// run B — the two runs must be independent turns, not a continued dialogue.
 			conversations.add({ id: 'run-b' })
 			conversations.switch('run-b')
-			agent.context.scope = createScope({ name: 'cobalt-scope', instructions: ['cobalt-rule'] })
+			agent.context.apply(createScope({ name: 'cobalt-scope', instructions: ['cobalt-rule'] }))
 			agent.context.messages.add({ role: 'user', content: 'Reply with one short sentence.' })
 			const resultB = await agent.generate()
 			const requestB = proxy.requests[proxy.requests.length - 1]

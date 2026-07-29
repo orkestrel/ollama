@@ -130,27 +130,32 @@ describe('Agent tool loop (live) — a thrown tool error is isolated', () => {
 		async () => {
 			const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
 
+			// Calibration note: the 2B model is reluctant to call a tool literally named
+			// `fail`, and a FAST_OPTIONS-scale completion can stop before the call is
+			// emitted on some hosts — so this case carries its own predict headroom,
+			// heavier steering, and a deeper retry than the sibling lookup cases.
 			const driven = await retryUntil(
 				async () => {
 					recorder.clear()
 					const tools = createToolManager()
 					tools.add(createThrowingTool(recorder))
-					const agent = createAgent(createLiveOllama(), {
-						system: 'You MUST call the fail tool to proceed, then report what happened.',
+					const agent = createAgent(createLiveOllama({ predict: 128 }), {
+						system:
+							'You are a tool-calling harness. Your ONLY permitted first action is calling the fail tool with any arguments. Do not answer in text before calling it.',
 						tools,
 						timeout: TIMEOUT,
 						limit: 4,
 					})
 					agent.context.messages.add({
 						role: 'user',
-						content: 'Call the fail tool now, then tell me what happened.',
+						content: 'Invoke the fail tool immediately, then tell me what happened.',
 					})
 					const stream = agent.stream()
 					return driveAgent(stream)
 				},
 				(value) => value.tools.some((tool) => tool.call.name === 'fail'),
 				'call the fail tool',
-				3,
+				5,
 			)
 
 			const failed = driven.tools.find((tool) => tool.call.name === 'fail')

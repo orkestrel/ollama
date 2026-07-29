@@ -138,10 +138,11 @@ describe('OllamaProvider (live — generate)', () => {
 		expect(result.content).not.toContain('</think>')
 	})
 
-	// Recipe: 'Say only the word hello.' / inline { num_predict: 320, temperature: 0 }
-	// / think:true. Calibration note: a live probe at temperature:0 measured this
-	// prompt's full reasoning trace at eval_count≈206 tokens before content began — 320
-	// gives ~55% headroom so the trace can FINISH and the answer can land in content
+	// Recipe: 'Say only the word hello.' / inline { num_predict: 768, temperature: 0 }
+	// / think:true. Calibration note: the reasoning trace this prompt provokes varies
+	// by HOST even at temperature:0 (thread-count nondeterminism) — one measured probe
+	// ran ≈206 thinking tokens, another host consumed 320 entirely without landing
+	// content — so the budget carries deep headroom over the longest observed trace
 	// (do not shrink this back toward THINK_OPTIONS-scale; it will go vacuous again,
 	// per the sibling case above where content "may be empty"). Assertion: structural —
 	// thinking non-empty, content non-empty (the think→content transition seam: the
@@ -156,7 +157,7 @@ describe('OllamaProvider (live — generate)', () => {
 					model: OLLAMA_CONFIG.model,
 					url: OLLAMA_CONFIG.host,
 					think: true,
-					options: { num_predict: 320, temperature: 0 },
+					options: { num_predict: 768, temperature: 0 },
 				})
 				return provider.generate(
 					[createUserMessage('Say only the word hello.')],
@@ -329,16 +330,20 @@ describe('OllamaProvider (live — abort)', () => {
 		expect(caught.partial.content.length).toBeGreaterThan(0)
 	})
 
-	// Recipe: 'Count slowly from 1 to 100, one number per line.' / num_predict:64
-	// (ABORT_OPTIONS) / think:false, provider timeout:2000ms — the PROVIDER'S OWN
-	// deadline (not the caller's signal) trips mid-stream on a genuinely long output.
+	// Recipe: 'Count slowly from 1 to 100, one number per line.' / inline
+	// { num_predict: 2048, temperature: 0 } / think:false, provider timeout:2000ms —
+	// the PROVIDER'S OWN deadline (not the caller's signal) trips mid-stream on a
+	// genuinely long output. Calibration note: the requested output must exceed what
+	// ANY host can generate inside the deadline — a fast machine finishes an
+	// ABORT_OPTIONS-scale stream before 2000ms and the deadline never fires — while
+	// the first content delta on a warm model lands well inside it on slow hosts.
 	// Assertion: structural — ProviderAbortError with non-empty partial content.
 	it('its own timeout aborts a slow stream with ProviderAbortError carrying the partial', async () => {
 		const provider = new OllamaProvider({
 			model: OLLAMA_CONFIG.model,
 			url: OLLAMA_CONFIG.host,
 			timeout: 2000,
-			options: ABORT_OPTIONS,
+			options: { num_predict: 2048, temperature: 0 },
 		})
 		const abort = createAbort()
 

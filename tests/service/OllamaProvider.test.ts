@@ -138,18 +138,19 @@ describe('OllamaProvider (live — generate)', () => {
 		expect(result.content).not.toContain('</think>')
 	})
 
-	// Recipe: 'Say only the word hello.' / inline { num_predict: 768, temperature: 0 }
-	// / think:true. Calibration note: the reasoning trace this prompt provokes varies
-	// by HOST even at temperature:0 (thread-count nondeterminism) — one measured probe
-	// ran ≈206 thinking tokens, another host consumed 320 entirely without landing
-	// content — so the budget carries deep headroom over the longest observed trace
-	// (do not shrink this back toward THINK_OPTIONS-scale; it will go vacuous again,
-	// per the sibling case above where content "may be empty"). Assertion: structural —
-	// thinking non-empty, content non-empty (the think→content transition seam: the
-	// model finished reasoning and the answer landed in the CONTENT channel, not lost
-	// or misrouted), and content does not contain the thinking text (channel
-	// separation). Bounded retry (attempts=3, directive #7) over the small model's
-	// nondeterminism at this budget.
+	// Recipe: 'What is 2+2? Reply with just the number.' / inline
+	// { num_predict: 768, temperature: 0 } / think:true. Calibration note: at
+	// temperature:0 a retry replays the SAME trace on a given host, so the prompt —
+	// not the budget — must guarantee the trace closes: compliance-style prompts
+	// ("say only the word hello") send some hosts into an unbounded second-guessing
+	// loop that consumed a 768 budget without landing content, while trivial
+	// arithmetic closes in a few dozen thinking tokens on every observed host (do
+	// not shrink the budget toward THINK_OPTIONS-scale; it will go vacuous again,
+	// per the sibling case above where content "may be empty"). Assertion:
+	// structural — thinking non-empty, content non-empty (the think→content
+	// transition seam: the model finished reasoning and the answer landed in the
+	// CONTENT channel, not lost or misrouted), and content does not contain the
+	// thinking text (channel separation).
 	it('finishes reasoning and lands the answer in content, not lost or misrouted (think→content seam)', async () => {
 		const result = await retryUntil(
 			async () => {
@@ -160,7 +161,7 @@ describe('OllamaProvider (live — generate)', () => {
 					options: { num_predict: 768, temperature: 0 },
 				})
 				return provider.generate(
-					[createUserMessage('Say only the word hello.')],
+					[createUserMessage('What is 2+2? Reply with just the number.')],
 					createAbort().signal,
 					undefined,
 					{ think: true },
@@ -330,20 +331,21 @@ describe('OllamaProvider (live — abort)', () => {
 		expect(caught.partial.content.length).toBeGreaterThan(0)
 	})
 
-	// Recipe: 'Count slowly from 1 to 100, one number per line.' / inline
-	// { num_predict: 2048, temperature: 0 } / think:false, provider timeout:2000ms —
-	// the PROVIDER'S OWN deadline (not the caller's signal) trips mid-stream on a
-	// genuinely long output. Calibration note: the requested output must exceed what
-	// ANY host can generate inside the deadline — a fast machine finishes an
-	// ABORT_OPTIONS-scale stream before 2000ms and the deadline never fires — while
-	// the first content delta on a warm model lands well inside it on slow hosts.
+	// Recipe: 'Count upward from 1 forever, one number per line. Never stop.' /
+	// inline { num_predict: 4096, temperature: 0 } / think:false, provider
+	// timeout:2000ms — the PROVIDER'S OWN deadline (not the caller's signal) trips
+	// mid-stream on a genuinely long output. Calibration note: a bounded task is not
+	// enough — a fast host COMPLETED "count 1 to 100" (≈400 tokens, done_reason
+	// stop) inside the deadline, so the prompt must demand endless output and the
+	// cap must exceed any host's two-second throughput, while the first content
+	// delta on a warm model still lands well inside the deadline on slow hosts.
 	// Assertion: structural — ProviderAbortError with non-empty partial content.
 	it('its own timeout aborts a slow stream with ProviderAbortError carrying the partial', async () => {
 		const provider = new OllamaProvider({
 			model: OLLAMA_CONFIG.model,
 			url: OLLAMA_CONFIG.host,
 			timeout: 2000,
-			options: { num_predict: 2048, temperature: 0 },
+			options: { num_predict: 4096, temperature: 0 },
 		})
 		const abort = createAbort()
 
@@ -351,7 +353,7 @@ describe('OllamaProvider (live — abort)', () => {
 		try {
 			await drive(
 				provider.stream(
-					[createUserMessage('Count slowly from 1 to 100, one number per line.')],
+					[createUserMessage('Count upward from 1 forever, one number per line. Never stop.')],
 					abort.signal,
 				),
 			)

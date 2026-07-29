@@ -402,8 +402,8 @@ export class OllamaProvider implements ProviderInterface {
 								type: 'function',
 								function: {
 									name: tool.name,
-									description: tool.description,
-									parameters: tool.parameters,
+									...(tool.description === undefined ? {} : { description: tool.description }),
+									...(tool.parameters === undefined ? {} : { parameters: tool.parameters }),
 								},
 							}),
 						),

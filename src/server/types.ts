@@ -131,5 +131,5 @@ export interface OllamaOptions {
 	 * which this provider does not currently send; the two are unrelated despite the
 	 * shared word.
 	 */
-	readonly format?: ContextFormatInterface
+	readonly format?: ContextFormatInterface | undefined
 }

@@ -89,7 +89,7 @@ export interface LiveProviderOptions {
 	/** The sampling `temperature` (0 ⇒ greedy / reproducible); defaults to `0`. */
 	readonly temperature?: number
 	/** The provider's optional context-framing default (the provider-default cascade level). */
-	readonly format?: ContextFormatInterface
+	readonly format?: ContextFormatInterface | undefined
 }
 
 /**

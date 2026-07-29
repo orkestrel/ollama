@@ -1,5 +1,11 @@
 import type { MessageInterface, WorkspaceInterface } from '@orkestrel/agent'
 
+/** Whether a repository-relative Vue SFC path belongs to the private browser application. */
+export function isBrowserVuePath(path: string): boolean {
+	const normalized = path.replaceAll('\\', '/')
+	return normalized.startsWith('app/browser/')
+}
+
 // ── Call recorder (a real callback, not a mock) ──────────────────────────────
 //
 // AGENTS §16.1: when a test only needs to count calls or inspect arguments, use a

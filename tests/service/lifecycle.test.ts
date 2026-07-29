@@ -3,7 +3,7 @@ import { createAgent, createToolManager } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
 import { createRecorder } from '../setup.js'
 import { createLookupTool } from '../setupServer.js'
-import { ABORT_OPTIONS, createLiveProvider, retryUntil, STREAM_OPTIONS } from '../setupService.js'
+import { ABORT_OPTIONS, createLiveOllama, retryUntil, STREAM_OPTIONS } from '../setupService.js'
 
 // Agent lifecycle (live) — the AGENT-LEVEL taxonomy (streaming chunk shape, `status`
 // transitions, `emitter` lifecycle events, and abort semantics) driven through the real
@@ -23,7 +23,7 @@ describe('Agent (live) — streamed chunk taxonomy, status lifecycle, and emitte
 			// per directive #7): (1) the PULL chunk stream's token/usage taxonomy assembles into the
 			// settled result; (2) `status` visibly transitions across the run; (3) the PUSH emitter
 			// fires the documented lifecycle events in order, and `finish`'s payload IS the result.
-			const provider = createLiveProvider({ predict: STREAM_OPTIONS.num_predict, temperature: 0 })
+			const provider = createLiveOllama({ predict: STREAM_OPTIONS.num_predict, temperature: 0 })
 			const agent = createAgent(provider, { timeout: TIMEOUT })
 			agent.context.messages.add({ role: 'user', content: 'Count from one to five.' })
 
@@ -96,7 +96,7 @@ describe('Agent (live) — the think channel assembles into result.thinking', ()
 				readonly thoughts: readonly string[]
 				readonly result: AgentResult
 			}> => {
-				const provider = createLiveProvider({ predict: 32, temperature: 0 })
+				const provider = createLiveOllama({ predict: 32, temperature: 0 })
 				const agent = createAgent(provider, { timeout: TIMEOUT })
 				agent.context.messages.add({
 					role: 'user',
@@ -137,7 +137,7 @@ describe('Agent (live) — abort() mid-stream resolves partial, never rejects', 
 			// Recipe: ABORT_OPTIONS (num_predict: 64) — headroom so the generation is virtually
 			// guaranteed to still be in flight when abort() fires right after the FIRST token event,
 			// guarding against the race where generation finishes before the abort lands.
-			const provider = createLiveProvider({
+			const provider = createLiveOllama({
 				predict: ABORT_OPTIONS.num_predict,
 				temperature: ABORT_OPTIONS.temperature,
 			})
@@ -186,7 +186,7 @@ describe('Agent (live) — a construction-time timeout resolves partial, never r
 			// `AbortSignal.any` cancel the loop arms per turn. Bounded retry (attempts=3) only to
 			// absorb the astronomically-rare instant-completion race.
 			const attempt = async (): Promise<{ readonly partial: boolean; readonly events: number }> => {
-				const provider = createLiveProvider({ predict: 32, temperature: 0 })
+				const provider = createLiveOllama({ predict: 32, temperature: 0 })
 				const agent = createAgent(provider, { timeout: 1 })
 				agent.context.messages.add({ role: 'user', content: 'Say hello.' })
 
@@ -221,7 +221,7 @@ describe('Agent (live) — a per-run timeout override reaches the loop', () => {
 			// timeout at all, so a partial+abort outcome proves the PER-RUN 1ms bound reached the
 			// loop, not any construction-time default.
 			const attempt = async (): Promise<{ readonly partial: boolean; readonly events: number }> => {
-				const provider = createLiveProvider({ predict: 32, temperature: 0 })
+				const provider = createLiveOllama({ predict: 32, temperature: 0 })
 				const agent = createAgent(provider, {})
 				agent.context.messages.add({ role: 'user', content: 'Say hello.' })
 
@@ -260,7 +260,7 @@ describe('Agent (live) — a per-run limit override reaches the loop', () => {
 				const tools = createToolManager()
 				tools.add(createLookupTool())
 				const exhaustRecorder = createRecorder<[number]>()
-				const agent = createAgent(createLiveProvider(), {
+				const agent = createAgent(createLiveOllama(), {
 					system: 'You MUST call the lookup tool with query "datum" immediately.',
 					tools,
 					timeout: TIMEOUT,

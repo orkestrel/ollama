@@ -25,10 +25,10 @@ describe('createOllama (shape)', () => {
 	})
 })
 
-// Live (recording proxy): the factory's job is to CONSTRUCT a provider with the right
-// defaults; assert those defaults reach the wire when only `model` + `url` are given
-// (the option fields are otherwise unobservable). The proxy records the request BEFORE
-// forwarding verbatim to the real daemon — a genuine HTTP round-trip, not a mock.
+// Hermetic recording-proxy coverage makes provider-behavior assertions that factory
+// defaults reach the wire when only `model` + `url` are given. The deliberately
+// unreachable upstream cannot affect the request captured before forwarding, so the
+// suite passes with the daemon down.
 describe('createOllama (defaults)', () => {
 	it('defaults keep_alive to 5m and sends think:false with no options/tools', async () => {
 		// Recipe: default options (no options bag passed) — asserts the constructed body shape only.

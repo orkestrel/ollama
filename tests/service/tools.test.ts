@@ -5,19 +5,14 @@ import { createRecorder } from '../setup.js'
 import {
 	createInsatiableTool,
 	createLookupTool,
+	createRecordingProxy,
 	createThrowingTool,
+	driveAgent,
 	LOOKUP_DATUM,
 	THROWING_TOOL_MESSAGE,
 	wireMessages,
 } from '../setupServer.js'
-import {
-	createLiveProvider,
-	createRecordingProxy,
-	driveAgent,
-	OLLAMA_CONFIG,
-	retryUntil,
-	TOOL_LOOP_OPTIONS,
-} from '../setupService.js'
+import { createLiveOllama, OLLAMA_CONFIG, retryUntil, TOOL_LOOP_OPTIONS } from '../setupService.js'
 
 // LIVE tool-calling machinery tests — the real OllamaProvider driving the agent's tool
 // loop against the warmed local model (AGENTS §16: no mocks for the inference boundary).
@@ -44,7 +39,7 @@ describe('Agent tool loop (live) — dispatch by name', () => {
 					const tools = createToolManager()
 					tools.add(createLookupTool(lookupRecorder))
 					tools.add(createThrowingTool(failRecorder))
-					const agent = createAgent(createLiveProvider(), {
+					const agent = createAgent(createLiveOllama(), {
 						system:
 							'You MUST call the lookup tool with query "datum" to answer. Never call the fail tool.',
 						tools,
@@ -78,7 +73,7 @@ describe('Agent tool loop (live) — tool-result feedback reaches the wire', () 
 	it(
 		'a tool result is fed back into the loop as a second /api/chat request carrying the tool datum',
 		async () => {
-			const proxy = await createRecordingProxy()
+			const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
 			try {
 				const attempt = await retryUntil(
 					async () => {
@@ -140,7 +135,7 @@ describe('Agent tool loop (live) — a thrown tool error is isolated', () => {
 					recorder.clear()
 					const tools = createToolManager()
 					tools.add(createThrowingTool(recorder))
-					const agent = createAgent(createLiveProvider(), {
+					const agent = createAgent(createLiveOllama(), {
 						system: 'You MUST call the fail tool to proceed, then report what happened.',
 						tools,
 						timeout: TIMEOUT,
@@ -193,7 +188,7 @@ describe('Agent tool loop (live) — authority denial blocks execution', () => {
 					denyRecorder.clear()
 					const tools = createToolManager()
 					tools.add(createLookupTool(recorder))
-					const agent = createAgent(createLiveProvider(), {
+					const agent = createAgent(createLiveOllama(), {
 						system: 'You MUST call the lookup tool with query "datum" to answer.',
 						tools,
 						authority,
@@ -246,7 +241,7 @@ describe('Agent tool loop (live) — turn-limit exhaustion', () => {
 					abortRecorder.clear()
 					const tools = createToolManager()
 					tools.add(createLookupTool(recorder))
-					const agent = createAgent(createLiveProvider(), {
+					const agent = createAgent(createLiveOllama(), {
 						system: 'You MUST call the lookup tool with query "datum" immediately.',
 						tools,
 						limit: 1,
@@ -310,7 +305,7 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 				abortRecorder.clear()
 				const tools = createToolManager()
 				tools.add(createInsatiableTool(recorder))
-				const agent = createAgent(createLiveProvider({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
+				const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
 					system:
 						'You MUST call the more tool right now. Do not write any text response. After every single tool result you receive, immediately call the more tool again — never write a text answer, only call the more tool, every turn without exception.',
 					tools,
@@ -361,7 +356,7 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 				abortRecorder.clear()
 				const tools = createToolManager()
 				tools.add(createInsatiableTool(recorder))
-				const agent = createAgent(createLiveProvider({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
+				const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
 					system:
 						'You have a mission to fetch ALL 12 chunks of the requested data. You MUST call the more tool right now. Do not write any text response. After every single tool result you receive, immediately call the more tool again to get the next chunk — never write a text answer, only call the more tool, every turn without exception, until all 12 chunks have arrived.',
 					tools,
@@ -411,16 +406,13 @@ describe('Agent tool loop (live) — a single turn carries multiple tool calls',
 					const tools = createToolManager()
 					tools.add(createLookupTool(lookupRecorder))
 					tools.add(createInsatiableTool(moreRecorder))
-					const agent = createAgent(
-						createLiveProvider({ predict: TOOL_LOOP_OPTIONS.num_predict }),
-						{
-							system:
-								'You MUST call BOTH the lookup tool (with query "datum") AND the more tool in the SAME turn, immediately, before saying anything else.',
-							tools,
-							timeout: TIMEOUT,
-							limit: 2,
-						},
-					)
+					const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
+						system:
+							'You MUST call BOTH the lookup tool (with query "datum") AND the more tool in the SAME turn, immediately, before saying anything else.',
+						tools,
+						timeout: TIMEOUT,
+						limit: 2,
+					})
 					agent.context.messages.add({
 						role: 'user',
 						content: 'Call both the lookup tool and the more tool right now, in the same turn.',

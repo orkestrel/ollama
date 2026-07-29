@@ -5,9 +5,9 @@ directory (AGENTS §22).
 
 ## By concept
 
-| Concept | Spec                             | Source                        | Tests                                     |
-| ------- | -------------------------------- | ----------------------------- | ----------------------------------------- |
-| Ollama  | [`src/ollama.md`](src/ollama.md) | [`src/server`](../src/server) | [`tests/src/server`](../tests/src/server) |
+| Concept | Spec                             | Source                        | Tests                                                                                                  |
+| ------- | -------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Ollama  | [`src/ollama.md`](src/ollama.md) | [`src/server`](../src/server) | Hermetic: [`tests/src/server`](../tests/src/server); live service: [`tests/service`](../tests/service) |
 
 ## By directory
 

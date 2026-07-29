@@ -4,14 +4,8 @@ import { describe, expect, it } from 'vitest'
 import { createAgent, createToolManager } from '@orkestrel/agent'
 import { createTokenBudget } from '@orkestrel/budget'
 import { createRecorder } from '../setup.js'
-import { createLookupTool } from '../setupServer.js'
-import {
-	createLiveProvider,
-	driveAgent,
-	FAST_OPTIONS,
-	retryUntil,
-	TOOL_LOOP_OPTIONS,
-} from '../setupService.js'
+import { createLookupTool, driveAgent } from '../setupServer.js'
+import { createLiveOllama, FAST_OPTIONS, retryUntil, TOOL_LOOP_OPTIONS } from '../setupService.js'
 
 // budget.test.ts — LIVE agent-layer usage accounting + budget enforcement +
 // sequential-reuse (AGENTS §16: no mocks for the inference boundary). OllamaProvider.test.ts
@@ -30,7 +24,7 @@ describe('Agent usage (live) — single-turn usage coherence at the agent layer'
 		'the single usage chunk reconciles with result.usage, and prompt + completion === total',
 		async () => {
 			// Recipe: FAST_OPTIONS (num_predict:8) — one provider turn, one usage chunk.
-			const agent = createAgent(createLiveProvider({ predict: FAST_OPTIONS.num_predict }), {
+			const agent = createAgent(createLiveOllama({ predict: FAST_OPTIONS.num_predict }), {
 				timeout: TIMEOUT,
 			})
 			agent.context.messages.add({ role: 'user', content: 'Say hello.' })
@@ -77,7 +71,7 @@ describe('Agent budget (live) — an exhausted token budget trips the loop', () 
 				const budget = createTokenBudget({ max: 5, scope: 'completion' })
 				const tools = createToolManager()
 				tools.add(createLookupTool())
-				const agent = createAgent(createLiveProvider({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
+				const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
 					system:
 						'You MUST call the lookup tool with query "test" to obtain the reference datum, ' +
 						'then state it in your final reply. Never invent a value.',
@@ -128,7 +122,7 @@ describe('Agent budget (live) — an exhausted token budget trips MID-GENERATION
 			}> => {
 				const recorder = createRecorder<[reason: unknown]>()
 				const budget = createTokenBudget({ max: 5, scope: 'completion' })
-				const agent = createAgent(createLiveProvider({ predict: 512, temperature: 0 }), {
+				const agent = createAgent(createLiveOllama({ predict: 512, temperature: 0 }), {
 					budget,
 					timeout: TIMEOUT,
 					on: { abort: recorder.handler },
@@ -170,7 +164,7 @@ describe('Agent usage (live) — multi-turn usage accumulates across provider ca
 			}> => {
 				const tools = createToolManager()
 				tools.add(createLookupTool())
-				const agent = createAgent(createLiveProvider({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
+				const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
 					system:
 						'You MUST call the lookup tool with query "test" to obtain the reference datum, ' +
 						'then state it in your final reply. Never invent a value.',
@@ -222,7 +216,7 @@ describe('Agent reuse (live) — sequential generate() calls on ONE agent stay i
 		async () => {
 			// ONE agent, three sequential generate() calls (resident-model keep-alive + no
 			// cross-run state bleed at the agent layer). Distinct tiny prompts, FAST_OPTIONS.
-			const agent = createAgent(createLiveProvider({ predict: FAST_OPTIONS.num_predict }), {
+			const agent = createAgent(createLiveOllama({ predict: FAST_OPTIONS.num_predict }), {
 				timeout: TIMEOUT,
 			})
 

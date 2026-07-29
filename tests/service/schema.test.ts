@@ -1,7 +1,7 @@
 import { createAgent } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
 import { describe, expect, it } from 'vitest'
-import { createLiveProvider, retryUntil } from '../setupService.js'
+import { createLiveOllama, retryUntil } from '../setupService.js'
 
 // Agent-level structured output (live) — AgentRunOptions.schema (0.0.6) forwards a
 // JSON-Schema shape to the provider's `stream` as ProviderStreamOptions.schema, a
@@ -20,7 +20,7 @@ describe('Agent (live) — run({ schema }) constrains output to the requested JS
 				readonly content: string
 				readonly partial: boolean
 			}> => {
-				const provider = createLiveProvider({ predict: 64, temperature: 0 })
+				const provider = createLiveOllama({ predict: 64, temperature: 0 })
 				const agent = createAgent(provider, { timeout: TIMEOUT })
 				agent.context.messages.add({ role: 'user', content: 'Give me a city and its population.' })
 				const result = await agent.generate({

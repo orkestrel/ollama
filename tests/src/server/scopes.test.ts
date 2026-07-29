@@ -1,11 +1,9 @@
-import type { RecordedRequest } from '../../setupServer.js'
 import {
 	createAgent,
 	createInstructionManager,
 	createScope,
 	createToolManager,
 } from '@orkestrel/agent'
-import { arrayOf, isRecord, isString } from '@orkestrel/contract'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { fillWorkspace } from '../../setup.js'
@@ -16,24 +14,10 @@ import {
 	systemText,
 	waitForRequest,
 	wireText,
+	wireTools,
 } from '../../setupServer.js'
 
 const TIMEOUT = 60_000
-
-// Narrow a recorded request body's `tools` field to the wire function-tool shape's
-// `name`s — local to this file (setupServer.ts's `wireMessages` family covers only
-// `messages`; a `wireTools` companion is a HELPER GAP, not added here per scope).
-const isWireToolDefinition = (
-	value: unknown,
-): value is { readonly function: { readonly name: string } } =>
-	isRecord(value) && isRecord(value.function) && isString(value.function.name)
-
-const isWireToolDefinitionArray = arrayOf(isWireToolDefinition)
-
-const wireToolNames = (request: RecordedRequest): readonly string[] => {
-	const { tools } = request.body
-	return isWireToolDefinitionArray(tools) ? tools.map((tool) => tool.function.name) : []
-}
 
 describe('AgentContext scope (provider-behavior) — a tools allow-list filters the wire', () => {
 	it(
@@ -57,7 +41,7 @@ describe('AgentContext scope (provider-behavior) — a tools allow-list filters 
 
 				const request = proxy.requests[0]
 				expect(request).toBeDefined()
-				const names = request === undefined ? [] : wireToolNames(request)
+				const names = request === undefined ? [] : wireTools(request)
 				expect(names).toContain('lookup')
 				expect(names).not.toContain('more')
 			} finally {
@@ -160,14 +144,14 @@ describe('AgentContext scope (provider-behavior) — an empty allow-list drops t
 				await waitForRequest(proxy, 1)
 				const emptyRequest = proxy.requests[0]
 				expect(emptyRequest).toBeDefined()
-				expect(emptyRequest === undefined ? [] : wireToolNames(emptyRequest)).toEqual([])
+				expect(emptyRequest === undefined ? [] : wireTools(emptyRequest)).toEqual([])
 
 				agent.context.apply(undefined)
 				agent.generate().catch(() => {})
 				await waitForRequest(proxy, 2)
 				const allRequest = proxy.requests[1]
 				expect(allRequest).toBeDefined()
-				const names = allRequest === undefined ? [] : wireToolNames(allRequest)
+				const names = allRequest === undefined ? [] : wireTools(allRequest)
 				expect(names).toContain('lookup')
 				expect(names).toContain('more')
 			} finally {

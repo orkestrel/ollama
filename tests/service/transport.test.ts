@@ -1,12 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { createAgent } from '@orkestrel/agent'
 import { createOllama } from '@src/server'
-import {
-	createRecordingProxy,
-	FAST_OPTIONS,
-	OLLAMA_CONFIG,
-	STREAM_OPTIONS,
-} from '../setupService.js'
+import { createRecordingProxy } from '../setupServer.js'
+import { FAST_OPTIONS, OLLAMA_CONFIG, STREAM_OPTIONS } from '../setupService.js'
 
 // S2 — the BROWSER → OWN-SERVER → LLM deployment, end-to-end. The unit-level header-injection
 // + custom-fetch tests live in OllamaProvider.test.ts; this hardens the full SCENARIO: the
@@ -28,7 +24,7 @@ describe('S2 — browser → own server (obfuscated token) → live LLM, end-to-
 		'a real generate() flows through the dev-server proxy carrying ONLY the obfuscated token, and a real answer comes back',
 		async () => {
 			// Recipe: FAST_OPTIONS (num_predict:8, temperature:0) — minimal warm chat, structural assert only.
-			const proxy = await createRecordingProxy()
+			const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
 			try {
 				// The browser-side runtime: a provider pointed at the DEV SERVER (the proxy), with a
 				// headers hook attaching the obfuscated bearer the server expects. No real API key is
@@ -74,7 +70,7 @@ describe('S2 — browser → own server (obfuscated token) → live LLM, end-to-
 		'the STREAMING path flows through the proxy too — deltas join to the settled content, carrying the obfuscated token',
 		async () => {
 			// Recipe: STREAM_OPTIONS (num_predict:16, temperature:0) — multi-delta streaming.
-			const proxy = await createRecordingProxy()
+			const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
 			try {
 				const agent = createAgent(
 					createOllama({

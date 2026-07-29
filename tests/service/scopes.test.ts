@@ -7,8 +7,8 @@ import {
 } from '@orkestrel/agent'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { systemText } from '../setupServer.js'
-import { createRecordingProxy, OLLAMA_CONFIG, retryUntil, TOOL_OPTIONS } from '../setupService.js'
+import { createRecordingProxy, systemText } from '../setupServer.js'
+import { OLLAMA_CONFIG, retryUntil, TOOL_OPTIONS } from '../setupService.js'
 
 const TIMEOUT = 60_000
 
@@ -35,7 +35,7 @@ describe('AgentContext scope (live, behavioral) — switching scopes changes the
 	}
 
 	const attempt = async (): Promise<Attempt> => {
-		const proxy = await createRecordingProxy()
+		const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
 		try {
 			const provider = createOllama({
 				model: OLLAMA_CONFIG.model,

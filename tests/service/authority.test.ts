@@ -1,8 +1,8 @@
 import { createAgent, createAuthority, createToolManager } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
 import { createRecorder } from '../setup.js'
-import { createLookupTool, LOOKUP_DATUM } from '../setupServer.js'
-import { createLiveProvider, driveAgent, retryUntil } from '../setupService.js'
+import { createLookupTool, driveAgent, LOOKUP_DATUM } from '../setupServer.js'
+import { createLiveOllama, retryUntil } from '../setupService.js'
 
 // LIVE authority-surface tests — the allow / fail-closed / fallback paths of
 // `createAuthority` beyond the deny-path already covered in tools.test.ts (AGENTS
@@ -33,7 +33,7 @@ describe('Agent tool loop (live) — an allow rule lets the tool execute', () =>
 					denyRecorder.clear()
 					const tools = createToolManager()
 					tools.add(createLookupTool(recorder))
-					const agent = createAgent(createLiveProvider(), {
+					const agent = createAgent(createLiveOllama(), {
 						system:
 							'You MUST call the lookup tool with query "datum" to answer, then state exactly what it returned.',
 						tools,
@@ -90,7 +90,7 @@ describe('Agent tool loop (live) — a rule that throws during evaluation fails 
 					denyRecorder.clear()
 					const tools = createToolManager()
 					tools.add(createLookupTool(recorder))
-					const agent = createAgent(createLiveProvider(), {
+					const agent = createAgent(createLiveOllama(), {
 						system: 'You MUST call the lookup tool with query "datum" to answer.',
 						tools,
 						authority,
@@ -143,7 +143,7 @@ describe('Agent tool loop (live) — no matching rule falls back to default allo
 					denyRecorder.clear()
 					const tools = createToolManager()
 					tools.add(createLookupTool(recorder))
-					const agent = createAgent(createLiveProvider(), {
+					const agent = createAgent(createLiveOllama(), {
 						system:
 							'You MUST call the lookup tool with query "datum" to answer, then state exactly what it returned.',
 						tools,

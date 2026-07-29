@@ -1,28 +1,7 @@
-import type {
-	AgentResult,
-	AgentStreamInterface,
-	ContextFormatInterface,
-	MessageInterface,
-	ProviderInterface,
-	ToolCall,
-	ToolResult,
-} from '@orkestrel/agent'
-import type { TokenUsage } from '@orkestrel/budget'
-import type { RecordingProxyInterface } from './setupServer.js'
+import type { ContextFormatInterface, MessageInterface } from '@orkestrel/agent'
 import { isRecord, isString } from '@orkestrel/contract'
 import { createOllama, OllamaProvider } from '@src/server'
-import { createRecordingProxy as createServerRecordingProxy } from './setupServer.js'
-
-/** Read a non-empty environment variable, or return its fallback. */
-export function env(name: string, fallback: string): string {
-	const value = process.env[name]
-	return value !== undefined && value.length > 0 ? value : fallback
-}
-
-/** Normalize an Ollama-style host value to an absolute HTTP URL. */
-export function withScheme(value: string): string {
-	return value.startsWith('http://') || value.startsWith('https://') ? value : `http://${value}`
-}
+import { env, withScheme } from './setupServer.js'
 
 /** The live daemon and model selected for the service axis. */
 export const OLLAMA_CONFIG = Object.freeze({
@@ -30,34 +9,42 @@ export const OLLAMA_CONFIG = Object.freeze({
 	model: env('OLLAMA_MODEL', 'qwen3.5:2b-q4_K_M'),
 })
 
-/** Tuning accepted by the live provider fixtures. */
+/** Tuning for a live Ollama test provider. */
 export interface LiveProviderOptions {
+	/** The Ollama `num_predict` cap; defaults to `32`. */
 	readonly predict?: number
+	/** The sampling temperature; defaults to `0` for reproducible fixtures. */
 	readonly temperature?: number
-	readonly format?: ContextFormatInterface | undefined
+	/** The provider's context-framing default; omission leaves framing undefined. */
+	readonly format?: ContextFormatInterface
 }
 
-/** Build a concrete provider against the selected live daemon and model. */
+/**
+ * Build a concrete provider against the selected live daemon and warmed model.
+ *
+ * @param options - Optional prediction, temperature, and framing overrides
+ * @returns A concrete provider configured for the service axis
+ */
 export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider {
 	return new OllamaProvider({
 		model: OLLAMA_CONFIG.model,
 		url: OLLAMA_CONFIG.host,
 		options: { num_predict: options?.predict ?? 32, temperature: options?.temperature ?? 0 },
-		format: options?.format,
+		...(options?.format === undefined ? {} : { format: options.format }),
 	})
 }
 
-/** Build the abstract provider fixture used by live agent tests. */
-export function createLiveProvider(options?: LiveProviderOptions): ProviderInterface {
-	return createLiveOllama(options)
-}
-
-/** Start the recording proxy against the selected live daemon. */
-export function createRecordingProxy(): Promise<RecordingProxyInterface> {
-	return createServerRecordingProxy(OLLAMA_CONFIG.host)
-}
-
-/** Build a live summarizer for conversation-compaction scenarios. */
+/**
+ * Build a live summarizer for conversation-compaction scenarios.
+ *
+ * The fixed summarization instruction is appended as the final user turn because a
+ * reasoning chat model may treat a prompt ending on an assistant turn as already
+ * answered and emit no digest.
+ *
+ * @param timeoutMs - The generation deadline in milliseconds
+ * @param predict - The summarizer's `num_predict` cap; defaults to `64`
+ * @returns A conversation summarizer backed by the warmed live model
+ */
 export function createLiveSummarizer(
 	timeoutMs: number,
 	predict = 64,
@@ -83,7 +70,11 @@ export function createLiveSummarizer(
 		).content
 }
 
-/** Return whether the daemon answers and reports the selected model as installed. */
+/**
+ * Check that the daemon answers and reports the selected model as installed.
+ *
+ * @returns `true` only when `/api/tags` succeeds and includes the configured model
+ */
 export async function isOllamaReady(): Promise<boolean> {
 	try {
 		const response = await fetch(`${OLLAMA_CONFIG.host}/api/tags`, {
@@ -103,7 +94,12 @@ export async function isOllamaReady(): Promise<boolean> {
 	}
 }
 
-/** Warm the selected model with the smallest useful chat request. */
+/**
+ * Warm the selected model with a one-token chat request.
+ *
+ * @returns A promise that resolves after the response body has been drained
+ * @throws When the daemon cannot be reached or rejects the warmup
+ */
 export async function warmOllama(): Promise<void> {
 	let response: Response
 	try {
@@ -155,7 +151,16 @@ export const THINK_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0 })
 /** Default maximum attempts for bounded model-behavior retries. */
 export const ATTEMPTS = 6
 
-/** Retry a live scenario until its semantic condition is satisfied. */
+/**
+ * Retry a live scenario until its semantic condition is satisfied.
+ *
+ * @typeParam T - The value produced by each attempt
+ * @param produce - Execute one live attempt
+ * @param satisfied - Decide whether an attempt proves the requested behavior
+ * @param description - Describe the behavior in the terminal failure
+ * @param attempts - Maximum attempts; defaults to {@link ATTEMPTS}
+ * @returns The first value satisfying the condition
+ */
 export async function retryUntil<T>(
 	produce: () => Promise<T>,
 	satisfied: (value: T) => boolean,
@@ -171,34 +176,6 @@ export async function retryUntil<T>(
 	throw new Error(
 		`model did not ${description} in ${attempts} attempts (final value: ${JSON.stringify(last)})`,
 	)
-}
-
-/** A driven tool-call chunk paired with its execution result. */
-export interface DrivenTool {
-	readonly call: ToolCall
-	readonly result: ToolResult
-}
-
-/** Drain an agent stream and bucket every observable chunk. */
-export async function driveAgent(stream: AgentStreamInterface): Promise<{
-	readonly tokens: readonly string[]
-	readonly thoughts: readonly string[]
-	readonly tools: readonly DrivenTool[]
-	readonly usages: readonly TokenUsage[]
-	readonly result: AgentResult
-}> {
-	const tokens: string[] = []
-	const thoughts: string[] = []
-	const tools: DrivenTool[] = []
-	const usages: TokenUsage[] = []
-	for await (const chunk of stream.events) {
-		if (chunk.type === 'token') tokens.push(chunk.content)
-		else if (chunk.type === 'think') thoughts.push(chunk.content)
-		else if (chunk.type === 'tool') tools.push({ call: chunk.call, result: chunk.result })
-		else usages.push(chunk.usage)
-	}
-	const result = await stream.result
-	return { tokens, thoughts, tools, usages, result }
 }
 
 /** Two-turn tool-loop request recipe. */

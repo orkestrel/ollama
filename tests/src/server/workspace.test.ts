@@ -1,19 +1,13 @@
-import { arrayOf, isRecord, isString } from '@orkestrel/contract'
 import { createAgent, createBinaryContent, createFile } from '@orkestrel/agent'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage, fillWorkspace } from '../../setup.js'
-import { createRecordingProxy, systemText, wireText } from '../../setupServer.js'
+import { createRecordingProxy, systemText, wireMessages, wireText } from '../../setupServer.js'
 
-// LIVE workspace tests — the src:ollama project hits a REAL warmed Ollama (AGENTS §16: no mocks
-// for the inference boundary; setupServer.ts hard-requires + warms the model, never skips). These
-// tests prove the WIRE-level shape of large-context injection via `agent.context.workspaces` — a
-// `createRecordingProxy()` sits between the provider and the real daemon, recording the exact
-// request body before forwarding verbatim (never fabricating anything). Assertions are
-// STRUCTURAL/WIRE-SHAPE only (AGENTS §16.1 helpers + this dispatch's directive): whether text files
-// fence into the system block in insertion order, whether only the active workspace reaches the
-// wire, whether image files are excluded from the text render, and whether an active-workspace
-// image attaches to the last user message. No model-behavior assertions.
+// Hermetic workspace request-shape tests use a deliberately unreachable upstream.
+// The recording proxy captures the request before forwarding, so the assertions cover
+// only workspace rendering and attachment behavior on the provider wire; the suite
+// passes with the daemon down.
 
 const TIMEOUT = 60_000
 
@@ -22,29 +16,7 @@ const TIMEOUT = 60_000
 const TINY_PNG_BASE64 =
 	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
-// Narrow a recorded request body's `messages` entries to their raw shape (role + content +
-// optional `images`), without `as` — mirrors `setupServer.ts`'s `wireMessages` guard-first
-// approach, but additionally carries the optional `images` array a `WireMessage` omits (this
-// suite is the one place that needs it, per AGENTS §16.1 the guard stays local to its sole use).
-interface RawWireMessage {
-	readonly role: string
-	readonly content: string
-	readonly images?: readonly string[]
-}
-
-const isRawWireMessage = (value: unknown): value is RawWireMessage => {
-	if (!isRecord(value) || !isString(value.role) || !isString(value.content)) return false
-	return value.images === undefined || arrayOf(isString)(value.images)
-}
-
-const isRawWireMessageArray = arrayOf(isRawWireMessage)
-
-function rawWireMessages(body: Record<string, unknown>): readonly RawWireMessage[] {
-	const { messages } = body
-	return isRawWireMessageArray(messages) ? messages : []
-}
-
-describe('AgentContext workspaces (live, wire-behavior) — large-context injection', () => {
+describe('AgentContext workspaces (hermetic provider behavior) — large-context injection', () => {
 	it(
 		'a many-file workspace fences every text file into the system block in insertion order',
 		async () => {
@@ -190,7 +162,7 @@ describe('AgentContext workspaces (live, wire-behavior) — large-context inject
 
 				const request = proxy.requests[0]
 				expect(request).toBeDefined()
-				const messages = request === undefined ? [] : rawWireMessages(request.body)
+				const messages = request === undefined ? [] : wireMessages(request)
 				const userMessages = messages.filter((message) => message.role === 'user')
 				const last = userMessages[userMessages.length - 1]
 				expect(last).toBeDefined()

@@ -1,4 +1,4 @@
-import type { ContextFormatInterface, MessageInterface } from '@orkestrel/agent'
+import type { ContextFormatInterface } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
 import {
 	CONVERSATION_RECAP_PREFIX,
@@ -8,7 +8,7 @@ import {
 	createInstructionManager,
 } from '@orkestrel/agent'
 import { createOllama } from '@src/server'
-import { createRecordingProxy } from '../../setupServer.js'
+import { createRecordingProxy, wireMessages, wireText } from '../../setupServer.js'
 
 const TIMEOUT = 60_000
 
@@ -38,16 +38,12 @@ describe('AgentContext (provider-behavior) — a constraining instruction reache
 				agent.context.messages.add({ role: 'user', content: 'Say hello to me.' })
 				await agent.generate().catch(() => {})
 
-				const body = proxy.requests[0]?.body as
-					| { messages?: readonly MessageInterface[] }
-					| undefined
-				expect(body).toBeDefined()
-				const messages = body?.messages ?? []
-				const instructionIndex = messages.findIndex((message) =>
-					String(message.content).includes('BANANA'),
-				)
+				const request = proxy.requests[0]
+				expect(request).toBeDefined()
+				const messages = request === undefined ? [] : wireMessages(request)
+				const instructionIndex = messages.findIndex((message) => message.content.includes('BANANA'))
 				const userIndex = messages.findIndex(
-					(message) => message.role === 'user' && String(message.content).includes('Say hello'),
+					(message) => message.role === 'user' && message.content.includes('Say hello'),
 				)
 				expect(instructionIndex).toBeGreaterThanOrEqual(0)
 				expect(userIndex).toBeGreaterThanOrEqual(0)
@@ -93,15 +89,14 @@ describe('AgentContext (provider-behavior) — a CUSTOM format still reaches the
 				agent.context.messages.add({ role: 'user', content: 'Is the sky blue?' })
 				await agent.generate().catch(() => {})
 
-				const body = proxy.requests[0]?.body as
-					| { messages?: readonly MessageInterface[] }
-					| undefined
-				const messages = body?.messages ?? []
+				const request = proxy.requests[0]
+				expect(request).toBeDefined()
+				const messages = request === undefined ? [] : wireMessages(request)
 				const framed = messages.find(
 					(message) =>
-						String(message.content).includes('<instructions>') &&
-						String(message.content).includes('<instruction>') &&
-						String(message.content).includes('</instructions>'),
+						message.content.includes('<instructions>') &&
+						message.content.includes('<instruction>') &&
+						message.content.includes('</instructions>'),
 				)
 				expect(framed).toBeDefined()
 			} finally {
@@ -136,7 +131,7 @@ describe('Conversation framing (provider-behavior) — the TIGHTENED recap prefi
 				const active = conversations.add()
 				// Seed a section directly (the exact recap shape view() folds a compacted section into)
 				// rather than driving a real compaction — the wire-framing assertion is deterministic and
-				// doesn't need a live summarizer call.
+				// doesn't need a summarizer call.
 				active.add({ role: 'assistant', content: `${CONVERSATION_RECAP_PREFIX}${summary}` })
 				active.add({
 					role: 'user',
@@ -150,15 +145,14 @@ describe('Conversation framing (provider-behavior) — the TIGHTENED recap prefi
 				const agent = createAgent(provider, { conversations, timeout: TIMEOUT })
 				await agent.generate().catch(() => {})
 
-				const body = proxy.requests[0]?.body as
-					| { messages?: readonly MessageInterface[] }
-					| undefined
-				const messages = body?.messages ?? []
+				const request = proxy.requests[0]
+				expect(request).toBeDefined()
+				const messages = request === undefined ? [] : wireMessages(request)
 				const recapMessage = messages.find((message) =>
-					String(message.content).startsWith(CONVERSATION_RECAP_PREFIX),
+					message.content.startsWith(CONVERSATION_RECAP_PREFIX),
 				)
 				expect(recapMessage).toBeDefined()
-				expect(String(recapMessage?.content)).toContain(FACT)
+				expect(recapMessage?.content).toContain(FACT)
 			} finally {
 				await proxy.stop()
 			}
@@ -172,7 +166,7 @@ describe('Conversation.reference (provider-behavior) — cross-conversation attr
 	// conversation B's reference() — carrying a B-fact ("the team chose Postgres") — is written
 	// into A's ACTIVE WORKSPACE (the SOLE document context build() folds into the system block).
 	// Assertion strategy (directive #5's conversion): the DETERMINISTIC reference-block content is
-	// still asserted directly, and the "surfaces + attributes" live claim is REPLACED with a
+	// still asserted directly, and the "surfaces + attributes" model-output claim is replaced with a
 	// provider-behavior assertion — the recorded request body the provider sends carries the
 	// reference document text (Postgres + its "planning" provenance label), proving the B-fact and
 	// its attribution reach the wire via the active workspace framing (no dependency on whether the
@@ -183,8 +177,7 @@ describe('Conversation.reference (provider-behavior) — cross-conversation attr
 		async () => {
 			// Conversation B (the planning thread) — its rollup summary carries the decision. We craft
 			// the summary directly (a stub digest) so the probe is about the REFERENCE plumbing +
-			// provenance, not about a model-authored summary (which the Conversation-live block above
-			// proves).
+			// provenance, not about a model-authored summary.
 			const planning = createConversation({ id: 'planning' })
 			planning.add([
 				{ role: 'user', content: 'Which database should we use?' },
@@ -201,7 +194,7 @@ describe('Conversation.reference (provider-behavior) — cross-conversation attr
 
 			const proxy = await createRecordingProxy()
 			try {
-				// Conversation A is ACTIVE — its own A-fact lives as a live user turn.
+				// Conversation A is active — its own A-fact remains a current user turn.
 				const conversations = createConversationManager()
 				const active = conversations.add({ id: 'auth' }) // auto-activates
 				active.add({ role: 'user', content: 'In this chat we are debugging auth.' })
@@ -224,16 +217,11 @@ describe('Conversation.reference (provider-behavior) — cross-conversation attr
 				})
 				await agent.generate().catch(() => {})
 
-				const body = proxy.requests[0]?.body as
-					| { messages?: readonly MessageInterface[] }
-					| undefined
-				const messages = body?.messages ?? []
-				const carriesReference = messages.some(
-					(message) =>
-						String(message.content).includes('Postgres') &&
-						String(message.content).includes('planning'),
-				)
-				expect(carriesReference).toBe(true)
+				const request = proxy.requests[0]
+				expect(request).toBeDefined()
+				const text = request === undefined ? '' : wireText(request)
+				expect(text).toContain('Postgres')
+				expect(text).toContain('planning')
 			} finally {
 				await proxy.stop()
 			}
@@ -247,7 +235,7 @@ describe('Conversation.reference (provider-behavior) — cherry-pick ONE relevan
 	// it via B.search('endpoint') → reference({ messages }) → write into A's active workspace.
 	// Assertion strategy (directive #5's conversion): (1) DETERMINISTICALLY the rendered reference
 	// carries only that one message — NOT B's other four (cherry-pick, never a full dump that
-	// re-bloats a small model's context); (2) the "model recalls the endpoint" live claim is
+	// re-bloats a small model's context); (2) the "model recalls the endpoint" output claim is
 	// REPLACED with a provider-behavior assertion — the recorded request body carries the
 	// cherry-picked endpoint text and does NOT carry the four noise turns, proving the cherry-pick
 	// (not a full-history dump) is what actually reaches the wire.
@@ -299,11 +287,9 @@ describe('Conversation.reference (provider-behavior) — cherry-pick ONE relevan
 				})
 				await agent.generate().catch(() => {})
 
-				const body = proxy.requests[0]?.body as
-					| { messages?: readonly MessageInterface[] }
-					| undefined
-				const messages = body?.messages ?? []
-				const joined = messages.map((message) => String(message.content)).join('\n')
+				const request = proxy.requests[0]
+				expect(request).toBeDefined()
+				const joined = request === undefined ? '' : wireText(request)
 				expect(joined).toContain(ENDPOINT)
 				expect(joined).not.toContain('standup')
 				expect(joined).not.toContain('9am')

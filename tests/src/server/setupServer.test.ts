@@ -1,4 +1,4 @@
-import type { WorkspaceInterface } from '@orkestrel/agent'
+import type { AgentResult, WorkspaceInterface } from '@orkestrel/agent'
 import { createWorkspace } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
 import {
@@ -10,8 +10,11 @@ import {
 } from '../../setup.js'
 import {
 	createInsatiableTool,
+	createScriptedAgentStream,
 	createLookupTool,
 	createThrowingTool,
+	driveAgent,
+	env,
 	flattenHeaders,
 	forwardHeaders,
 	insatiableResult,
@@ -22,6 +25,8 @@ import {
 	THROWING_TOOL_MESSAGE,
 	wireMessages,
 	wireText,
+	wireTools,
+	withScheme,
 } from '../../setupServer.js'
 
 // Build a minimal RecordedRequest-shaped value for the wire-narrowing helper tests
@@ -170,6 +175,26 @@ describe('wireMessages', () => {
 		])
 	})
 
+	it('preserves optional image payloads', () => {
+		const request = requestWithBody({
+			messages: [{ role: 'user', content: 'look', images: ['base64-image'] }],
+		})
+
+		expect(wireMessages(request)).toEqual([
+			{ role: 'user', content: 'look', images: ['base64-image'] },
+		])
+	})
+
+	it('rejects malformed image payloads', () => {
+		expect(
+			wireMessages(
+				requestWithBody({
+					messages: [{ role: 'user', content: 'look', images: [42] }],
+				}),
+			),
+		).toEqual([])
+	})
+
 	it('returns [] when messages is absent', () => {
 		expect(wireMessages(requestWithBody({}))).toEqual([])
 	})
@@ -184,6 +209,24 @@ describe('wireMessages', () => {
 
 	it('returns [] when an element is not a record', () => {
 		expect(wireMessages(requestWithBody({ messages: ['nope'] }))).toEqual([])
+	})
+})
+
+describe('wireTools', () => {
+	it('returns function names from a well-formed tools array', () => {
+		const request = requestWithBody({
+			tools: [
+				{ type: 'function', function: { name: 'lookup' } },
+				{ type: 'function', function: { name: 'more' } },
+			],
+		})
+
+		expect(wireTools(request)).toEqual(['lookup', 'more'])
+	})
+
+	it('returns [] when tools are absent or malformed', () => {
+		expect(wireTools(requestWithBody({}))).toEqual([])
+		expect(wireTools(requestWithBody({ tools: [{ function: {} }] }))).toEqual([])
 	})
 })
 
@@ -380,5 +423,78 @@ describe('createInsatiableTool', () => {
 
 		expect(first).toBe(insatiableResult(2))
 		expect(second).toBe(insatiableResult(1))
+	})
+})
+
+describe('withScheme', () => {
+	it('prefixes a scheme-less host:port with http://', () => {
+		expect(withScheme('127.0.0.1:11434')).toBe('http://127.0.0.1:11434')
+	})
+
+	it('passes existing HTTP schemes through unchanged', () => {
+		expect(withScheme('http://localhost:11434')).toBe('http://localhost:11434')
+		expect(withScheme('https://ollama.example.com')).toBe('https://ollama.example.com')
+	})
+})
+
+describe('env', () => {
+	const name = 'ORKESTREL_OLLAMA_SETUP_TEST'
+
+	it('returns a non-empty variable value', () => {
+		process.env[name] = 'live-value'
+		try {
+			expect(env(name, 'fallback')).toBe('live-value')
+		} finally {
+			delete process.env[name]
+		}
+	})
+
+	it('returns the fallback when unset or empty', () => {
+		delete process.env[name]
+		expect(env(name, 'fallback')).toBe('fallback')
+		process.env[name] = ''
+		try {
+			expect(env(name, 'fallback')).toBe('fallback')
+		} finally {
+			delete process.env[name]
+		}
+	})
+})
+
+describe('driveAgent', () => {
+	it('buckets chunks and preserves the settled result', async () => {
+		const call = { id: 'c1', name: 'lookup', arguments: { query: 'weather' } }
+		const toolResult = { id: 'c1', name: 'lookup', value: LOOKUP_DATUM }
+		const usage = { prompt: 3, completion: 5, total: 8 }
+		const settled: AgentResult = { content: 'ab', partial: false }
+		const stream = createScriptedAgentStream(
+			[
+				{ type: 'think', content: 'reasoning-1' },
+				{ type: 'token', content: 'a' },
+				{ type: 'tool', call, result: toolResult },
+				{ type: 'token', content: 'b' },
+				{ type: 'usage', usage },
+			],
+			settled,
+		)
+
+		const driven = await driveAgent(stream)
+
+		expect(driven.tokens).toEqual(['a', 'b'])
+		expect(driven.thoughts).toEqual(['reasoning-1'])
+		expect(driven.tools).toEqual([{ call, result: toolResult }])
+		expect(driven.usages).toEqual([usage])
+		expect(driven.result).toBe(settled)
+	})
+
+	it('returns empty buckets for a stream with no chunks', async () => {
+		const settled: AgentResult = { content: '', partial: false }
+		const driven = await driveAgent(createScriptedAgentStream([], settled))
+
+		expect(driven.tokens).toEqual([])
+		expect(driven.thoughts).toEqual([])
+		expect(driven.tools).toEqual([])
+		expect(driven.usages).toEqual([])
+		expect(driven.result).toBe(settled)
 	})
 })

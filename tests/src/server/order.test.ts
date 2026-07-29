@@ -8,18 +8,16 @@ import {
 	wireMessages,
 } from '../../setupServer.js'
 
-// LIVE context-assembly ORDER tests — the src:ollama project hits a REAL warmed Ollama
-// (AGENTS §16: no mocks for the inference boundary). `AgentContext.build()` emits ONE
+// Hermetic context-assembly order tests use a deliberately unreachable upstream.
+// `AgentContext.build()` emits one
 // leading system message joining [system prompt, '## Instructions' (descending priority,
 // stable ties), '## Workspace' (active workspace text files)], then the conversation as
-// subsequent messages. These tests prove that canonical assembly ORDER on the WIRE — the
-// exact request body the provider sends — using the abort-once-recorded pattern
-// (waitForRequest + FAST_OPTIONS): the assertions run on `proxy.requests`, never on
-// whether the model "obeyed", so `agent.generate()` is never awaited to completion.
+// subsequent messages. The recording proxy captures the exact request body before the
+// unreachable forward fails, so the suite passes with the daemon down.
 
 const TIMEOUT = 60_000
 
-describe('AgentContext (live, provider-behavior) — canonical assembly order on the wire', () => {
+describe('AgentContext (hermetic provider behavior) — canonical assembly order on the wire', () => {
 	it(
 		'the context assembles system, instructions, workspace, then conversation',
 		async () => {

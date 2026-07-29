@@ -1,4 +1,15 @@
-import type { ProviderDelta, ProviderResult, ToolDefinition, ToolInterface } from '@orkestrel/agent'
+import type {
+	AgentChunk,
+	AgentResult,
+	AgentStreamInterface,
+	ProviderDelta,
+	ProviderResult,
+	ToolCall,
+	ToolDefinition,
+	ToolInterface,
+	ToolResult,
+} from '@orkestrel/agent'
+import type { TokenUsage } from '@orkestrel/budget'
 import type { TestRecorderInterface } from './setup.js'
 import { createTool } from '@orkestrel/agent'
 import { arrayOf, isRecord, isString } from '@orkestrel/contract'
@@ -54,11 +65,13 @@ export function parseRequestBody(text: string): Record<string, unknown> | undefi
 export interface WireMessage {
 	readonly role: string
 	readonly content: string
+	readonly images?: readonly string[]
 }
 
 /** Narrow an unknown value to a recorded wire message. */
 export function isWireMessage(value: unknown): value is WireMessage {
-	return isRecord(value) && isString(value.role) && isString(value.content)
+	if (!isRecord(value) || !isString(value.role) || !isString(value.content)) return false
+	return value.images === undefined || arrayOf(isString)(value.images)
 }
 
 /** Narrow a captured request's messages, returning an empty collection when malformed. */
@@ -72,6 +85,24 @@ export function wireText(request: RecordedRequest): string {
 	return wireMessages(request)
 		.map((message) => message.content)
 		.join('\n')
+}
+
+/** Minimal function tool shape recorded from the provider wire. */
+export interface WireTool {
+	readonly function: {
+		readonly name: string
+	}
+}
+
+/** Narrow an unknown value to a recorded function tool. */
+export function isWireTool(value: unknown): value is WireTool {
+	return isRecord(value) && isRecord(value.function) && isString(value.function.name)
+}
+
+/** Return the function names advertised on a captured provider request. */
+export function wireTools(request: RecordedRequest): readonly string[] {
+	const { tools } = request.body
+	return arrayOf(isWireTool)(tools) ? tools.map((tool) => tool.function.name) : []
 }
 
 /** Return the leading system message, when present. */
@@ -178,6 +209,68 @@ export async function drive(generator: AsyncGenerator<ProviderDelta, ProviderRes
 		if (step.done) return { deltas, thoughts, result: step.value }
 		if (step.value.type === 'content') deltas.push(step.value.text)
 		else thoughts.push(step.value.text)
+	}
+}
+
+/** Read a non-empty environment variable, or return its fallback. */
+export function env(name: string, fallback: string): string {
+	const value = process.env[name]
+	return value !== undefined && value.length > 0 ? value : fallback
+}
+
+/**
+ * Normalize an Ollama-style host value to an absolute HTTP URL.
+ *
+ * @param value - The host value, with or without an HTTP scheme
+ * @returns The absolute HTTP URL
+ * @example
+ * ```ts
+ * withScheme('127.0.0.1:11434') // 'http://127.0.0.1:11434'
+ * ```
+ */
+export function withScheme(value: string): string {
+	return value.startsWith('http://') || value.startsWith('https://') ? value : `http://${value}`
+}
+
+/** A driven tool-call chunk paired with its execution result. */
+export interface DrivenTool {
+	readonly call: ToolCall
+	readonly result: ToolResult
+}
+
+/** Drain an agent stream and bucket every observable chunk. */
+export async function driveAgent(stream: AgentStreamInterface): Promise<{
+	readonly tokens: readonly string[]
+	readonly thoughts: readonly string[]
+	readonly tools: readonly DrivenTool[]
+	readonly usages: readonly TokenUsage[]
+	readonly result: AgentResult
+}> {
+	const tokens: string[] = []
+	const thoughts: string[] = []
+	const tools: DrivenTool[] = []
+	const usages: TokenUsage[] = []
+	for await (const chunk of stream.events) {
+		if (chunk.type === 'token') tokens.push(chunk.content)
+		else if (chunk.type === 'think') thoughts.push(chunk.content)
+		else if (chunk.type === 'tool') tools.push({ call: chunk.call, result: chunk.result })
+		else usages.push(chunk.usage)
+	}
+	const result = await stream.result
+	return { tokens, thoughts, tools, usages, result }
+}
+
+/** Build an in-process agent stream over deterministic chunks. */
+export function createScriptedAgentStream(
+	chunks: readonly AgentChunk[],
+	result: AgentResult,
+): AgentStreamInterface {
+	return {
+		events: (async function* () {
+			for (const chunk of chunks) yield chunk
+		})(),
+		result: Promise.resolve(result),
+		abort() {},
 	}
 }
 

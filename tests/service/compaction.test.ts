@@ -1,7 +1,8 @@
 import type { AgentResult, ConversationInterface } from '@orkestrel/agent'
-import type { DrivenTool } from '../setupService.js'
+import type { DrivenTool } from '../setupServer.js'
 import { describe, expect, it } from 'vitest'
 import {
+	CONVERSATION_RECAP_PREFIX,
 	createAgent,
 	createConversation,
 	createConversationManager,
@@ -10,15 +11,72 @@ import {
 	estimateMessages,
 } from '@orkestrel/agent'
 import { createBudget } from '@orkestrel/budget'
-import { collect } from '../setup.js'
+import { createOllama } from '@src/server'
+import { buildTurns, collect, createUserMessage } from '../setup.js'
+import { createRecordingProxy, driveAgent, wireMessages } from '../setupServer.js'
 import {
-	createLiveProvider,
+	createLiveOllama,
 	createLiveSummarizer,
-	driveAgent,
+	OLLAMA_CONFIG,
 	retryUntil,
 } from '../setupService.js'
 
 const TIMEOUT = 60_000
+
+describe('Agent (live) — auto-compaction folds a recap while retaining the kept tail', () => {
+	const summarize = createLiveSummarizer(TIMEOUT)
+
+	it('a recorded wire request carries a recap-prefixed message followed by the kept tail verbatim', async () => {
+		const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
+		try {
+			const conversations = createConversationManager({ summarize, keep: 2 })
+			const conversation = conversations.add()
+			const turns = buildTurns(12)
+			conversation.add(turns)
+			const provider = createOllama({
+				model: OLLAMA_CONFIG.model,
+				url: proxy.url,
+				options: { num_predict: 32, temperature: 0 },
+			})
+			const agent = createAgent(provider, {
+				conversations,
+				window: createBudget({
+					max: 20,
+					consume: (messages: readonly { readonly content: string }[]) =>
+						messages.reduce((total, message) => total + message.content.length, 0),
+				}),
+				timeout: TIMEOUT,
+			})
+			const finalMessage = createUserMessage('Please continue.')
+			agent.context.messages.add(finalMessage)
+			// Once generation completes, the first proxy request is guaranteed to have been captured.
+			const result = await agent.generate()
+			expect(result.partial).toBe(false)
+			const request = proxy.requests[0]
+			const messages = request === undefined ? [] : wireMessages(request)
+			const recapIndex = messages.findIndex((message) =>
+				message.content.startsWith(CONVERSATION_RECAP_PREFIX),
+			)
+			const recapRole = recapIndex >= 0 ? messages[recapIndex]?.role : undefined
+			const keptTail = [turns[turns.length - 1], finalMessage]
+			const tailIndices = keptTail.map((turn) =>
+				messages.findIndex((message) => turn !== undefined && message.content === turn.content),
+			)
+			const followingCount = messages.filter(
+				(message, index) => index > recapIndex && message.role !== 'system',
+			).length
+
+			expect(recapIndex).toBeGreaterThanOrEqual(0)
+			expect(recapRole).toBe('assistant')
+			for (const index of tailIndices) {
+				expect(index).toBeGreaterThan(recapIndex)
+			}
+			expect(followingCount).toBe(2)
+		} finally {
+			await proxy.stop()
+		}
+	})
+})
 
 describe('Conversation (live) — compaction summarizes via the REAL model', () => {
 	// A REAL ConversationSummarizer built from the live provider — the provider-agnostic seam the
@@ -119,7 +177,7 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 				execute: () => ({ code: SENTINEL }),
 			}),
 		)
-		const agent = createAgent(createLiveProvider(), {
+		const agent = createAgent(createLiveOllama(), {
 			system:
 				'You MUST call the lookup_code tool to obtain the secret access code, then state the code in your final reply. Never invent a code.',
 			tools,
@@ -213,7 +271,7 @@ describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIP
 				execute: () => ({ code: SENTINEL }),
 			}),
 		)
-		const agent = createAgent(createLiveProvider(), {
+		const agent = createAgent(createLiveOllama(), {
 			system:
 				'You MUST call the lookup_secret tool to obtain the secret access code, then state the ' +
 				'code in your final reply. Never invent a code.',

@@ -61,13 +61,12 @@ describe('OllamaProvider (context-framing format — no network)', () => {
 	})
 })
 
-// ── Recording-proxy request-shape tests (real wire assertions, real daemon behind
-// the proxy) ──────────────────────────────────────────────────────────────────────
+// ── Hermetic recording-proxy request-shape tests ─────────────────────────────────
 //
 // Standard pattern: create a proxy, point a provider at it, generate or stream through
-// it while swallowing the outcome (a daemon-rejected edge shape is tolerated since the
-// proxy records the request before forwarding), then assert on the recorded request
-// body and headers.
+// it while swallowing the unreachable-upstream outcome, then assert on the request body
+// and headers captured before forwarding. These are provider-behavior assertions, and
+// the suite passes with the daemon down.
 
 describe('OllamaProvider (recording proxy — request body)', () => {
 	// Recipe: 'hello' / num_predict:7, temperature:0.5 / think:false (constructor default).
@@ -303,9 +302,8 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 		}
 	})
 
-	// Recipe: an EMPTY messages array. Assertion: provider-behavior — sends an empty
-	// array on the wire (daemon rejects with a 400; outcome tolerated).
-	// bounded by abort-once-recorded, no generation awaited.
+	// Recipe: an empty messages array. The proxy records that exact provider request
+	// before the deliberately unreachable forward is aborted.
 	it('accepts an empty messages array (sends [])', async () => {
 		const proxy = await createRecordingProxy()
 		try {
@@ -322,10 +320,8 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 		}
 	})
 
-	// Recipe: one user turn with base64 images, one without. Assertion: provider-
-	// behavior — images forwarded verbatim only when present (daemon may reject a
-	// non-vision model; outcome tolerated).
-	// bounded by abort-once-recorded, no generation awaited.
+	// Recipe: one user turn with base64 images, one without. The proxy records that
+	// images are forwarded verbatim only when present, independent of any daemon.
 	it('forwards a multimodal turn’s base64 images onto the wire message (only when present)', async () => {
 		const proxy = await createRecordingProxy()
 		try {

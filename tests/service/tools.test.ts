@@ -298,7 +298,7 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 		// `more` tool twice under sustained pressure, then answers in text — 10 sustained
 		// rounds is unreachable model capacity, not a loop defect, so `limit: 2` is the
 		// live-reachable proof of this contract under sustained (not single-forced-turn)
-		// pressure. The default limit of 10 is covered by the it.todo below.
+		// pressure.
 		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
 		const exhaustRecorder = createRecorder<[number]>()
 		const abortRecorder = createRecorder<[unknown]>()

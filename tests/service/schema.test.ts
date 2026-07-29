@@ -1,4 +1,5 @@
 import { createAgent } from '@orkestrel/agent'
+import { isRecord } from '@orkestrel/contract'
 import { describe, expect, it } from 'vitest'
 import { createLiveProvider, retryUntil } from '../setupService.js'
 
@@ -47,12 +48,9 @@ describe('Agent (live) — run({ schema }) constrains output to the requested JS
 			)
 
 			const parsed: unknown = JSON.parse(content)
-			expect(typeof parsed).toBe('object')
-			if (typeof parsed !== 'object' || parsed === null)
-				throw new Error('parsed value not an object')
-			const record = parsed as Record<string, unknown>
-			expect(typeof record.city).toBe('string')
-			expect(typeof record.population).toBe('number')
+			if (!isRecord(parsed)) throw new Error('parsed value not an object')
+			expect(typeof parsed.city).toBe('string')
+			expect(typeof parsed.population).toBe('number')
 			expect(partial).toBe(false)
 		},
 		TIMEOUT,

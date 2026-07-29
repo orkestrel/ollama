@@ -331,32 +331,64 @@ describe('OllamaProvider (live — abort)', () => {
 		expect(caught.partial.content.length).toBeGreaterThan(0)
 	})
 
-	// Recipe: 'Count upward from 1 forever, one number per line. Never stop.' /
-	// inline { num_predict: 4096, temperature: 0 } / think:false, provider
-	// timeout:2000ms — the PROVIDER'S OWN deadline (not the caller's signal) trips
-	// mid-stream on a genuinely long output. Calibration note: a bounded task is not
-	// enough — a fast host COMPLETED "count 1 to 100" (≈400 tokens, done_reason
-	// stop) inside the deadline, so the prompt must demand endless output and the
-	// cap must exceed any host's two-second throughput, while the first content
-	// delta on a warm model still lands well inside the deadline on slow hosts.
-	// Assertion: structural — ProviderAbortError with non-empty partial content.
+	// Recipe: 'Recite the numbers from 1 to 1000 in order, one number per line.' /
+	// inline { num_predict: 4096, temperature: 0 } / think:false, provider deadline
+	// SELF-CALIBRATED — the PROVIDER'S OWN timeout (not the caller's signal) trips
+	// mid-stream. Calibration note: no static deadline survives every host — a fast
+	// machine finished a bounded count inside 2000ms and can EOS an "endless" prompt
+	// at will — but temperature:0 REPLAYS the same stream on a given host, so the
+	// test first drives the exact stream unbounded (caller-capped at 6s) to measure
+	// when content starts and when it ends, then re-runs it with the provider
+	// deadline armed at the midpoint of that measured window: provably after the
+	// first content delta and before the stream's own end on THIS host. Assertion:
+	// structural — ProviderAbortError with non-empty partial content.
 	it('its own timeout aborts a slow stream with ProviderAbortError carrying the partial', async () => {
+		const prompt = 'Recite the numbers from 1 to 1000 in order, one number per line.'
+		const options = { num_predict: 4096, temperature: 0 }
+
+		const probe = new OllamaProvider({
+			model: OLLAMA_CONFIG.model,
+			url: OLLAMA_CONFIG.host,
+			options,
+		})
+		const probeAbort = createAbort()
+		const started = Date.now()
+		let first: number | undefined
+		let ended: number | undefined
+		const generator = probe.stream([createUserMessage(prompt)], probeAbort.signal)
+		try {
+			for (;;) {
+				const step = await generator.next()
+				if (step.done) {
+					ended = Date.now()
+					break
+				}
+				if (step.value.type === 'content' && first === undefined) first = Date.now()
+				if (Date.now() - started > 6000) probeAbort.abort()
+			}
+		} catch (error) {
+			// The caller cap tripped while the stream was mid-flight — that end is the window edge.
+			if (!isProviderAbortError(error)) throw error
+			ended = Date.now()
+		}
+		if (first === undefined || ended === undefined) throw new Error('probe produced no content')
+		const window = ended - first
+		// A window this narrow means the model refused the enumeration outright; the
+		// deadline claim needs a genuinely streaming run, so fail with the diagnosis.
+		expect(window).toBeGreaterThan(250)
+		const deadline = Math.round(first - started + window / 2)
+
 		const provider = new OllamaProvider({
 			model: OLLAMA_CONFIG.model,
 			url: OLLAMA_CONFIG.host,
-			timeout: 2000,
-			options: { num_predict: 4096, temperature: 0 },
+			timeout: deadline,
+			options,
 		})
 		const abort = createAbort()
 
 		let caught: unknown
 		try {
-			await drive(
-				provider.stream(
-					[createUserMessage('Count upward from 1 forever, one number per line. Never stop.')],
-					abort.signal,
-				),
-			)
+			await drive(provider.stream([createUserMessage(prompt)], abort.signal))
 		} catch (error) {
 			caught = error
 		}

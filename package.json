@@ -56,6 +56,7 @@
 		"test": "npm run test:src && npm run test:policy && npm run test:guides",
 		"test:src": "vitest run --config vite.config.ts --no-cache --reporter=dot --project src:server",
 		"test:src:server": "vitest run --config vite.config.ts --no-cache --reporter=dot --project src:server",
+		"test:service": "vitest run --config vite.config.ts --no-cache --reporter=dot --project service",
 		"test:policy": "vitest run --config vite.config.ts --no-cache --reporter=dot --project policy",
 		"test:guides": "vitest run --config vite.config.ts --reporter=dot --project guides",
 		"build": "npm run clean && npm run build:src",

@@ -1,13 +1,8 @@
 import { createAgent, createAuthority, createToolManager } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
-import { createRecorder } from '../../setup.js'
-import {
-	createLiveProvider,
-	createLookupTool,
-	driveAgent,
-	LOOKUP_DATUM,
-	retryUntil,
-} from '../../setupServer.js'
+import { createRecorder } from '../setup.js'
+import { createLookupTool, LOOKUP_DATUM } from '../setupServer.js'
+import { createLiveProvider, driveAgent, retryUntil } from '../setupService.js'
 
 // LIVE authority-surface tests — the allow / fail-closed / fallback paths of
 // `createAuthority` beyond the deny-path already covered in tools.test.ts (AGENTS

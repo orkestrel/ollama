@@ -1,9 +1,4 @@
-import type {
-	AgentChunk,
-	AgentResult,
-	AgentStreamInterface,
-	WorkspaceInterface,
-} from '@orkestrel/agent'
+import type { WorkspaceInterface } from '@orkestrel/agent'
 import { createWorkspace } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
 import {
@@ -17,8 +12,6 @@ import {
 	createInsatiableTool,
 	createLookupTool,
 	createThrowingTool,
-	driveAgent,
-	env,
 	flattenHeaders,
 	forwardHeaders,
 	insatiableResult,
@@ -29,7 +22,6 @@ import {
 	THROWING_TOOL_MESSAGE,
 	wireMessages,
 	wireText,
-	withScheme,
 } from '../../setupServer.js'
 
 // Build a minimal RecordedRequest-shaped value for the wire-narrowing helper tests
@@ -43,53 +35,6 @@ function requestWithBody(body: Record<string, unknown>): {
 } {
 	return { method: 'POST', path: '/api/chat', headers: {}, body }
 }
-
-// The Ollama-project setup helpers as pure units (AGENTS §16 — no mocks, real
-// values). These are the recording-proxy internals + config normalizers
-// (`withScheme`, `env`, `flattenHeaders`, `parseRequestBody`, `forwardHeaders`,
-// `isAbortError`) — none of them make daemon requests, so this file is safe to run
-// even though the suite's setup gate still contacts a live Ollama.
-
-describe('withScheme', () => {
-	it('prefixes a scheme-less host:port with http://', () => {
-		expect(withScheme('127.0.0.1:11434')).toBe('http://127.0.0.1:11434')
-	})
-
-	it('passes an existing http:// URL through unchanged', () => {
-		expect(withScheme('http://localhost:11434')).toBe('http://localhost:11434')
-	})
-
-	it('passes an existing https:// URL through unchanged', () => {
-		expect(withScheme('https://ollama.example.com')).toBe('https://ollama.example.com')
-	})
-})
-
-describe('env', () => {
-	const name = 'ORKESTREL_OLLAMA_SETUP_TEST'
-
-	it('returns the variable value when set', () => {
-		process.env[name] = 'live-value'
-		try {
-			expect(env(name, 'fallback')).toBe('live-value')
-		} finally {
-			delete process.env[name]
-		}
-	})
-
-	it('returns the fallback when unset', () => {
-		delete process.env[name]
-		expect(env(name, 'fallback')).toBe('fallback')
-	})
-
-	it('returns the fallback when set to the empty string', () => {
-		process.env[name] = ''
-		try {
-			expect(env(name, 'fallback')).toBe('fallback')
-		} finally {
-			delete process.env[name]
-		}
-	})
-})
 
 describe('flattenHeaders', () => {
 	it('lowercases keys and flattens a Headers instance to a plain record', () => {
@@ -207,151 +152,6 @@ describe('isAbortError', () => {
 
 	it('returns false for a plain object with a matching name field', () => {
 		expect(isAbortError({ name: 'AbortError' })).toBe(false)
-	})
-})
-
-// Build a real, hand-rolled AgentStreamInterface over a scripted chunk list — not a
-// mock library, a genuine small in-process implementation of the interface
-// (AGENTS §16.1).
-function createScriptedAgentStream(
-	chunks: readonly AgentChunk[],
-	result: AgentResult,
-): AgentStreamInterface {
-	async function* events(): AsyncGenerator<AgentChunk> {
-		for (const chunk of chunks) yield chunk
-	}
-	return {
-		events: events(),
-		result: Promise.resolve(result),
-		abort() {},
-	}
-}
-
-describe('driveAgent', () => {
-	it('buckets token, think, tool, and usage chunks and passes through the result', async () => {
-		const call = { id: 'c1', name: 'lookup', arguments: { query: 'weather' } }
-		const toolResult = { id: 'c1', name: 'lookup', value: LOOKUP_DATUM }
-		const usage = { prompt: 3, completion: 5, total: 8 }
-		const settled: AgentResult = { content: 'ab', partial: false }
-		const stream = createScriptedAgentStream(
-			[
-				{ type: 'think', content: 'reasoning-1' },
-				{ type: 'token', content: 'a' },
-				{ type: 'tool', call, result: toolResult },
-				{ type: 'token', content: 'b' },
-				{ type: 'usage', usage },
-			],
-			settled,
-		)
-
-		const driven = await driveAgent(stream)
-
-		expect(driven.tokens).toEqual(['a', 'b'])
-		expect(driven.thoughts).toEqual(['reasoning-1'])
-		expect(driven.tools).toEqual([{ call, result: toolResult }])
-		expect(driven.usages).toEqual([usage])
-		expect(driven.result).toBe(settled)
-	})
-
-	it('returns empty buckets for a stream with no chunks', async () => {
-		const settled: AgentResult = { content: '', partial: false }
-		const stream = createScriptedAgentStream([], settled)
-
-		const driven = await driveAgent(stream)
-
-		expect(driven.tokens).toEqual([])
-		expect(driven.thoughts).toEqual([])
-		expect(driven.tools).toEqual([])
-		expect(driven.usages).toEqual([])
-		expect(driven.result).toBe(settled)
-	})
-})
-
-describe('createLookupTool', () => {
-	it('always returns the fixed LOOKUP_DATUM', async () => {
-		const tool = createLookupTool()
-		const value = await tool.execute({ query: 'anything' })
-		expect(value).toBe(LOOKUP_DATUM)
-	})
-
-	it('records each call via an optional recorder', async () => {
-		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-		const tool = createLookupTool(recorder)
-
-		await tool.execute({ query: 'weather' })
-		await tool.execute({ query: 'time' })
-
-		expect(recorder.count).toBe(2)
-		expect(recorder.calls[0]).toEqual([{ query: 'weather' }])
-		expect(recorder.calls[1]).toEqual([{ query: 'time' }])
-	})
-
-	it('works with no recorder passed', async () => {
-		const tool = createLookupTool()
-		const value = await tool.execute({ query: 'x' })
-		expect(value).toBe(LOOKUP_DATUM)
-	})
-})
-
-describe('createThrowingTool', () => {
-	it('always throws THROWING_TOOL_MESSAGE', () => {
-		const tool = createThrowingTool()
-		expect(() => tool.execute({})).toThrow(THROWING_TOOL_MESSAGE)
-	})
-
-	it('records the call before throwing, via an optional recorder', () => {
-		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-		const tool = createThrowingTool(recorder)
-
-		expect(() => tool.execute({ x: 1 })).toThrow(THROWING_TOOL_MESSAGE)
-
-		expect(recorder.count).toBe(1)
-		expect(recorder.calls[0]).toEqual([{ x: 1 }])
-	})
-})
-
-describe('createInsatiableTool', () => {
-	it('reports chunk 1 on the first call', async () => {
-		const tool = createInsatiableTool()
-		const value = await tool.execute({})
-		expect(value).toBe(insatiableResult(1))
-	})
-
-	it('reports chunk 2 on the second call', async () => {
-		const tool = createInsatiableTool()
-		await tool.execute({})
-		const value = await tool.execute({})
-		expect(value).toBe(insatiableResult(2))
-	})
-
-	it('records each call via an optional recorder', async () => {
-		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-		const tool = createInsatiableTool(recorder)
-
-		await tool.execute({ cursor: 'a' })
-		await tool.execute({ cursor: 'b' })
-
-		expect(recorder.count).toBe(2)
-		expect(recorder.calls[0]).toEqual([{ cursor: 'a' }])
-		expect(recorder.calls[1]).toEqual([{ cursor: 'b' }])
-	})
-
-	it('works with no recorder passed', async () => {
-		const tool = createInsatiableTool()
-		const value = await tool.execute({})
-		expect(value).toBe(insatiableResult(1))
-	})
-
-	it('keeps independent per-instance counters', async () => {
-		const toolA = createInsatiableTool()
-		const toolB = createInsatiableTool()
-
-		await toolA.execute({})
-		const first = await toolA.execute({})
-		const second = await toolB.execute({})
-
-		expect(first).toBe(insatiableResult(2))
-		expect(second).toBe(insatiableResult(1))
 	})
 })
 
@@ -492,5 +292,93 @@ describe('fillWorkspace', () => {
 		expect(paths(workspace)).toContain('find-me.md')
 		const content = workspace.file('find-me.md')?.content
 		expect(content !== undefined && 'text' in content ? content.text : undefined).toBe('needle')
+	})
+})
+
+describe('createLookupTool', () => {
+	it('always returns the fixed LOOKUP_DATUM', async () => {
+		const tool = createLookupTool()
+		const value = await tool.execute({ query: 'anything' })
+		expect(value).toBe(LOOKUP_DATUM)
+	})
+
+	it('records each call via an optional recorder', async () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+		const tool = createLookupTool(recorder)
+
+		await tool.execute({ query: 'weather' })
+		await tool.execute({ query: 'time' })
+
+		expect(recorder.count).toBe(2)
+		expect(recorder.calls[0]).toEqual([{ query: 'weather' }])
+		expect(recorder.calls[1]).toEqual([{ query: 'time' }])
+	})
+
+	it('works with no recorder passed', async () => {
+		const tool = createLookupTool()
+		const value = await tool.execute({ query: 'x' })
+		expect(value).toBe(LOOKUP_DATUM)
+	})
+})
+
+describe('createThrowingTool', () => {
+	it('always throws THROWING_TOOL_MESSAGE', () => {
+		const tool = createThrowingTool()
+		expect(() => tool.execute({})).toThrow(THROWING_TOOL_MESSAGE)
+	})
+
+	it('records the call before throwing, via an optional recorder', () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+		const tool = createThrowingTool(recorder)
+
+		expect(() => tool.execute({ x: 1 })).toThrow(THROWING_TOOL_MESSAGE)
+
+		expect(recorder.count).toBe(1)
+		expect(recorder.calls[0]).toEqual([{ x: 1 }])
+	})
+})
+
+describe('createInsatiableTool', () => {
+	it('reports chunk 1 on the first call', async () => {
+		const tool = createInsatiableTool()
+		const value = await tool.execute({})
+		expect(value).toBe(insatiableResult(1))
+	})
+
+	it('reports chunk 2 on the second call', async () => {
+		const tool = createInsatiableTool()
+		await tool.execute({})
+		const value = await tool.execute({})
+		expect(value).toBe(insatiableResult(2))
+	})
+
+	it('records each call via an optional recorder', async () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+		const tool = createInsatiableTool(recorder)
+
+		await tool.execute({ cursor: 'a' })
+		await tool.execute({ cursor: 'b' })
+
+		expect(recorder.count).toBe(2)
+		expect(recorder.calls[0]).toEqual([{ cursor: 'a' }])
+		expect(recorder.calls[1]).toEqual([{ cursor: 'b' }])
+	})
+
+	it('works with no recorder passed', async () => {
+		const tool = createInsatiableTool()
+		const value = await tool.execute({})
+		expect(value).toBe(insatiableResult(1))
+	})
+
+	it('keeps independent per-instance counters', async () => {
+		const toolA = createInsatiableTool()
+		const toolB = createInsatiableTool()
+
+		await toolA.execute({})
+		const first = await toolA.execute({})
+		const second = await toolB.execute({})
+
+		expect(first).toBe(insatiableResult(2))
+		expect(second).toBe(insatiableResult(1))
 	})
 })

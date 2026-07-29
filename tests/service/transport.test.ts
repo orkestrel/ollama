@@ -6,7 +6,7 @@ import {
 	FAST_OPTIONS,
 	OLLAMA_CONFIG,
 	STREAM_OPTIONS,
-} from '../../setupServer.js'
+} from '../setupService.js'
 
 // S2 — the BROWSER → OWN-SERVER → LLM deployment, end-to-end. The unit-level header-injection
 // + custom-fetch tests live in OllamaProvider.test.ts; this hardens the full SCENARIO: the

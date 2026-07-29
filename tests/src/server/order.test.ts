@@ -3,8 +3,6 @@ import { createAgent, createInstructionManager } from '@orkestrel/agent'
 import { createOllama } from '@src/server'
 import {
 	createRecordingProxy,
-	FAST_OPTIONS,
-	OLLAMA_CONFIG,
 	systemText,
 	waitForRequest,
 	wireMessages,
@@ -28,9 +26,9 @@ describe('AgentContext (live, provider-behavior) — canonical assembly order on
 			const proxy = await createRecordingProxy()
 			try {
 				const provider = createOllama({
-					model: OLLAMA_CONFIG.model,
+					model: 'test-model',
 					url: proxy.url,
-					options: FAST_OPTIONS,
+					options: { num_predict: 8, temperature: 0 },
 				})
 				const instructions = createInstructionManager()
 				instructions.add({ name: 'one', content: 'Be terse.' })
@@ -75,9 +73,9 @@ describe('AgentContext (live, provider-behavior) — canonical assembly order on
 			const proxy = await createRecordingProxy()
 			try {
 				const provider = createOllama({
-					model: OLLAMA_CONFIG.model,
+					model: 'test-model',
 					url: proxy.url,
-					options: FAST_OPTIONS,
+					options: { num_predict: 8, temperature: 0 },
 				})
 				const instructions = createInstructionManager()
 				instructions.add({
@@ -122,9 +120,9 @@ describe('AgentContext (live, provider-behavior) — canonical assembly order on
 			const proxy = await createRecordingProxy()
 			try {
 				const provider = createOllama({
-					model: OLLAMA_CONFIG.model,
+					model: 'test-model',
 					url: proxy.url,
-					options: FAST_OPTIONS,
+					options: { num_predict: 8, temperature: 0 },
 				})
 				const agent = createAgent(provider, {
 					system: 'SENTINEL-ONLY-SYSTEM-4291',

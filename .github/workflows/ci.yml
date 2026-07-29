@@ -44,3 +44,9 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      - name: Provision live service
+        run: bash scripts/service.sh
+
+      - name: Run live service tests
+        run: npm run test:service

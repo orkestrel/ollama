@@ -1,6 +1,6 @@
 import { createAgent } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
-import { createLiveProvider, retryUntil } from '../../setupServer.js'
+import { createLiveProvider, retryUntil } from '../setupService.js'
 
 // Agent-level structured output (live) — AgentRunOptions.schema (0.0.6) forwards a
 // JSON-Schema shape to the provider's `stream` as ProviderStreamOptions.schema, a

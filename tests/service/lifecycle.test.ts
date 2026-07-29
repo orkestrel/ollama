@@ -1,14 +1,9 @@
 import type { AgentChunk, AgentResult } from '@orkestrel/agent'
 import { createAgent, createToolManager } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
-import { createRecorder } from '../../setup.js'
-import {
-	ABORT_OPTIONS,
-	createLiveProvider,
-	createLookupTool,
-	retryUntil,
-	STREAM_OPTIONS,
-} from '../../setupServer.js'
+import { createRecorder } from '../setup.js'
+import { createLookupTool } from '../setupServer.js'
+import { ABORT_OPTIONS, createLiveProvider, retryUntil, STREAM_OPTIONS } from '../setupService.js'
 
 // Agent lifecycle (live) — the AGENT-LEVEL taxonomy (streaming chunk shape, `status`
 // transitions, `emitter` lifecycle events, and abort semantics) driven through the real

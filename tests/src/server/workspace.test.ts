@@ -3,13 +3,7 @@ import { createAgent, createBinaryContent, createFile } from '@orkestrel/agent'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage, fillWorkspace } from '../../setup.js'
-import {
-	createRecordingProxy,
-	FAST_OPTIONS,
-	OLLAMA_CONFIG,
-	systemText,
-	wireText,
-} from '../../setupServer.js'
+import { createRecordingProxy, systemText, wireText } from '../../setupServer.js'
 
 // LIVE workspace tests — the src:ollama project hits a REAL warmed Ollama (AGENTS §16: no mocks
 // for the inference boundary; setupServer.ts hard-requires + warms the model, never skips). These
@@ -60,9 +54,9 @@ describe('AgentContext workspaces (live, wire-behavior) — large-context inject
 			const proxy = await createRecordingProxy()
 			try {
 				const provider = createOllama({
-					model: OLLAMA_CONFIG.model,
+					model: 'test-model',
 					url: proxy.url,
-					options: FAST_OPTIONS,
+					options: { num_predict: 8, temperature: 0 },
 				})
 				const agent = createAgent(provider, { timeout: TIMEOUT })
 				const workspace = agent.context.workspaces.add()
@@ -99,9 +93,9 @@ describe('AgentContext workspaces (live, wire-behavior) — large-context inject
 			const proxy = await createRecordingProxy()
 			try {
 				const provider = createOllama({
-					model: OLLAMA_CONFIG.model,
+					model: 'test-model',
 					url: proxy.url,
-					options: FAST_OPTIONS,
+					options: { num_predict: 8, temperature: 0 },
 				})
 				const agent = createAgent(provider, { timeout: TIMEOUT })
 				const active = agent.context.workspaces.add() // auto-activates
@@ -134,9 +128,9 @@ describe('AgentContext workspaces (live, wire-behavior) — large-context inject
 			const proxy = await createRecordingProxy()
 			try {
 				const provider = createOllama({
-					model: OLLAMA_CONFIG.model,
+					model: 'test-model',
 					url: proxy.url,
-					options: FAST_OPTIONS,
+					options: { num_predict: 8, temperature: 0 },
 				})
 				const agent = createAgent(provider, { timeout: TIMEOUT })
 				const workspace = agent.context.workspaces.add({
@@ -175,9 +169,9 @@ describe('AgentContext workspaces (live, wire-behavior) — large-context inject
 			const proxy = await createRecordingProxy()
 			try {
 				const provider = createOllama({
-					model: OLLAMA_CONFIG.model,
+					model: 'test-model',
 					url: proxy.url,
-					options: FAST_OPTIONS,
+					options: { num_predict: 8, temperature: 0 },
 				})
 				const agent = createAgent(provider, { timeout: TIMEOUT })
 				agent.context.messages.add(createUserMessage('What is in this image?'))

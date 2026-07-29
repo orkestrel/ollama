@@ -1,21 +1,23 @@
 import { createAgent, createAuthority, createToolManager } from '@orkestrel/agent'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { createRecorder } from '../../setup.js'
+import { createRecorder } from '../setup.js'
 import {
 	createInsatiableTool,
-	createLiveProvider,
 	createLookupTool,
-	createRecordingProxy,
 	createThrowingTool,
-	driveAgent,
 	LOOKUP_DATUM,
+	THROWING_TOOL_MESSAGE,
+	wireMessages,
+} from '../setupServer.js'
+import {
+	createLiveProvider,
+	createRecordingProxy,
+	driveAgent,
 	OLLAMA_CONFIG,
 	retryUntil,
-	THROWING_TOOL_MESSAGE,
 	TOOL_LOOP_OPTIONS,
-	wireMessages,
-} from '../../setupServer.js'
+} from '../setupService.js'
 
 // LIVE tool-calling machinery tests — the real OllamaProvider driving the agent's tool
 // loop against the warmed local model (AGENTS §16: no mocks for the inference boundary).

@@ -830,9 +830,27 @@ export const guides = (config?: UserConfig): UserConfig =>
 		config ?? {},
 	)
 
+export const service = (config?: UserConfig): UserConfig =>
+	mergeConfig(
+		{
+			resolve,
+			test: {
+				name: { label: 'service', color: 'red' },
+				include: ['tests/service/**/*.test.ts'],
+				setupFiles: ['./tests/setup.ts', './tests/setupService.ts'],
+				environment: 'node',
+				browser: { enabled: false },
+				testTimeout: 120_000,
+				hookTimeout: 120_000,
+				fileParallelism: false,
+			},
+		},
+		config ?? {},
+	)
+
 export default defineConfig({
 	resolve,
 	test: {
-		projects: [srcServer, policy, guides],
+		projects: [srcServer, policy, guides, service],
 	},
 })

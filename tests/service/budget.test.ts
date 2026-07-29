@@ -3,15 +3,15 @@ import type { TokenUsage } from '@orkestrel/budget'
 import { describe, expect, it } from 'vitest'
 import { createAgent, createToolManager } from '@orkestrel/agent'
 import { createTokenBudget } from '@orkestrel/budget'
-import { createRecorder } from '../../setup.js'
+import { createRecorder } from '../setup.js'
+import { createLookupTool } from '../setupServer.js'
 import {
 	createLiveProvider,
-	createLookupTool,
 	driveAgent,
 	FAST_OPTIONS,
 	retryUntil,
 	TOOL_LOOP_OPTIONS,
-} from '../../setupServer.js'
+} from '../setupService.js'
 
 // budget.test.ts — LIVE agent-layer usage accounting + budget enforcement +
 // sequential-reuse (AGENTS §16: no mocks for the inference boundary). OllamaProvider.test.ts

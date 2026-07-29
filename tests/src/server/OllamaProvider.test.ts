@@ -3,7 +3,7 @@ import { createAbort } from '@orkestrel/abort'
 import { isProviderAbortError } from '@orkestrel/agent'
 import { OllamaProvider } from '@src/server'
 import { describe, expect, it, vi } from 'vitest'
-import { createRecorder, createUserMessage } from '../../setup.js'
+import { createUserMessage } from '../../setup.js'
 import { createRecordingProxy, drive, waitForRequest, WEATHER_TOOL } from '../../setupServer.js'
 
 const FRAMING: ContextFormatInterface = {

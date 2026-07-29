@@ -1,6 +1,5 @@
 import type { AgentChunk, AgentResult, AgentStreamInterface } from '@orkestrel/agent'
 import { describe, expect, it } from 'vitest'
-import { createRecorder } from '../setup.js'
 import { LOOKUP_DATUM } from '../setupServer.js'
 import { driveAgent, env, withScheme } from '../setupService.js'
 

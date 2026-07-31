@@ -18,7 +18,7 @@ directory (AGENTS §22).
 ## Dependency reference
 
 [`src/agent.md`](src/agent.md), [`src/budget.md`](src/budget.md),
-[`src/contract.md`](src/contract.md), [`src/ndjson.md`](src/ndjson.md), and
+[`src/contract.md`](src/contract.md), [`src/ndjson.md`](src/ndjson.md),
 [`src/timeout.md`](src/timeout.md), and [`src/tool.md`](src/tool.md) are
 byte-identical mirrors of the guides for
 `@orkestrel/agent`, `@orkestrel/budget`, `@orkestrel/contract`,

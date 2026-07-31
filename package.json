@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/ollama",
-	"version": "0.0.7",
+	"version": "0.0.8",
 	"description": "A typed local-LLM provider for the @orkestrel line — a ProviderInterface over a local Ollama daemon's /api/chat with NDJSON streaming and guard-narrowed wire boundaries. Part of the @orkestrel line.",
 	"keywords": [
 		"ai",
@@ -65,26 +65,28 @@
 		"prepublishOnly": "npm run format:check && npm run lint:check && npm run check && npm run build && npm test"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.11",
+		"@orkestrel/agent": "^0.0.12",
 		"@orkestrel/budget": "^0.0.4",
-		"@orkestrel/contract": "^0.0.8",
+		"@orkestrel/contract": "^0.0.9",
 		"@orkestrel/ndjson": "^0.0.5",
-		"@orkestrel/timeout": "^0.0.4"
+		"@orkestrel/timeout": "^0.0.4",
+		"@orkestrel/tool": "^0.0.8"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.58.12",
 		"@orkestrel/abort": "^0.0.4",
-		"@orkestrel/guide": "^0.0.7",
+		"@orkestrel/guide": "^0.0.8",
 		"@orkestrel/router": "^0.0.6",
-		"@orkestrel/scaffold": "^0.0.11",
+		"@orkestrel/scaffold": "^0.0.12",
 		"@orkestrel/server": "^0.0.7",
+		"@orkestrel/workspace": "^0.0.1",
 		"@types/node": "^26.1.2",
 		"@vitest/browser-playwright": "^4.1.10",
 		"ollama": "0.6.3",
 		"oxfmt": "^0.61.0",
 		"oxlint": "^1.76.0",
 		"typescript": "^6.0.3",
-		"vite": "^8.1.5",
+		"vite": "^8.2.0",
 		"vite-plugin-dts": "^5.0.3",
 		"vitest": "^4.1.10"
 	},

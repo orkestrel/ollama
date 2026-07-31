@@ -1,4 +1,5 @@
-import { createAgent, createAuthority, createToolManager } from '@orkestrel/agent'
+import { createAgent, createAuthority } from '@orkestrel/agent'
+import { createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { createRecorder } from '../setup.js'
@@ -61,7 +62,7 @@ describe('Agent tool loop (live) — dispatch by name', () => {
 
 			const dispatched = driven.tools.find((tool) => tool.call.name === 'lookup')
 			expect(dispatched).toBeDefined()
-			expect(dispatched?.result.value).toBe(LOOKUP_DATUM)
+			expect(dispatched?.result).toMatchObject({ success: true, value: LOOKUP_DATUM })
 			expect(lookupRecorder.count).toBeGreaterThanOrEqual(1)
 			expect(failRecorder.count).toBe(0)
 		},
@@ -160,8 +161,11 @@ describe('Agent tool loop (live) — a thrown tool error is isolated', () => {
 
 			const failed = driven.tools.find((tool) => tool.call.name === 'fail')
 			expect(failed).toBeDefined()
-			expect(failed?.result.error).toContain(THROWING_TOOL_MESSAGE)
-			expect(failed?.result.value).toBeUndefined()
+			expect(failed?.result).toMatchObject({
+				success: false,
+				error: expect.stringContaining(THROWING_TOOL_MESSAGE),
+			})
+			expect(failed?.result).not.toHaveProperty('value')
 			expect(recorder.count).toBeGreaterThanOrEqual(1)
 			// The loop CONTINUED past the thrown error to a resolved, non-rejected finish.
 			expect(driven.result.partial).toBe(false)

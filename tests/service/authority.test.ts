@@ -1,4 +1,5 @@
-import { createAgent, createAuthority, createToolManager } from '@orkestrel/agent'
+import { createAgent, createAuthority } from '@orkestrel/agent'
+import { createToolManager } from '@orkestrel/tool'
 import { describe, expect, it } from 'vitest'
 import { createRecorder } from '../setup.js'
 import { createLookupTool, driveAgent, LOOKUP_DATUM } from '../setupServer.js'
@@ -57,7 +58,7 @@ describe('Agent tool loop (live) — an allow rule lets the tool execute', () =>
 
 			const dispatched = driven.tools.find((tool) => tool.call.name === 'lookup')
 			expect(dispatched).toBeDefined()
-			expect(dispatched?.result.value).toBe(LOOKUP_DATUM)
+			expect(dispatched?.result).toMatchObject({ success: true, value: LOOKUP_DATUM })
 			expect(recorder.count).toBeGreaterThanOrEqual(1)
 			expect(denyRecorder.count).toBe(0)
 			expect(driven.result.partial).toBe(false)
@@ -114,7 +115,8 @@ describe('Agent tool loop (live) — a rule that throws during evaluation fails 
 			expect(recorder.count).toBe(0)
 			const denied = driven.tools.find((tool) => tool.call.name === 'lookup')
 			expect(denied).toBeDefined()
-			expect(denied?.result.error).toBeDefined()
+			expect(denied?.result).toMatchObject({ success: false })
+			expect(denied?.result).toHaveProperty('error')
 			expect(driven.result.partial).toBe(false)
 		},
 		TIMEOUT,
@@ -167,7 +169,7 @@ describe('Agent tool loop (live) — no matching rule falls back to default allo
 
 			const dispatched = driven.tools.find((tool) => tool.call.name === 'lookup')
 			expect(dispatched).toBeDefined()
-			expect(dispatched?.result.value).toBe(LOOKUP_DATUM)
+			expect(dispatched?.result).toMatchObject({ success: true, value: LOOKUP_DATUM })
 			expect(recorder.count).toBeGreaterThanOrEqual(1)
 			expect(denyRecorder.count).toBe(0)
 			expect(driven.result.partial).toBe(false)

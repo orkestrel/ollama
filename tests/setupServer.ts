@@ -4,17 +4,14 @@ import type {
 	AgentStreamInterface,
 	ProviderDelta,
 	ProviderResult,
-	ToolCall,
-	ToolDefinition,
-	ToolInterface,
-	ToolResult,
 } from '@orkestrel/agent'
+import type { ToolCall, ToolDefinition, ToolInterface, ToolResult } from '@orkestrel/tool'
 import type { TokenUsage } from '@orkestrel/budget'
 import type { TestRecorderInterface } from './setup.js'
-import { createTool } from '@orkestrel/agent'
 import { arrayOf, isRecord, isString } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
+import { createTool } from '@orkestrel/tool'
 
 /** Weather function definition shared by provider wire and live tool-call tests. */
 export const WEATHER_TOOL: ToolDefinition = Object.freeze({

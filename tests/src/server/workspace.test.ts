@@ -1,4 +1,5 @@
-import { createAgent, createBinaryContent, createFile } from '@orkestrel/agent'
+import { createAgent } from '@orkestrel/agent'
+import { createBinaryContent, createFile } from '@orkestrel/workspace'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage, fillWorkspace } from '../../setup.js'
@@ -107,13 +108,10 @@ describe('AgentContext workspaces (hermetic provider behavior) — large-context
 				const agent = createAgent(provider, { timeout: TIMEOUT })
 				const workspace = agent.context.workspaces.add({
 					seed: [
-						[
-							'picture.png',
-							createFile({
-								path: 'picture.png',
-								content: createBinaryContent(TINY_PNG_BASE64, 'image/png'),
-							}),
-						],
+						createFile({
+							path: 'picture.png',
+							content: createBinaryContent(TINY_PNG_BASE64, 'image/png'),
+						}),
 					],
 				})
 				workspace.write('report.md', 'REPORT-TEXT-2287')
@@ -149,13 +147,10 @@ describe('AgentContext workspaces (hermetic provider behavior) — large-context
 				agent.context.messages.add(createUserMessage('What is in this image?'))
 				agent.context.workspaces.add({
 					seed: [
-						[
-							'attached.png',
-							createFile({
-								path: 'attached.png',
-								content: createBinaryContent(TINY_PNG_BASE64, 'image/png'),
-							}),
-						],
+						createFile({
+							path: 'attached.png',
+							content: createBinaryContent(TINY_PNG_BASE64, 'image/png'),
+						}),
 					],
 				})
 				await agent.generate().catch(() => {})

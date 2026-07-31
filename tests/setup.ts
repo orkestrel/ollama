@@ -1,4 +1,5 @@
-import type { MessageInterface, WorkspaceInterface } from '@orkestrel/agent'
+import type { MessageInterface } from '@orkestrel/agent'
+import type { WorkspaceInterface } from '@orkestrel/workspace'
 
 /** Whether a repository-relative Vue SFC path belongs to the private browser application. */
 export function isBrowserVuePath(path: string): boolean {

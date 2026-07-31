@@ -1,9 +1,5 @@
-import {
-	createAgent,
-	createInstructionManager,
-	createScope,
-	createToolManager,
-} from '@orkestrel/agent'
+import { createAgent, createInstructionManager, createScope } from '@orkestrel/agent'
+import { createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { fillWorkspace } from '../../setup.js'

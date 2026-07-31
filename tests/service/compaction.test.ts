@@ -6,11 +6,10 @@ import {
 	createAgent,
 	createConversation,
 	createConversationManager,
-	createTool,
-	createToolManager,
 	estimateMessages,
 } from '@orkestrel/agent'
 import { createBudget } from '@orkestrel/budget'
+import { createTool, createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/server'
 import { buildTurns, collect, createUserMessage } from '../setup.js'
 import { createRecordingProxy, driveAgent, wireMessages } from '../setupServer.js'

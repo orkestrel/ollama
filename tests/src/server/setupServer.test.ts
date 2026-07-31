@@ -1,5 +1,7 @@
-import type { AgentResult, WorkspaceInterface } from '@orkestrel/agent'
-import { createWorkspace } from '@orkestrel/agent'
+import type { AgentResult } from '@orkestrel/agent'
+import type { ToolResult } from '@orkestrel/tool'
+import type { WorkspaceInterface } from '@orkestrel/workspace'
+import { createWorkspace } from '@orkestrel/workspace'
 import { describe, expect, it } from 'vitest'
 import {
 	buildTurns,
@@ -464,7 +466,12 @@ describe('env', () => {
 describe('driveAgent', () => {
 	it('buckets chunks and preserves the settled result', async () => {
 		const call = { id: 'c1', name: 'lookup', arguments: { query: 'weather' } }
-		const toolResult = { id: 'c1', name: 'lookup', value: LOOKUP_DATUM }
+		const toolResult: ToolResult = {
+			success: true,
+			id: 'c1',
+			name: 'lookup',
+			value: LOOKUP_DATUM,
+		}
 		const usage = { prompt: 3, completion: 5, total: 8 }
 		const settled: AgentResult = { content: 'ab', partial: false }
 		const stream = createScriptedAgentStream(

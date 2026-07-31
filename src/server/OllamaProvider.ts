@@ -6,10 +6,9 @@ import type {
 	ProviderResult,
 	ProviderStreamOptions,
 	ThinkSplitterInterface,
-	ToolCall,
-	ToolDefinition,
 } from '@orkestrel/agent'
 import type { TokenUsage } from '@orkestrel/budget'
+import type { ToolCall, ToolDefinition } from '@orkestrel/tool'
 import type { OllamaOptions, OllamaResponse, WireChatRequest } from './types.js'
 import { createThinkSplitter, ProviderAbortError } from '@orkestrel/agent'
 import { isNumber, isRecord, isString } from '@orkestrel/contract'

@@ -94,8 +94,8 @@ describe('AgentContext workspaces (hermetic provider behavior) — large-context
 		'image files are not fenced as text',
 		async () => {
 			// Recipe: FAST_OPTIONS. One text file + one image file (seated via the workspace
-			// constructor `seed` — the only way to seat a non-text/binary file per WorkspaceInput's
-			// documented contract) are placed in the active workspace. The text file's content must
+			// constructor `seed` — the only way to seat a non-text/binary file per
+			// WorkspaceOptions.seed's documented contract) are placed in the active workspace. The text file's content must
 			// fence into the system block; the image's base64 payload must never appear as fenced
 			// text in any wire message content.
 			const proxy = await createRecordingProxy()

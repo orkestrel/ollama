@@ -157,6 +157,29 @@ export const probe = (options?: UserConfig): UserConfig =>
 		options ?? {},
 	)
 
+// The conformance project: this package's own wire types measured against the official
+// `ollama` client's exported types. The subject is this package, not the daemon — the
+// `service` project below is the one that drives the real service. `expectTypeOf` is a
+// no-op at runtime, so the gate that actually fails is `npm run check`; the runtime pass
+// costs milliseconds and starts nothing, which is why this project stays in `npm test`.
+// Scaffold registers no custom Vitest project, so this export and its entry in the
+// project list are this repository's own and survive every refresh of the shared
+// configuration.
+export const conformance = (options?: UserConfig): UserConfig =>
+	mergeConfig(
+		{
+			resolve,
+			test: {
+				name: { label: 'conformance', color: 'magenta' },
+				include: ['tests/conformance.test.ts'],
+				setupFiles: ['./tests/setup.ts'],
+				environment: 'node',
+				browser: { enabled: false },
+			},
+		},
+		options ?? {},
+	)
+
 // The live Ollama project. Scaffold registers no custom Vitest project, so this
 // export and its entry in the project list are this repository's own and survive
 // every refresh of the shared configuration.
@@ -188,6 +211,7 @@ export default defineConfig({
 			config,
 			...(isExactCaseFile(resolveWorkspacePath('tests/guides.test.ts')) ? [guides] : []),
 			probe,
+			conformance,
 			service,
 		],
 	},

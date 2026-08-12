@@ -7,19 +7,19 @@ directory (AGENTS §22).
 
 | Concept | Spec                             | Source                        | Tests                                                                                                  |
 | ------- | -------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Ollama  | [`src/ollama.md`](src/ollama.md) | [`src/server`](../src/server) | Hermetic: [`tests/src/server`](../tests/src/server); live service: [`tests/service`](../tests/service) |
+| Ollama  | [`ollama.md`](ollama.md) | [`src/server`](../src/server) | Hermetic: [`tests/src/server`](../tests/src/server); live service: [`tests/service`](../tests/service) |
 
 ## By directory
 
 | Directory    | Guide                            |
 | ------------ | -------------------------------- |
-| `src/server` | [`src/ollama.md`](src/ollama.md) |
+| `src/server` | [`ollama.md`](ollama.md) |
 
 ## Dependency reference
 
-[`src/agent.md`](src/agent.md), [`src/budget.md`](src/budget.md),
-[`src/contract.md`](src/contract.md), [`src/ndjson.md`](src/ndjson.md),
-[`src/timeout.md`](src/timeout.md), and [`src/tool.md`](src/tool.md) are
+[`agent.md`](agent.md), [`budget.md`](budget.md),
+[`contract.md`](contract.md), [`ndjson.md`](ndjson.md),
+[`timeout.md`](timeout.md), and [`tool.md`](tool.md) are
 byte-identical mirrors of the guides for
 `@orkestrel/agent`, `@orkestrel/budget`, `@orkestrel/contract`,
 `@orkestrel/ndjson`, `@orkestrel/timeout`, and `@orkestrel/tool` — this
@@ -28,14 +28,14 @@ not anything sourced in this repo; they are kept here so a reader of this
 package can see the primitives it is built from without leaving this guide
 set.
 
-[`src/guide.md`](src/guide.md) is a byte-identical mirror of the guide for
+[`guide.md`](guide.md) is a byte-identical mirror of the guide for
 `@orkestrel/guide` — the devDependency powering this repo's guides-parity test
 suite (`tests/guides.test.ts`). It documents **that package's**
 surface (`Guide` / `Source`, the manifest and comparison helpers), not anything
 sourced in this repo; it is kept here so a reader of the parity suite can see
 the primitives it is built from without leaving this guide set.
 
-[`src/workspace.md`](src/workspace.md) is a byte-identical mirror of the guide
+[`workspace.md`](workspace.md) is a byte-identical mirror of the guide
 for `@orkestrel/workspace` — the devDependency supplying the workspace file
 values and construction helpers exercised by this repo's agent-integration
 tests. It documents **that package's own** workspace surface, not anything

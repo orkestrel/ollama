@@ -5,14 +5,14 @@ directory (AGENTS §22).
 
 ## By concept
 
-| Concept | Spec                             | Source                        | Tests                                                                                                  |
-| ------- | -------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Concept | Spec                     | Source                        | Tests                                                                                                  |
+| ------- | ------------------------ | ----------------------------- | ------------------------------------------------------------------------------------------------------ |
 | Ollama  | [`ollama.md`](ollama.md) | [`src/server`](../src/server) | Hermetic: [`tests/src/server`](../tests/src/server); live service: [`tests/service`](../tests/service) |
 
 ## By directory
 
-| Directory    | Guide                            |
-| ------------ | -------------------------------- |
+| Directory    | Guide                    |
+| ------------ | ------------------------ |
 | `src/server` | [`ollama.md`](ollama.md) |
 
 ## Dependency reference

@@ -34,7 +34,7 @@ export interface OllamaResponse {
  */
 export interface WireChatRequest {
 	readonly model: string
-	readonly messages: readonly {
+	readonly messages: ReadonlyArray<{
 		readonly role: string
 		readonly content: string
 		readonly tool_calls?: readonly {
@@ -44,19 +44,19 @@ export interface WireChatRequest {
 			}
 		}[]
 		readonly images?: readonly string[]
-	}[]
+	}>
 	readonly stream: boolean
 	readonly keep_alive: string | number
 	readonly think: boolean
 	readonly options?: Readonly<Record<string, unknown>>
-	readonly tools?: readonly {
+	readonly tools?: ReadonlyArray<{
 		readonly type: 'function'
 		readonly function: {
 			readonly name: string
 			readonly description?: string
 			readonly parameters?: Readonly<Record<string, unknown>>
 		}
-	}[]
+	}>
 	/**
 	 * The `/api/chat` structured-output constraint — a JSON-Schema object forwarded
 	 * verbatim from the per-call `ProviderStreamOptions.schema`. This is NOT

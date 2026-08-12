@@ -41,7 +41,7 @@ describe('Agent (live) — auto-compaction folds a recap while retaining the kep
 				conversations,
 				window: createBudget({
 					max: 20,
-					consume: (messages: readonly { readonly content: string }[]) =>
+					consume: (messages: ReadonlyArray<{ readonly content: string }>) =>
 						messages.reduce((total, message) => total + message.content.length, 0),
 				}),
 				timeout: TIMEOUT,

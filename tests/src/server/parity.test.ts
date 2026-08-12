@@ -83,10 +83,10 @@ describe('official ollama type parity (compile-time gate)', () => {
 		readonly message: {
 			readonly content: string
 			readonly thinking?: string
-			readonly tool_calls?: readonly {
+			readonly tool_calls?: ReadonlyArray<{
 				readonly function: { readonly name: string; readonly arguments: unknown }
 				readonly id?: string
-			}[]
+			}>
 		}
 		readonly done: boolean
 		readonly prompt_eval_count: number

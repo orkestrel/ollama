@@ -42,7 +42,7 @@ describe('Agent (live) — streamed chunk taxonomy, status lifecycle, and emitte
 
 			const stream = agent.stream()
 			const tokens: string[] = []
-			const usages: AgentResult['usage'][] = []
+			const usages: Array<AgentResult['usage']> = []
 			let sawRunning = false
 			for await (const chunk of stream.events) {
 				if (!sawRunning) {

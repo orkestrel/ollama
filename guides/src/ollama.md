@@ -226,7 +226,7 @@ try {
 
 ## Tests
 
-- [`tests/guides/src/parity.test.ts`](../../tests/guides/src/parity.test.ts) — the `## Surface` ↔ `src/server` bijection (value + type exports) and the `OllamaProvider` method bijection.
+- [`tests/guides.test.ts`](../../tests/guides.test.ts) — the `## Surface` ↔ `src/server` bijection (value + type exports) and the `OllamaProvider` method bijection.
 - [`tests/src/server/OllamaProvider.test.ts`](../../tests/src/server/OllamaProvider.test.ts) — hermetic provider request-shape, framing, transport-seam, abort, deadline, and unreachable-upstream coverage. Its recording proxy uses a deliberately unreachable default and asserts only captured requests and local provider behavior.
 - [`tests/service/OllamaProvider.test.ts`](../../tests/service/OllamaProvider.test.ts) — live provider generation, streaming, thinking, tool-call, usage, seeded, abort, deadline, and daemon-error coverage against the required warmed Ollama service.
 - [`tests/service/transport.test.ts`](../../tests/service/transport.test.ts) — S2, the BROWSER → OWN-SERVER → LLM deployment scenario end-to-end (LIVE, `service` project). A `createRecordingProxy(OLLAMA_CONFIG.host)` — a real `@orkestrel/server` + `@orkestrel/router` HTTP server — records the inbound request, forwards it to the selected Ollama service, and streams the response back.

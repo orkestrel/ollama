@@ -20,7 +20,7 @@
 > is never terminated by a newline is buffered indefinitely by design — the
 > parser has no size limit, so a caller fronting an untrusted or unbounded
 > upstream must enforce its own byte cap before feeding chunks in.
-> Source: [`src/core`](../../src/core). Surfaced through the `@src/core`
+> Source: [`src/core`](../src/core). Surfaced through the `@src/core`
 > barrel.
 
 ## Surface

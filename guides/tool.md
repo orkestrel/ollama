@@ -7,7 +7,7 @@
 > behind it. `Tool` binds the advertised definition to its handler; `ToolManager` keeps tools by
 > name in insertion order, advertises their definitions, and executes calls with per-call error
 > isolation; `ToolCall` and `ToolResult` are the correlated pair that travels between a caller
-> and the registry. Source: [`src/core`](../../src/core). Published through `@orkestrel/tool`.
+> and the registry. Source: [`src/core`](../src/core). Published through `@orkestrel/tool`.
 >
 > **Anyone can call a tool.** Nothing here is model-specific — `tools.execute(call)` is an
 > ordinary async call returning an ordinary result, and plain application code may drive it
@@ -19,8 +19,9 @@
 >
 > **Mechanism only.** This runtime advertises, dispatches, and contains failure. It transports
 > nothing, validates no arguments against a tool's schema, authorizes no call, and ships no
-> concrete tools. Each of those is a decision that belongs to the caller, to a policy layer, or
-> to the tool itself.
+> concrete tools. Optional caller context is consumer-asserted and forwarded without
+> verification. Each trust decision belongs to the invoking consumer, to a policy layer, or to
+> the tool itself.
 
 Two nouns carry the runtime. A `Tool` is inert — a definition plus a handler, with no lifecycle
 and no failure handling of its own. A `ToolManager` is the live surface a caller holds: it hands
@@ -31,23 +32,23 @@ a result and never a throw. Everything else in this module is the plain data tho
 
 ### Contracts
 
-The data shapes, from [`types.ts`](../../src/core/types.ts). Every property is readonly, and an
+The data shapes, from [`types.ts`](../src/core/types.ts). Every property is readonly, and an
 absent optional field is simply absent.
 
-| Name                   | Kind      | Shape / Purpose                                                                                                                   |
-| ---------------------- | --------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `ToolDefinition`       | interface | `{ name, description?, parameters? }` — what a caller advertises: the selectable name and the open JSON Schema for its arguments. |
-| `ToolCall`             | interface | `{ id, name, arguments }` — one request to run a named tool, `id` correlating it with its later result.                           |
-| `ToolSuccess`          | interface | `{ id, name, success: true, value }` — the correlated success branch, carrying whatever the handler returned.                     |
-| `ToolFailure`          | interface | `{ id, name, success: false, error }` — the correlated failure branch, carrying the registry's failure message.                   |
-| `ToolOptions`          | interface | `{ name, description?, summary?, parameters?, execute }` — the construction input for an executable tool.                         |
-| `ToolInterface`        | interface | A `ToolDefinition` plus an optional `summary` and the handler that runs it. See [`## Methods`](#methods).                         |
-| `ToolManagerInterface` | interface | The registry contract; its readonly `count` is the number of registered tools. See [`## Methods`](#methods).                      |
-| `ToolResult`           | type      | `ToolSuccess \| ToolFailure` — the discriminated correlated outcome; narrow on `success` to read `value` or `error`.              |
+| Name                   | Kind      | Shape / Purpose                                                                                                                     |
+| ---------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `ToolDefinition`       | interface | `{ name, description?, parameters? }` — what a caller advertises: the selectable name and the open JSON Schema for its arguments.   |
+| `ToolCall`             | interface | `{ id, name, arguments, caller? }` — one request to run a named tool, with optional consumer-asserted caller context.               |
+| `ToolSuccess`          | interface | `{ id, name, success: true, value }` — the correlated success branch, carrying whatever the handler returned.                       |
+| `ToolFailure`          | interface | `{ id, name, success: false, error }` — the correlated failure branch, carrying the registry's failure message.                     |
+| `ToolOptions`          | interface | `{ name, description?, summary?, parameters?, execute }` — the construction input; `execute` receives arguments and caller context. |
+| `ToolInterface`        | interface | A `ToolDefinition` plus an optional `summary` and the handler that runs it. See [`## Methods`](#methods).                           |
+| `ToolManagerInterface` | interface | The registry contract; its readonly `count` is the number of registered tools. See [`## Methods`](#methods).                        |
+| `ToolResult`           | type      | `ToolSuccess \| ToolFailure` — the discriminated correlated outcome; narrow on `success` to read `value` or `error`.                |
 
-### Helpers
+### Validators
 
-The call-envelope guard, from [`helpers.ts`](../../src/core/helpers.ts).
+The call-envelope guard, from [`validators.ts`](../src/core/validators.ts).
 
 | Name         | Kind     | Signature                               | Behavior                                                                                                                                                              |
 | ------------ | -------- | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -55,7 +56,7 @@ The call-envelope guard, from [`helpers.ts`](../../src/core/helpers.ts).
 
 ### Factories
 
-From [`factories.ts`](../../src/core/factories.ts) — the constructor-free way to reach both
+From [`factories.ts`](../src/core/factories.ts) — the constructor-free way to reach both
 classes.
 
 | Name                | Kind     | Signature                                 | Behavior                                                                  |
@@ -65,17 +66,18 @@ classes.
 
 ### `Tool`
 
-The implementing class of `ToolInterface`, from [`Tool.ts`](../../src/core/tools/Tool.ts). It
+The implementing class of `ToolInterface`, from [`Tool.ts`](../src/core/tools/Tool.ts). It
 copies the fields it was given — omitting each optional one that was not supplied — and keeps
 the handler in a private field, so a tool's advertised shape cannot drift from what it executes.
-The parameter schema and the argument record are forwarded by reference, never cloned. `Tool`
-deliberately does not catch: a handler that throws throws, and per-call isolation belongs to the
-registry that dispatched it. See [`## Methods`](#methods) for its public call surface.
+The parameter schema, argument record, and present caller context are forwarded by reference,
+never cloned. `Tool` deliberately does not catch: a handler that throws throws, and per-call
+isolation belongs to the registry that dispatched it. See [`## Methods`](#methods) for its public
+call surface.
 
 ### `ToolManager`
 
 The implementing class of `ToolManagerInterface`, from
-[`ToolManager.ts`](../../src/core/tools/ToolManager.ts). One name-keyed map is its whole state:
+[`ToolManager.ts`](../src/core/tools/ToolManager.ts). One name-keyed map is its whole state:
 tools stay in insertion order, `tools()` and `definitions()` return fresh readonly arrays rather
 than a view of that map, and every projection is computed on demand so a mutation can never
 leave a stale copy behind. It is the only place a call can fail into a result instead of an
@@ -87,9 +89,9 @@ The public call-signature members of each behavioral interface, one table per in
 
 #### `ToolInterface`
 
-| Method    | Returns                       | Behavior                                                                                         |
-| --------- | ----------------------------- | ------------------------------------------------------------------------------------------------ |
-| `execute` | `Promise<unknown> \| unknown` | Runs the handler against the supplied arguments record and returns whatever the handler returns. |
+| Method    | Returns                       | Behavior                                                                                    |
+| --------- | ----------------------------- | ------------------------------------------------------------------------------------------- |
+| `execute` | `Promise<unknown> \| unknown` | Runs the handler with the supplied arguments and optional consumer-asserted caller context. |
 
 #### `ToolManagerInterface`
 
@@ -133,7 +135,11 @@ should not name a class.
 The schema is descriptive runtime data, forwarded by reference and never interpreted here. A
 handler always receives the open `Readonly<Record<string, unknown>>` the caller sent and narrows
 the fields it consumes — declaring `required` tells the caller what to send, not this runtime
-what to reject. Handlers may be synchronous or asynchronous; the registry awaits either.
+what to reject. Its optional second parameter is the call's `caller` value verbatim. That value
+is asserted by the invoking consumer and is never verified here; a handler or policy layer must
+make every authorization and trust decision. Handlers may be synchronous or asynchronous; the
+registry awaits either. Existing zero-argument and one-argument handlers remain valid, and when
+caller context is absent the handler receives `undefined`.
 
 When one was authored, `definitions()` projects the tool's `summary` as `description`, advertising
 it in place of the full description. The full text stays on the tool for direct lookup through
@@ -182,7 +188,12 @@ it, then execute:
 ```ts
 import { isToolCall } from '@orkestrel/tool'
 
-const incoming: unknown = { id: 'call-1', name: 'add', arguments: { left: 2, right: 3 } }
+const incoming: unknown = {
+	id: 'call-1',
+	name: 'add',
+	arguments: { left: 2, right: 3 },
+	caller: { subject: 'user-42' },
+}
 
 if (isToolCall(incoming)) {
 	const result = await tools.execute(incoming)
@@ -200,9 +211,13 @@ const batch = await tools.execute([
 ```
 
 `isToolCall` validates the envelope only: the `id`, the `name`, and that `arguments` is a plain
-record. It never checks arguments against a tool's schema, so a well-formed call for a badly
-shaped payload still reaches the handler, which is exactly where the domain knowledge to reject
-it lives.
+record. Optional `caller` remains opaque `unknown`; the guard does not verify it. It never checks
+arguments against a tool's schema, so a well-formed call for a badly shaped payload still reaches
+the handler, which is exactly where the domain knowledge to reject it lives.
+
+Caller context exists only on the call and in the tool execution chain. This package never adds
+it to advertised definitions, schemas, results, or logs. When present it is forwarded by
+identity; when absent its value is `undefined`.
 
 Execution always resolves. An unknown name becomes `tool not found: <name>`; a synchronous throw
 and an asynchronous rejection are both contained; an `Error` contributes its `message` and any
@@ -238,13 +253,13 @@ registers here unchanged.
 
 ## Tests
 
-- [`Tool.test.ts`](../../tests/src/core/tools/Tool.test.ts) — definition binding, optional-field omission, argument identity, return values, and the deliberate absence of handler isolation.
-- [`ToolManager.test.ts`](../../tests/src/core/tools/ToolManager.test.ts) — insertion order, overwrite and removal lifecycle, definition projection, and isolated single and batch execution.
-- [`factories.test.ts`](../../tests/src/core/factories.test.ts) — factory construction and working instances.
-- [`helpers.test.ts`](../../tests/src/core/helpers.test.ts) — tool-call envelope boundaries: incomplete calls, wrong field types, and non-record arguments.
+- [`Tool.test.ts`](../tests/src/core/tools/Tool.test.ts) — definition binding, optional-field omission, argument identity, return values, and the deliberate absence of handler isolation.
+- [`ToolManager.test.ts`](../tests/src/core/tools/ToolManager.test.ts) — insertion order, overwrite and removal lifecycle, definition projection, and isolated single and batch execution.
+- [`factories.test.ts`](../tests/src/core/factories.test.ts) — factory construction and working instances.
+- [`validators.test.ts`](../tests/src/core/validators.test.ts) — tool-call envelope boundaries: incomplete calls, wrong field types, and non-record arguments.
 
 ## See also
 
-- [`README.md`](../README.md) — the guides index.
+- [`README.md`](README.md) — the guides index.
 - [`contract.md`](contract.md) — the dependency mirror for `@orkestrel/contract`, whose total guards back `isToolCall` and the registry's overload narrowing.
-- [`AGENTS.md`](../../AGENTS.md) — the repository's coding and documentation contract.
+- [`AGENTS.md`](../AGENTS.md) — the repository's coding and documentation contract.

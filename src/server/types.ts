@@ -37,12 +37,12 @@ export interface WireChatRequest {
 	readonly messages: ReadonlyArray<{
 		readonly role: string
 		readonly content: string
-		readonly tool_calls?: readonly {
+		readonly tool_calls?: ReadonlyArray<{
 			readonly function: {
 				readonly name: string
 				readonly arguments: Readonly<Record<string, unknown>>
 			}
-		}[]
+		}>
 		readonly images?: readonly string[]
 	}>
 	readonly stream: boolean

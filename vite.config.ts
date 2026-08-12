@@ -122,6 +122,25 @@ export const guides = (options?: UserConfig): UserConfig =>
 		options ?? {},
 	)
 
+// The shared test infrastructure's own proof. `tests/setup.ts` and `tests/setupServer.ts`
+// export real helpers every other project depends on, so they are proved rather than
+// trusted. The proof covers the whole workspace's fixtures rather than one environment,
+// which puts it on the cross-cutting axis with its own project and its own script.
+export const setup = (options?: UserConfig): UserConfig =>
+	mergeConfig(
+		{
+			resolve,
+			test: {
+				name: { label: 'setup', color: 'cyan' },
+				include: ['tests/setup.test.ts'],
+				setupFiles: ['./tests/setup.ts', './tests/setupServer.ts'],
+				environment: 'node',
+				browser: { enabled: false },
+			},
+		},
+		options ?? {},
+	)
+
 // A workbench, not a proof. No gate selects this project.
 export const probe = (options?: UserConfig): UserConfig =>
 	mergeConfig(
@@ -164,6 +183,7 @@ export default defineConfig({
 	test: {
 		projects: [
 			srcServer,
+			setup,
 			policy,
 			config,
 			...(isExactCaseFile(resolveWorkspacePath('tests/guides.test.ts')) ? [guides] : []),

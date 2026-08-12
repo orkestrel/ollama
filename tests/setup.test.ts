@@ -1,3 +1,9 @@
+// The shared test infrastructure's own proof. Every helper, fixture, recorder, and
+// guard exported from `tests/setup.ts` and `tests/setupServer.ts` is real code that the
+// module, integration, and live-service suites rely on, so each one is proved here
+// rather than trusted. It covers the whole workspace's fixtures rather than one module,
+// which is why it sits at the tests root in its own `setup` project.
+
 import type { AgentResult } from '@orkestrel/agent'
 import type { ToolResult } from '@orkestrel/tool'
 import type { WorkspaceInterface } from '@orkestrel/workspace'
@@ -9,7 +15,7 @@ import {
 	createThrowingSummarizer,
 	fillWorkspace,
 	THROWING_SUMMARIZER_MESSAGE,
-} from '../../setup.js'
+} from './setup.js'
 import {
 	createInsatiableTool,
 	createScriptedAgentStream,
@@ -29,7 +35,7 @@ import {
 	wireText,
 	wireTools,
 	withScheme,
-} from '../../setupServer.js'
+} from './setupServer.js'
 
 // Build a minimal RecordedRequest-shaped value for the wire-narrowing helper tests
 // below — method/path/headers are irrelevant to wireMessages/wireText/systemText, so

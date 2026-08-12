@@ -15,18 +15,7 @@ directory (AGENTS §22).
 | ------------ | ------------------------ |
 | `src/server` | [`ollama.md`](ollama.md) |
 
-## Dependency reference
-
-[`agent.md`](agent.md), [`budget.md`](budget.md),
-[`contract.md`](contract.md), [`ndjson.md`](ndjson.md),
-[`timeout.md`](timeout.md), and [`tool.md`](tool.md) are
-byte-identical mirrors of the guides for
-`@orkestrel/agent`, `@orkestrel/budget`, `@orkestrel/contract`,
-`@orkestrel/ndjson`, `@orkestrel/timeout`, and `@orkestrel/tool` — this
-package's runtime dependencies. Each documents **that package's own** surface,
-not anything sourced in this repo; they are kept here so a reader of this
-package can see the primitives it is built from without leaving this guide
-set.
+## Toolchain reference
 
 [`guide.md`](guide.md) is a byte-identical mirror of the guide for
 `@orkestrel/guide` — the devDependency powering this repo's guides-parity test
@@ -35,12 +24,17 @@ surface (`Guide` / `Source`, the manifest and comparison helpers), not anything
 sourced in this repo; it is kept here so a reader of the parity suite can see
 the primitives it is built from without leaving this guide set.
 
-[`workspace.md`](workspace.md) is a byte-identical mirror of the guide
-for `@orkestrel/workspace` — the devDependency supplying the workspace file
-values and construction helpers exercised by this repo's agent-integration
-tests. It documents **that package's own** workspace surface, not anything
-sourced in this repo; it is kept here so those fixtures' real dependency edge
-is visible without leaving this guide set.
+[`scaffold.md`](scaffold.md) is a byte-identical mirror of the guide for
+`@orkestrel/scaffold` — the devDependency supplying this repo's shared file set,
+configuration, and audit verbs. It documents **that package's own** surface, not
+anything sourced in this repo; it is kept here so a reader can see the toolchain
+this repository is generated and checked against.
+
+The runtime dependencies — `@orkestrel/agent`, `@orkestrel/budget`,
+`@orkestrel/contract`, `@orkestrel/ndjson`, `@orkestrel/timeout`, and
+`@orkestrel/tool` — carry their own guides in their own repositories. This guide
+set mirrors only the toolchain above, so a dependency's surface is read where it
+is published rather than from a copy that drifts.
 
 ## See also
 

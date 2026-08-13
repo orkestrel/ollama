@@ -67,6 +67,25 @@ Use only the centralized files an environment needs.
   creates a directory rather than an entity and `isVacant` is a predicate rather than a `Guard<T>`,
   so both stay in `helpers.ts`. Placement follows what the function is; the name form follows
   placement.
+- Repair a violation of those forms by deciding what the function **is** first, then moving or
+  renaming to match. Both repairs exist and picking the wrong one does real damage.
+  - Wrong file, right name → **move it**. A `scan*` in `parsers.ts` is a pure lexical leaf that
+    belongs in `helpers.ts`. The barrel star-exports both, so the move leaves the published surface
+    identical.
+  - Right file, wrong name → **rename it in place**. A function returning a live entity is an entity
+    factory and belongs in `factories.ts` whatever it is called, so `restoreThing` there is misnamed,
+    not misplaced. Renaming moves the published surface and earns a version bump; that cost is the
+    correct one to pay, and it is smaller than the alternative.
+  - Never let the name choose. Relocating a correctly-placed function to escape a rename drags its
+    dependencies with it — an entity factory moved into `helpers.ts` makes that file import an
+    implementation class, and a leaf file that imports a class stops being a leaf for every module
+    beneath it.
+- Keep the leaf pair class-free. `helpers.ts` and `validators.ts` sit at the bottom of a module's
+  graph: they import types, constants, errors, and each other, and they import no implementation
+  class. Every file that constructs or drives a class — `cloners.ts`, `compilers.ts`, `factories.ts`,
+  `shapers.ts` — sits above them, consumes them, and is never consumed by them. One cycle between
+  the two leaves is the shape this produces and is acceptable; an edge running downward from a
+  class-importing file into the leaf pair is not.
 - `templates.ts` and `contracts.ts` hold data only — shipped template definitions and compiled
   contracts. A function that builds either belongs in the kind file for what it builds.
 - `handlers.ts` holds request handlers, which are functions. `routes.ts` holds data only: a route is
@@ -96,6 +115,10 @@ kind. It reads declaration syntax and file name, never meaning.
 - The cleanup sweep and independent review prove kind purity across those files. A helper misfiled
   as a parser, a coercer misfiled as a guard, a compiler misfiled as a factory, and a shaper
   misfiled as a cloner are review findings, not red tests.
+- It does not decide barrel membership. It parses each file alone and resolves no module, so it
+  cannot tell whether a declaration is reachable from its barrel. That question belongs to each
+  package's `tests/guides.test.ts`, which imports the barrel and gets real resolution. Do not add
+  module resolution here to duplicate it.
 - The kind table is mandatory whether or not a test can see the violation.
 
 ## Wrapper test
@@ -212,6 +235,15 @@ Both obey:
 - If a declaration should not be public, make it a true local or runtime-private detail, or remove
   the capability for a substantive reason. Never leave an intentional reusable export stranded
   outside the barrel.
+- One-class-per-file evicts some classes from their only caller, and `export` on such a file is
+  structural rather than a statement of intent. Barrel that class when a consumer can construct it
+  from values they already hold. Intern it — out of the barrel, and named in the package's parity
+  `INTERNAL` list — when its constructor requires a value only its owner produces, or when the
+  public value is a projection of the instance rather than the instance. A class named in a public
+  signature is always barrelled.
+- Delete a barrel row whose class no consumer can construct, and delete its `@example` with it. A
+  row obliges a documented, runnable example, so a class kept public without one is drift that
+  parity cannot see.
 - When a symbol moves, update every import; never leave a compatibility re-export.
 
 ```ts

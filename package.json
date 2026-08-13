@@ -80,7 +80,7 @@
 		"@orkestrel/abort": "^0.0.6",
 		"@orkestrel/guide": "^0.0.10",
 		"@orkestrel/router": "^0.0.9",
-		"@orkestrel/scaffold": "^0.0.29",
+		"@orkestrel/scaffold": "^0.0.30",
 		"@orkestrel/server": "^0.0.11",
 		"@orkestrel/workspace": "^0.0.4",
 		"@types/node": "^26.1.2",

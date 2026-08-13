@@ -1,8 +1,8 @@
 import { createAgent, createAuthority } from '@orkestrel/agent'
+import { createRecorder } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { createRecorder } from '../setup.js'
 import {
 	createInsatiableTool,
 	createLookupTool,

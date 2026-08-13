@@ -9,9 +9,10 @@ import {
 	estimateMessages,
 } from '@orkestrel/agent'
 import { createBudget } from '@orkestrel/budget'
+import { collect } from '@orkestrel/test'
 import { createTool, createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/server'
-import { buildTurns, collect, createUserMessage } from '../setup.js'
+import { buildTurns, createUserMessage } from '../setup.js'
 import { createRecordingProxy, driveAgent, wireMessages } from '../setupServer.js'
 import {
 	createLiveOllama,

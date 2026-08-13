@@ -7,7 +7,7 @@ import type {
 } from '@orkestrel/agent'
 import type { ToolCall, ToolDefinition, ToolInterface, ToolResult } from '@orkestrel/tool'
 import type { TokenUsage } from '@orkestrel/budget'
-import type { TestRecorderInterface } from './setup.js'
+import type { RecorderInterface } from '@orkestrel/test'
 import { arrayOf, isRecord, isString } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
@@ -276,7 +276,7 @@ export const LOOKUP_DATUM = 'drizzle-42'
 
 /** Build the deterministic lookup tool shared by service and wire-shape tests. */
 export function createLookupTool(
-	recorder?: TestRecorderInterface<[Readonly<Record<string, unknown>>]>,
+	recorder?: RecorderInterface<[Readonly<Record<string, unknown>>]>,
 ): ToolInterface {
 	return createTool({
 		name: 'lookup',
@@ -298,7 +298,7 @@ export const THROWING_TOOL_MESSAGE = 'throwing-tool-always-fails'
 
 /** Build a tool that records its call and then fails. */
 export function createThrowingTool(
-	recorder?: TestRecorderInterface<[Readonly<Record<string, unknown>>]>,
+	recorder?: RecorderInterface<[Readonly<Record<string, unknown>>]>,
 ): ToolInterface {
 	return createTool({
 		name: 'fail',
@@ -321,7 +321,7 @@ export function insatiableResult(n: number): string {
 
 /** Build a stateful tool that keeps requesting another tool turn. */
 export function createInsatiableTool(
-	recorder?: TestRecorderInterface<[Readonly<Record<string, unknown>>]>,
+	recorder?: RecorderInterface<[Readonly<Record<string, unknown>>]>,
 ): ToolInterface {
 	let n = 0
 	return createTool({

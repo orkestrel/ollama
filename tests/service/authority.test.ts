@@ -1,7 +1,7 @@
 import { createAgent, createAuthority } from '@orkestrel/agent'
+import { createRecorder } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
 import { describe, expect, it } from 'vitest'
-import { createRecorder } from '../setup.js'
 import { createLookupTool, driveAgent, LOOKUP_DATUM } from '../setupServer.js'
 import { createLiveOllama, retryUntil } from '../setupService.js'
 

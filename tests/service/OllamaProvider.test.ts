@@ -1,9 +1,10 @@
 import { createAbort } from '@orkestrel/abort'
 import { isProviderAbortError } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
+import { createRecorder } from '@orkestrel/test'
 import { isOllamaHTTPError, OllamaProvider } from '@src/server'
 import { describe, expect, it } from 'vitest'
-import { createRecorder, createUserMessage } from '../setup.js'
+import { createUserMessage } from '../setup.js'
 import { createRecordingProxy, drive, waitForRequest, WEATHER_TOOL } from '../setupServer.js'
 import {
 	ABORT_OPTIONS,

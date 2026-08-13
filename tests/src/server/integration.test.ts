@@ -17,12 +17,12 @@ import {
 	createScope,
 	isConversationError,
 } from '@orkestrel/agent'
+import { createRecorder } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
 import { createBinaryContent, createFile } from '@orkestrel/workspace'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import {
-	createRecorder,
 	createThrowingSummarizer,
 	createUserMessage,
 	fillWorkspace,

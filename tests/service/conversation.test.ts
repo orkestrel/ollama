@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { createAgent, createConversationManager } from '@orkestrel/agent'
 import { createBudget } from '@orkestrel/budget'
+import { createRecorder } from '@orkestrel/test'
 import { createOllama } from '@src/server'
-import { buildTurns, createRecorder, createThrowingSummarizer } from '../setup.js'
+import { buildTurns, createThrowingSummarizer } from '../setup.js'
 import { createRecordingProxy, systemText } from '../setupServer.js'
 import { createLiveOllama, OLLAMA_CONFIG, retryUntil } from '../setupService.js'
 

@@ -7,11 +7,11 @@
 import type { AgentResult } from '@orkestrel/agent'
 import type { ToolResult } from '@orkestrel/tool'
 import type { WorkspaceInterface } from '@orkestrel/workspace'
+import { createRecorder } from '@orkestrel/test'
 import { createWorkspace } from '@orkestrel/workspace'
 import { describe, expect, it } from 'vitest'
 import {
 	buildTurns,
-	createRecorder,
 	createThrowingSummarizer,
 	fillWorkspace,
 	THROWING_SUMMARIZER_MESSAGE,

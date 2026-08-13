@@ -1,8 +1,8 @@
 import type { AgentChunk, AgentResult } from '@orkestrel/agent'
 import { createAgent } from '@orkestrel/agent'
+import { createRecorder } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
 import { describe, expect, it } from 'vitest'
-import { createRecorder } from '../setup.js'
 import { createLookupTool } from '../setupServer.js'
 import { ABORT_OPTIONS, createLiveOllama, retryUntil, STREAM_OPTIONS } from '../setupService.js'
 

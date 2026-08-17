@@ -8,6 +8,7 @@ import type {
 import type { ToolCall, ToolDefinition, ToolInterface, ToolResult } from '@orkestrel/tool'
 import type { TokenUsage } from '@orkestrel/budget'
 import type { RecorderInterface } from '@orkestrel/test'
+import { waitForDelay } from '@orkestrel/test'
 import { arrayOf, isRecord, isString } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
@@ -189,7 +190,7 @@ export async function waitForRequest(
 				`waitForRequest: expected ${count} recorded request(s), got ${proxy.requests.length} after ${timeoutMs}ms`,
 			)
 		}
-		await new Promise((resolve) => setTimeout(resolve, 10))
+		await waitForDelay(10)
 	}
 }
 

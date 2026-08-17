@@ -1,12 +1,6 @@
 import type { MessageInterface } from '@orkestrel/agent'
 import type { WorkspaceInterface } from '@orkestrel/workspace'
 
-/** Whether a repository-relative Vue SFC path belongs to the private browser application. */
-export function isBrowserVuePath(path: string): boolean {
-	const normalized = path.replaceAll('\\', '/')
-	return normalized.startsWith('app/browser/')
-}
-
 // ── Agent data-stub factory (real shape, not a mock) ─────────────────────────
 //
 // AGENTS §16.1: the repeated agent DATA shape — a user message — built ONCE as a

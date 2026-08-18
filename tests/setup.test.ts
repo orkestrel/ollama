@@ -20,6 +20,7 @@ import {
 	createInsatiableTool,
 	createScriptedAgentStream,
 	createLookupTool,
+	createRefusingTransport,
 	createThrowingTool,
 	driveAgent,
 	env,
@@ -29,6 +30,7 @@ import {
 	isAbortError,
 	LOOKUP_DATUM,
 	parseRequestBody,
+	REFUSED_TRANSPORT_MESSAGE,
 	systemText,
 	THROWING_TOOL_MESSAGE,
 	wireMessages,
@@ -165,6 +167,49 @@ describe('isAbortError', () => {
 
 	it('returns false for a plain object with a matching name field', () => {
 		expect(isAbortError({ name: 'AbortError' })).toBe(false)
+	})
+})
+
+describe('createRefusingTransport', () => {
+	it('refuses every request with the shared message', async () => {
+		const transport = createRefusingTransport()
+
+		await expect(transport.fetch('http://127.0.0.1:1/api/chat')).rejects.toThrow(
+			REFUSED_TRANSPORT_MESSAGE,
+		)
+	})
+
+	it('records the signal each request rode, in call order', async () => {
+		const transport = createRefusingTransport()
+		const first = new AbortController().signal
+		const second = new AbortController().signal
+
+		await transport.fetch('http://127.0.0.1:1/api/chat', { signal: first }).catch(() => {})
+		await transport.fetch('http://127.0.0.1:1/api/chat', { signal: second }).catch(() => {})
+
+		expect(transport.signals.length).toBe(2)
+		expect(transport.signals[0]).toBe(first)
+		expect(transport.signals[1]).toBe(second)
+	})
+
+	it('reports a recorded signal as unaborted until it aborts', async () => {
+		const transport = createRefusingTransport()
+		const controller = new AbortController()
+		const request = { signal: controller.signal }
+
+		await transport.fetch('http://127.0.0.1:1/api/chat', request).catch(() => {})
+		expect(transport.signals[0]?.aborted).toBe(false)
+
+		controller.abort()
+		expect(transport.signals[0]?.aborted).toBe(true)
+	})
+
+	it('records nothing when a request carries no signal', async () => {
+		const transport = createRefusingTransport()
+
+		await transport.fetch('http://127.0.0.1:1/api/chat').catch(() => {})
+
+		expect(transport.signals.length).toBe(0)
 	})
 })
 

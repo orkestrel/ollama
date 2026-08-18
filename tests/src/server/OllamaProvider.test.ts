@@ -1,10 +1,17 @@
 import type { ContextFormatInterface, MessageInterface } from '@orkestrel/agent'
 import { createAbort } from '@orkestrel/abort'
 import { isProviderAbortError } from '@orkestrel/agent'
+import { waitForDelay } from '@orkestrel/test'
 import { OllamaProvider } from '@src/server'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../../setup.js'
-import { createRecordingProxy, drive, waitForRequest, WEATHER_TOOL } from '../../setupServer.js'
+import {
+	createRecordingProxy,
+	createRefusingTransport,
+	drive,
+	waitForRequest,
+	WEATHER_TOOL,
+} from '../../setupServer.js'
 
 const FRAMING: ContextFormatInterface = {
 	instructions: {
@@ -13,6 +20,12 @@ const FRAMING: ContextFormatInterface = {
 		close: '</instructions>',
 	},
 }
+
+/** The real per-call deadline the deadline tests arm, in milliseconds. */
+const DEADLINE_MS = 25
+
+/** How long to wait past that deadline before reading whether it fired. */
+const SETTLE_MS = DEADLINE_MS * 4
 
 describe('OllamaProvider (pre-aborted)', () => {
 	it('rejects generate when the signal is already aborted', async () => {
@@ -544,49 +557,56 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 })
 
 describe('OllamaProvider (transport seam — orthogonal to the deadline)', () => {
-	it('a pre-aborted signal with a headers hook still rejects cleanly, leaking no timer', async () => {
-		vi.useFakeTimers()
+	// Recipe: a headers hook set, one pre-aborted call and one live-signal call, both
+	// refused by the transport. Assertion: provider-behavior — the hook changes neither
+	// outcome, and the deadline armed around the refused call is cleared. A pre-aborted
+	// call rides an already-aborted signal, so the live-signal call is what reads the
+	// deadline; the pre-aborted call proves the rejection stays clean with a hook set.
+	it('rejects a pre-aborted call carrying a headers hook, and clears the deadline of a refused one', async () => {
+		const transport = createRefusingTransport()
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			url: 'http://127.0.0.1:1',
+			timeout: DEADLINE_MS,
+			headers: () => ({ authorization: 'Bearer x' }),
+			fetch: transport.fetch,
+		})
+		const aborted = createAbort()
+		aborted.abort()
+
+		await expect(provider.generate([createUserMessage('hi')], aborted.signal)).rejects.toThrow(
+			Error,
+		)
+		await expect(
+			provider.generate([createUserMessage('hi')], createAbort().signal),
+		).rejects.toThrow(Error)
+		await waitForDelay(SETTLE_MS)
+
+		expect(transport.signals.length).toBe(2)
+		expect(transport.signals[1]?.aborted).toBe(false)
+	})
+
+	// Recipe: the hook rejects before the request is built, so no network is reached.
+	// Assertion: provider-behavior — the hook's error surfaces verbatim and NOTHING
+	// reaches the daemon. The provider addresses the proxy here, so a request that
+	// escaped the rejected hook would be recorded.
+	it('an async-headers hook that REJECTS surfaces its error and reaches no daemon', async () => {
+		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({
 				model: 'test-model',
-				url: 'http://127.0.0.1:1',
-				headers: () => ({ authorization: 'Bearer x' }),
+				url: proxy.url,
+				timeout: DEADLINE_MS,
+				headers: () => Promise.reject(new Error('token fetch failed')),
 			})
-			const abort = createAbort()
-			abort.abort()
+			await expect(
+				provider.generate([createUserMessage('hi')], createAbort().signal),
+			).rejects.toThrow('token fetch failed')
+			await waitForDelay(SETTLE_MS)
 
-			await expect(provider.generate([createUserMessage('hi')], abort.signal)).rejects.toThrow(
-				Error,
-			)
-			expect(vi.getTimerCount()).toBe(0)
+			expect(proxy.requests.length).toBe(0)
 		} finally {
-			vi.useRealTimers()
-		}
-	})
-
-	// Recipe: no network reached (the hook rejects before send). Assertion:
-	// provider-behavior — the armed deadline is cleared and NOTHING reaches the proxy.
-	it('an async-headers hook that REJECTS clears the deadline (no leaked timer)', async () => {
-		vi.useFakeTimers()
-		try {
-			const proxy = await createRecordingProxy('http://127.0.0.1:1')
-			try {
-				const provider = new OllamaProvider({
-					model: 'test-model',
-					url: 'http://127.0.0.1:1',
-					timeout: 90_000,
-					headers: () => Promise.reject(new Error('token fetch failed')),
-				})
-				await expect(
-					provider.generate([createUserMessage('hi')], createAbort().signal),
-				).rejects.toThrow('token fetch failed')
-				expect(vi.getTimerCount()).toBe(0)
-				expect(proxy.requests.length).toBe(0)
-			} finally {
-				await proxy.stop()
-			}
-		} finally {
-			vi.useRealTimers()
+			await proxy.stop()
 		}
 	})
 })
@@ -619,41 +639,76 @@ describe('OllamaProvider (unreachable)', () => {
 	})
 })
 
-// Always runs (no Ollama needed): a pre-aborted signal makes `fetch` reject before any
-// network, and the armed deadline timer must NOT outlive the failed call — a regression
-// guard for a leak where `#fetch` cleared the deadline only on the success / non-OK path.
+// Always runs (no Ollama needed): the deadline `#fetch` arms must NOT outlive a failed
+// call — a regression guard for a leak where `#fetch` cleared the deadline only on the
+// success / non-OK path. The signal each request rode is the deadline's observable
+// outlet: an uncleared deadline aborts it on expiry, a cleared one never does. The
+// transport refuses in-process, so reading the signal never races a connection attempt.
 describe('OllamaProvider (deadline cleanup)', () => {
-	it('clears the deadline timer when the call rejects, leaking no timer', async () => {
-		vi.useFakeTimers()
-		try {
-			const provider = new OllamaProvider({ model: 'test-model', url: 'http://127.0.0.1:1' })
-			const abort = createAbort()
-			abort.abort()
+	// The control for the two guards below: a slow headers hook holds the call past the
+	// deadline, so the recorded signal aborts. It proves an unaborted recorded signal is
+	// a result rather than the only value those assertions can produce.
+	it('aborts the request the deadline was armed around when that deadline expires', async () => {
+		const transport = createRefusingTransport()
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			url: 'http://127.0.0.1:1',
+			timeout: DEADLINE_MS,
+			headers: async () => {
+				await waitForDelay(SETTLE_MS)
+				return { authorization: 'Bearer slow' }
+			},
+			fetch: transport.fetch,
+		})
 
-			await expect(
-				provider.generate([createUserMessage('Say hello.')], abort.signal),
-			).rejects.toThrow(Error)
-			expect(vi.getTimerCount()).toBe(0)
-		} finally {
-			vi.useRealTimers()
-		}
+		await expect(
+			provider.generate([createUserMessage('hi')], createAbort().signal),
+		).rejects.toThrow(Error)
+
+		expect(transport.signals.length).toBe(1)
+		expect(transport.signals[0]?.aborted).toBe(true)
 	})
 
-	it('clears the deadline timer when an UNREACHABLE call rejects (no leak)', async () => {
-		vi.useFakeTimers()
-		try {
-			const provider = new OllamaProvider({
-				model: 'm',
-				url: 'http://localhost:1',
-				timeout: 90_000,
-			})
-			const abort = createAbort()
-			await expect(provider.generate([createUserMessage('hi')], abort.signal)).rejects.toThrow(
-				Error,
-			)
-			expect(vi.getTimerCount()).toBe(0)
-		} finally {
-			vi.useRealTimers()
-		}
+	it('clears the deadline when a pre-aborted call rejects', async () => {
+		const transport = createRefusingTransport()
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			url: 'http://127.0.0.1:1',
+			timeout: DEADLINE_MS,
+			fetch: transport.fetch,
+		})
+		const aborted = createAbort()
+		aborted.abort()
+
+		await expect(
+			provider.generate([createUserMessage('Say hello.')], aborted.signal),
+		).rejects.toThrow(Error)
+		// The pre-aborted call's own signal is aborted before the deadline can touch it,
+		// so a live-signal call through the same provider carries the readable deadline.
+		await expect(
+			provider.generate([createUserMessage('Say hello.')], createAbort().signal),
+		).rejects.toThrow(Error)
+		await waitForDelay(SETTLE_MS)
+
+		expect(transport.signals.length).toBe(2)
+		expect(transport.signals[1]?.aborted).toBe(false)
+	})
+
+	it('clears the deadline when the transport refuses the connection', async () => {
+		const transport = createRefusingTransport()
+		const provider = new OllamaProvider({
+			model: 'm',
+			url: 'http://localhost:1',
+			timeout: DEADLINE_MS,
+			fetch: transport.fetch,
+		})
+
+		await expect(
+			provider.generate([createUserMessage('hi')], createAbort().signal),
+		).rejects.toThrow(Error)
+		await waitForDelay(SETTLE_MS)
+
+		expect(transport.signals.length).toBe(1)
+		expect(transport.signals[0]?.aborted).toBe(false)
 	})
 })

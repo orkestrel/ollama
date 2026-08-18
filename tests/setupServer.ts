@@ -122,6 +122,40 @@ export function isAbortError(error: unknown): error is Error {
 	return error instanceof Error && error.name === 'AbortError'
 }
 
+/** The rejection message a refusing transport reports in place of a network failure. */
+export const REFUSED_TRANSPORT_MESSAGE = 'fetch failed'
+
+/** A transport that refuses every request after recording the signal it rode. */
+export interface RefusingTransportInterface {
+	/** The abort signal each issued request carried, in call order. */
+	readonly signals: readonly AbortSignal[]
+	/** The transport to inject as a provider's `fetch` option. */
+	readonly fetch: typeof globalThis.fetch
+}
+
+/**
+ * Build a transport that records each request's abort signal and then refuses it.
+ *
+ * A recorded signal is the caller-visible handle on the deadline a provider arms
+ * around the request: an uncleared deadline aborts that signal when it expires, so a
+ * recorded signal still unaborted after the deadline has passed reports that the
+ * provider cleared it. The transport itself reaches no network, so the observation
+ * never races a connection attempt.
+ */
+export function createRefusingTransport(): RefusingTransportInterface {
+	const signals: AbortSignal[] = []
+	return {
+		get signals() {
+			return signals
+		},
+		fetch(_input, init) {
+			const signal = init?.signal
+			if (signal !== null && signal !== undefined) signals.push(signal)
+			return Promise.reject(new Error(REFUSED_TRANSPORT_MESSAGE))
+		},
+	}
+}
+
 /**
  * Start a pass-through recording server.
  *

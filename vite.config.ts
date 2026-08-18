@@ -2,36 +2,10 @@ import type { UserConfig } from 'vite'
 import { defineConfig, mergeConfig } from 'vitest/config'
 import tsconfig from './tsconfig.json' with { type: 'json' }
 import { environmentBoundary, outputBoundary } from './configs/helpers.js'
-import { lstatSync, readdirSync, realpathSync } from 'node:fs'
-import { basename, join, parse, relative, resolve as resolvePath, sep } from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
 
 export function resolveWorkspacePath(relativePath: string): string {
 	return fileURLToPath(new URL(relativePath, import.meta.url))
-}
-
-// A generated root config must classify its own fixed proof without importing
-// package source, so the exact-case check stays self-contained over Node APIs.
-function isExactCaseFile(path: string): boolean {
-	const full = resolvePath(path)
-	try {
-		const status = lstatSync(full)
-		if (!status.isFile() || status.isSymbolicLink() || status.nlink !== 1) return false
-		const root = parse(full).root
-		const segments = relative(root, full).split(sep)
-		let parent = root
-		for (const segment of segments) {
-			try {
-				if (!readdirSync(parent).includes(segment)) return false
-			} catch {
-				if (basename(realpathSync.native(join(parent, segment))) !== segment) return false
-			}
-			parent = join(parent, segment)
-		}
-		return true
-	} catch {
-		return false
-	}
 }
 
 const resolve = {
@@ -101,6 +75,24 @@ export const config = (options?: UserConfig): UserConfig =>
 				setupFiles: ['./tests/setup.ts'],
 				environment: 'node',
 				browser: { enabled: false },
+				// A config test validates every target wrapper and runs the real linter twice with
+				// 15-second child caps, so this budget clears both caps and reports their diagnostics.
+				testTimeout: 45_000,
+			},
+		},
+		options ?? {},
+	)
+
+export const setup = (options?: UserConfig): UserConfig =>
+	mergeConfig(
+		{
+			resolve,
+			test: {
+				name: { label: 'setup', color: 'white' },
+				include: ['tests/setup*.test.ts'],
+				setupFiles: ['./tests/setup.ts'],
+				environment: 'node',
+				browser: { enabled: false },
 			},
 		},
 		options ?? {},
@@ -122,20 +114,39 @@ export const guides = (options?: UserConfig): UserConfig =>
 		options ?? {},
 	)
 
-// The shared test infrastructure's own proof. `tests/setup.ts` and `tests/setupServer.ts`
-// export real helpers every other project depends on, so they are proved rather than
-// trusted. The proof covers the whole workspace's fixtures rather than one environment,
-// which puts it on the cross-cutting axis with its own project and its own script.
-export const setup = (options?: UserConfig): UserConfig =>
+// Where this package drifts from the official tooling it stays compatible with.
+// The subject is this package, so the proof is hermetic and stays in `npm test`.
+export const conformance = (options?: UserConfig): UserConfig =>
 	mergeConfig(
 		{
 			resolve,
 			test: {
-				name: { label: 'setup', color: 'cyan' },
-				include: ['tests/setup.test.ts'],
-				setupFiles: ['./tests/setup.ts', './tests/setupServer.ts'],
+				name: { label: 'conformance', color: 'magenta' },
+				include: ['tests/conformance.test.ts'],
+				setupFiles: ['./tests/setup.ts'],
 				environment: 'node',
 				browser: { enabled: false },
+			},
+		},
+		options ?? {},
+	)
+
+// The live external services this package drives. It starts nothing itself:
+// `scripts/service.sh` provisions, `tests/setupService.ts` proves readiness, and
+// the project stays out of `npm test` because a real service answers it.
+export const service = (options?: UserConfig): UserConfig =>
+	mergeConfig(
+		{
+			resolve,
+			test: {
+				name: { label: 'service', color: 'red' },
+				include: ['tests/service/**/*.test.ts'],
+				setupFiles: ['./tests/setup.ts', './tests/setupService.ts'],
+				environment: 'node',
+				browser: { enabled: false },
+				testTimeout: 120_000,
+				hookTimeout: 120_000,
+				fileParallelism: false,
 			},
 		},
 		options ?? {},
@@ -157,62 +168,9 @@ export const probe = (options?: UserConfig): UserConfig =>
 		options ?? {},
 	)
 
-// The conformance project: this package's own wire types measured against the official
-// `ollama` client's exported types. The subject is this package, not the daemon — the
-// `service` project below is the one that drives the real service. `expectTypeOf` is a
-// no-op at runtime, so the gate that actually fails is `npm run check`; the runtime pass
-// costs milliseconds and starts nothing, which is why this project stays in `npm test`.
-// Scaffold registers no custom Vitest project, so this export and its entry in the
-// project list are this repository's own and survive every refresh of the shared
-// configuration.
-export const conformance = (options?: UserConfig): UserConfig =>
-	mergeConfig(
-		{
-			resolve,
-			test: {
-				name: { label: 'conformance', color: 'magenta' },
-				include: ['tests/conformance.test.ts'],
-				setupFiles: ['./tests/setup.ts'],
-				environment: 'node',
-				browser: { enabled: false },
-			},
-		},
-		options ?? {},
-	)
-
-// The live Ollama project. Scaffold registers no custom Vitest project, so this
-// export and its entry in the project list are this repository's own and survive
-// every refresh of the shared configuration.
-export const service = (options?: UserConfig): UserConfig =>
-	mergeConfig(
-		{
-			resolve,
-			test: {
-				name: { label: 'service', color: 'red' },
-				include: ['tests/service/**/*.test.ts'],
-				setupFiles: ['./tests/setup.ts', './tests/setupService.ts'],
-				environment: 'node',
-				browser: { enabled: false },
-				testTimeout: 120_000,
-				hookTimeout: 120_000,
-				fileParallelism: false,
-			},
-		},
-		options ?? {},
-	)
-
 export default defineConfig({
 	resolve,
 	test: {
-		projects: [
-			srcServer,
-			setup,
-			policy,
-			config,
-			...(isExactCaseFile(resolveWorkspacePath('tests/guides.test.ts')) ? [guides] : []),
-			probe,
-			conformance,
-			service,
-		],
+		projects: [srcServer, policy, config, setup, guides, conformance, service, probe],
 	},
 })

@@ -1,6 +1,7 @@
 // P1: Every checked population must exist and be non-empty; absence fails instead of passing vacuously.
 // P2: Required items are checked strictly; extra items are ignored before their shape is read.
 
+import { spawnSync } from 'node:child_process'
 import {
 	existsSync,
 	globSync,
@@ -11,13 +12,15 @@ import {
 	rmSync,
 	writeFileSync,
 } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build, loadConfigFromFile } from 'vite'
+import { RuleTester } from 'oxlint/plugins-dev'
 import * as configHelpers from '../configs/helpers.js'
+import { MOCKING_RULE, PRIVACY_RULE } from '../configs/policy.js'
 import configuration, { resolveWorkspacePath } from '../vite.config.js'
 import tsconfig from '../tsconfig.json' with { type: 'json' }
+import { createPolicyScratch, inspectPolicyConfiguration } from './setupPolicy.js'
 import { describe, expect, it } from 'vitest'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -42,7 +45,7 @@ describe('root configuration', () => {
 			for (const key of required.keys()) {
 				if (!absent.has(key)) throw new Error('The alias population carries no required entry')
 			}
-		}).toThrowError('The alias population carries no required entry')
+		}).toThrow('The alias population carries no required entry')
 		for (const [key, expected] of required) {
 			const values = declared.get(key)
 			if (values === undefined) throw new Error(`${key} is not declared`)
@@ -102,11 +105,27 @@ describe('root configuration', () => {
 				setup: ['./tests/setup.ts', './tests/setupServer.ts'],
 			})
 		}
-		for (const label of ['policy', 'config', 'guides', 'integration']) {
+		for (const label of [
+			'policy',
+			'config',
+			'guides',
+			'conformance',
+			'distribution',
+			'integration',
+		]) {
 			if (!existsSync(resolve(root, `tests/${label}.test.ts`))) continue
 			expected.set(label, {
 				include: `tests/${label}.test.ts`,
 				setup: ['./tests/setup.ts'],
+			})
+		}
+		// The live-service project covers a directory rather than one proof, so its
+		// readiness module is the fact that selects it. A suite beneath
+		// `tests/service` with no setup module is a project nothing configures.
+		if (existsSync(resolve(root, 'tests/setupService.ts'))) {
+			expected.set('service', {
+				include: 'tests/service/**/*.test.ts',
+				setup: ['./tests/setup.ts', './tests/setupService.ts'],
 			})
 		}
 		expected.set('probe', { include: 'tmp/probe/**/*.test.ts', setup: ['./tests/setup.ts'] })
@@ -209,7 +228,7 @@ describe('root configuration', () => {
 		expect(missing.delete('probe')).toBe(true)
 		expect(() => {
 			for (const [label, project] of expected) expect(missing.get(label)).toStrictEqual(project)
-		}).toThrowError(/strictly equal/u)
+		}).toThrow(/strictly equal/u)
 
 		const misconfigured = new Map(configured)
 		const probe = misconfigured.get('probe')
@@ -218,7 +237,7 @@ describe('root configuration', () => {
 		expect(() => {
 			for (const [label, project] of expected)
 				expect(misconfigured.get(label)).toStrictEqual(project)
-		}).toThrowError(/strictly equal/u)
+		}).toThrow(/strictly equal/u)
 	})
 
 	it('requires and validates every selected target wrapper', async () => {
@@ -335,10 +354,10 @@ describe('root configuration', () => {
 		const controlFound = ['configs/app/vite.server.config.ts']
 		expect(() => {
 			for (const wrapper of controlRequired) expect(controlFound).toContain(wrapper)
-		}).toThrowError(/vite\.browser/u)
-		expect(() =>
-			expect(resolve(root, 'dist/actual')).toBe(resolve(root, 'dist/control')),
-		).toThrowError(/expected/u)
+		}).toThrow(/vite\.browser/u)
+		expect(() => expect(resolve(root, 'dist/actual')).toBe(resolve(root, 'dist/control'))).toThrow(
+			/expected/u,
+		)
 	})
 
 	it('registers proof scripts in the correct gate', () => {
@@ -350,24 +369,279 @@ describe('root configuration', () => {
 		if (typeof scripts !== 'object' || scripts === null) {
 			throw new Error('The package manifest carries no scripts')
 		}
+		const publishes = Object.getOwnPropertyDescriptor(manifest, 'private')?.value !== true
 		const test = Object.getOwnPropertyDescriptor(scripts, 'test')?.value
 		const config = Object.getOwnPropertyDescriptor(scripts, 'test:config')?.value
+		const distribution = Object.getOwnPropertyDescriptor(scripts, 'test:distribution')?.value
 		const integration = Object.getOwnPropertyDescriptor(scripts, 'test:integration')?.value
+		const conformance = Object.getOwnPropertyDescriptor(scripts, 'test:conformance')?.value
+		const service = Object.getOwnPropertyDescriptor(scripts, 'test:service')?.value
 		const publish = Object.getOwnPropertyDescriptor(scripts, 'prepublishOnly')?.value
 		const hasIntegration = existsSync(resolve(root, 'tests/integration.test.ts'))
+		// The optional proofs are read off the registered project set rather than off
+		// their files, because the defect this measures is a registered project no
+		// gate runs. A project selected by a path that is not yet there is still
+		// registered, and it is exactly the one whose script goes missing.
+		const rows = configuration.test?.projects
+		if (!Array.isArray(rows)) throw new Error('The root configuration carries no projects')
+		const registered = new Set<string>()
+		for (const row of rows) {
+			if (typeof row === 'function') {
+				registered.add(row.name)
+				continue
+			}
+			if (typeof row !== 'object' || row === null) continue
+			const block: unknown = Object.getOwnPropertyDescriptor(row, 'test')?.value
+			if (typeof block !== 'object' || block === null) continue
+			const named: unknown = Object.getOwnPropertyDescriptor(block, 'name')?.value
+			if (typeof named !== 'object' || named === null) continue
+			const label: unknown = Object.getOwnPropertyDescriptor(named, 'label')?.value
+			if (typeof label === 'string') registered.add(label)
+		}
+		// The population must be able to answer both ways before either answer counts.
+		expect(registered.has('config')).toBe(true)
+		expect(registered.has('control')).toBe(false)
+		const hasConformance = registered.has('conformance')
+		const hasDistribution = registered.has('distribution')
+		const hasService = registered.has('service')
 		expect(config).toBe(
 			'vitest run --config vite.config.ts --no-cache --reporter=dot --project config',
 		)
 		expect(typeof test === 'string' && test.includes('npm run test:config')).toBe(true)
+		expect(distribution).toBe(
+			hasDistribution
+				? 'vitest run --config vite.config.ts --no-cache --reporter=dot --project distribution'
+				: undefined,
+		)
+		expect(typeof test === 'string' && test.includes('test:distribution')).toBe(false)
+		expect(typeof publish === 'string' && publish.includes('npm run test:distribution')).toBe(
+			hasDistribution && publishes,
+		)
+		expect(typeof publish === 'string').toBe(publishes)
 		expect(integration).toBe(
 			hasIntegration
 				? 'vitest run --config vite.config.ts --no-cache --reporter=dot --project integration'
 				: undefined,
 		)
-		expect(typeof test === 'string' && test.includes('test:integration')).toBe(false)
-		expect(typeof publish === 'string' && publish.includes('npm run test:integration')).toBe(
+		// The integration seed composes barrels and starts no process, so it runs in
+		// `test` like any other hermetic proof. `prepublishOnly` reaches it through
+		// `npm test` rather than through a second direct invocation.
+		expect(typeof test === 'string' && test.includes('npm run test:integration')).toBe(
 			hasIntegration,
 		)
+		expect(typeof publish === 'string' && publish.includes('npm run test:integration')).toBe(false)
+		// A registered project no gate runs is a proof that never executes, and it
+		// never fails, so the suite reports green while carrying it. Conformance is
+		// hermetic and belongs to `test`. A publishing workspace isolates the
+		// live-service project in `prepublishOnly`; a private workspace reaches it
+		// from `test`, because npm never runs a private package's publish lifecycle.
+		expect(conformance).toBe(
+			hasConformance
+				? 'vitest run --config vite.config.ts --no-cache --reporter=dot --project conformance'
+				: undefined,
+		)
+		expect(typeof test === 'string' && test.includes('npm run test:conformance')).toBe(
+			hasConformance,
+		)
+		expect(service).toBe(
+			hasService
+				? 'vitest run --config vite.config.ts --no-cache --reporter=dot --project service'
+				: undefined,
+		)
+		expect(typeof test === 'string' && test.includes('npm run test:service')).toBe(
+			hasService && !publishes,
+		)
+		expect(typeof publish === 'string' && publish.includes('npm run test:service')).toBe(
+			hasService && publishes,
+		)
+	})
+
+	it('keeps policy rules active across every linted workspace path', () => {
+		const parsed: unknown = JSON.parse(readFileSync(resolve(root, '.oxlintrc.json'), 'utf8'))
+		expect(inspectPolicyConfiguration(parsed)).toEqual([])
+		if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+			throw new Error('The Oxlint configuration is not a record')
+		}
+		const controlled = structuredClone(parsed)
+		const overrides: unknown = Object.getOwnPropertyDescriptor(controlled, 'overrides')?.value
+		if (!Array.isArray(overrides)) throw new Error('The Oxlint configuration has no overrides')
+		Object.defineProperty(controlled, 'overrides', {
+			value: overrides.concat({
+				files: ['src/**'],
+				rules: { 'policy/no-mocking': 'off' },
+			}),
+			enumerable: true,
+			configurable: true,
+			writable: true,
+		})
+		expect(inspectPolicyConfiguration(controlled)).toEqual([
+			'overrides must not configure policy/no-mocking',
+		])
+	})
+
+	it('omits the audit-confirmed dead policy type exports', () => {
+		const source = readFileSync(resolve(root, 'configs/policy.ts'), 'utf8')
+		expect(source).not.toMatch(/\bPolicy(?:Call|ClassMember)\b/u)
+	})
+})
+
+describe('policy plugin', () => {
+	RuleTester.describe = describe
+	RuleTester.it = it
+
+	const tester = new RuleTester({ languageOptions: { parserOptions: { lang: 'ts' } } })
+	tester.run('no-mocking', MOCKING_RULE, {
+		valid: [
+			{ name: 'accepts recorders', code: 'createRecorder()' },
+			{ name: 'accepts non-framework members', code: "registry.mock('./x')" },
+			{ name: 'accepts unlisted framework members', code: 'vi.clearAllMocks()' },
+		],
+		invalid: [
+			{
+				name: 'rejects module mocking [membership: named vi and jest module APIs]',
+				code: "vi.mock('./x')",
+				errors: [{ messageId: 'mock' }],
+			},
+			{
+				name: 'rejects computed module mocking [membership: named vi and jest module APIs]',
+				code: `vi['mock']('./x')`,
+				errors: [{ messageId: 'mock' }],
+			},
+			{
+				name: 'rejects template module mocking [membership: named vi and jest module APIs]',
+				code: `vi[\`mock\`]('./x')`,
+				errors: [{ messageId: 'mock' }],
+			},
+			{
+				name: 'rejects spy factories [membership: named vi and jest spy APIs]',
+				code: 'jest.fn()',
+				errors: [{ messageId: 'spy' }],
+			},
+			{
+				name: 'rejects fake clocks [membership: named vi and jest clock APIs]',
+				code: 'vi.useFakeTimers()',
+				errors: [{ messageId: 'clock' }],
+			},
+			{
+				name: 'rejects environment stubs [membership: named vi and jest stub APIs]',
+				code: "vi.stubEnv('A', '1')",
+				errors: [{ messageId: 'stub' }],
+			},
+		],
+	})
+
+	tester.run('no-keyword-privacy', PRIVACY_RULE, {
+		valid: [
+			{ name: 'accepts runtime-private fields', code: 'class Example { #value = 1 }' },
+			{
+				name: 'accepts unannotated members',
+				code: 'class Example { value = 1; read() { return this.value } }',
+			},
+		],
+		invalid: [
+			{
+				name: 'rejects private properties [membership: keyword-annotated class members]',
+				code: 'class Example { private value = 1 }',
+				errors: [{ messageId: 'keyword' }],
+			},
+			{
+				name: 'rejects private methods [membership: keyword-annotated class members]',
+				code: 'class Example { private read() { return 1 } }',
+				errors: [{ messageId: 'keyword' }],
+			},
+			{
+				name: 'rejects protected properties [membership: keyword-annotated class members]',
+				code: 'class Example { protected value = 1 }',
+				errors: [{ messageId: 'keyword' }],
+			},
+			{
+				name: 'rejects protected methods [membership: keyword-annotated class members]',
+				code: 'class Example { protected read() { return 1 } }',
+				errors: [{ messageId: 'keyword' }],
+			},
+		],
+	})
+
+	it('loads every configured policy rule through the real binary', () => {
+		const scratch = createPolicyScratch({ prefix: 'orkestrel-config-policy-' })
+		try {
+			scratch.write(
+				'violations/fixture.ts',
+				[
+					"vi.mock('./x')",
+					'class PrivateMember { private value = 1 }',
+					'class ParameterMember { constructor(readonly value: string) {} }',
+					'class PublicMember { public value = 1 }',
+					'void PrivateMember',
+					'void ParameterMember',
+					'void PublicMember',
+				].join('\n'),
+			)
+			scratch.write(
+				'clean/fixture.ts',
+				[
+					'class CleanMember {',
+					'\t#value = 1',
+					'\tvalue(): number { return this.#value }',
+					'}',
+					'void CleanMember',
+				].join('\n'),
+			)
+
+			const binary = resolve(root, 'node_modules/.bin/oxlint')
+			const config = resolve(root, '.oxlintrc.json')
+			const violations = spawnSync(
+				binary,
+				['--config', config, '--format', 'json', resolve(scratch.path, 'violations')],
+				{ cwd: root, encoding: 'utf8', timeout: 15_000 },
+			)
+			const clean = spawnSync(
+				binary,
+				['--config', config, '--format', 'json', resolve(scratch.path, 'clean')],
+				{ cwd: root, encoding: 'utf8', timeout: 15_000 },
+			)
+			const reports: string[][] = []
+			for (const result of [violations, clean]) {
+				if (result.error !== undefined) throw result.error
+				const report: unknown = JSON.parse(result.stdout)
+				if (typeof report !== 'object' || report === null) {
+					throw new Error('Oxlint returned no JSON report')
+				}
+				const diagnostics: unknown = Object.getOwnPropertyDescriptor(report, 'diagnostics')?.value
+				if (!Array.isArray(diagnostics)) throw new Error('Oxlint returned no diagnostic list')
+				const codes: string[] = []
+				for (const diagnostic of diagnostics) {
+					if (typeof diagnostic !== 'object' || diagnostic === null) {
+						throw new Error('Oxlint returned a malformed diagnostic')
+					}
+					const code: unknown = Object.getOwnPropertyDescriptor(diagnostic, 'code')?.value
+					if (typeof code !== 'string') {
+						throw new Error('Oxlint returned a diagnostic without a rule id')
+					}
+					codes.push(code)
+				}
+				reports.push(codes)
+			}
+
+			const violationCodes = reports[0]
+			const cleanCodes = reports[1]
+			if (violationCodes === undefined || cleanCodes === undefined) {
+				throw new Error('Oxlint returned no fixture reports')
+			}
+			expect(violations.status).toBe(1)
+			for (const rule of [
+				'policy(no-mocking)',
+				'policy(no-keyword-privacy)',
+				'typescript(parameter-properties)',
+				'typescript(explicit-member-accessibility)',
+			]) {
+				expect(violationCodes).toContain(rule)
+			}
+			expect(clean.status).toBe(0)
+			expect(cleanCodes).toHaveLength(0)
+		} finally {
+			scratch.destroy()
+		}
 	})
 })
 
@@ -407,8 +681,9 @@ describe('configuration helpers', () => {
 	})
 
 	it('resolves contained workspace paths and refuses a real outside sibling', () => {
-		const outside = mkdtempSync(join(tmpdir(), 'orkestrel-config-outside-'))
+		const scratch = createPolicyScratch({ prefix: 'orkestrel-config-outside-' })
 		try {
+			const outside = scratch.path
 			const importer = resolve(root, 'tests/config.test.ts')
 			expect(configHelpers.WORKSPACE_ROOT).toBe(realpathSync.native(root))
 			expect(configHelpers.fileSystemPath(`/@fs/${root}`)).toBe(root)
@@ -424,13 +699,14 @@ describe('configuration helpers', () => {
 			expect(configHelpers.isOutsideWorkspacePath(outside)).toBe(true)
 			expect(configHelpers.isOutsideWorkspacePath('src/core/index.ts')).toBe(false)
 		} finally {
-			rmSync(outside, { recursive: true, force: true })
+			scratch.destroy()
 		}
 	})
 
 	it('reads bounded files and resolves package roots from real manifests', () => {
-		const workspace = mkdtempSync(join(tmpdir(), 'orkestrel-config-package-'))
+		const scratch = createPolicyScratch({ prefix: 'orkestrel-config-package-' })
 		try {
+			const workspace = scratch.path
 			const packageRoot = resolve(workspace, 'node_modules/@sample/package')
 			const source = resolve(packageRoot, 'src/index.ts')
 			mkdirSync(dirname(source), { recursive: true })
@@ -461,13 +737,14 @@ describe('configuration helpers', () => {
 				configHelpers.trustedPackageRootFor(source, new Set([realpathSync.native(packageRoot)])),
 			).toBe(realpathSync.native(packageRoot))
 		} finally {
-			rmSync(workspace, { recursive: true, force: true })
+			scratch.destroy()
 		}
 	})
 
 	it('classifies module boundaries and extracts static asset sources', async () => {
-		const workspace = mkdtempSync(join(tmpdir(), 'orkestrel-config-assets-'))
+		const scratch = createPolicyScratch({ prefix: 'orkestrel-config-assets-' })
 		try {
+			const workspace = scratch.path
 			const source = resolve(workspace, 'entry.ts')
 			const code =
 				"const module = import('./module.js')\nconst asset = new URL('./asset%20name.png', import.meta.url)\nvoid module\nvoid asset\n"
@@ -490,7 +767,7 @@ describe('configuration helpers', () => {
 				configHelpers.environmentAssetSources(readFileSync(source, 'utf8'), source, true),
 			).resolves.toStrictEqual([])
 		} finally {
-			rmSync(workspace, { recursive: true, force: true })
+			scratch.destroy()
 		}
 	})
 
@@ -507,9 +784,9 @@ describe('configuration helpers', () => {
 		expect(() => configHelpers.enforceOutputPath(expected, expected)).not.toThrow()
 		expect(() =>
 			configHelpers.enforceOutputPath(resolve(root, 'dist/outside-control'), expected),
-		).toThrowError('Build output must use its exact configured workspace directory')
+		).toThrow('Build output must use its exact configured workspace directory')
 		const outside = resolve(dirname(root), 'outside-config-control')
-		expect(() => configHelpers.enforceOutputPath(outside, outside)).toThrowError(
+		expect(() => configHelpers.enforceOutputPath(outside, outside)).toThrow(
 			'Build output must remain inside the workspace',
 		)
 	})
@@ -556,7 +833,7 @@ describe('configuration helpers', () => {
 				error: expect.unreachable,
 				resolve: Promise.resolve.bind(Promise, { id: source }),
 			}
-			await expect(Reflect.apply(hook, context, ['@src/server', source])).rejects.toThrowError(
+			await expect(Reflect.apply(hook, context, ['@src/server', source])).rejects.toThrow(
 				'Browser modules cannot depend on Node or server-only modules',
 			)
 			await expect(Reflect.apply(hook, context, ['@src/core', source])).resolves.toBeNull()

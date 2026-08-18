@@ -75,6 +75,16 @@ nobody claimed.
   engine is dark; do not restate them here.
 - A round run with one lane is a deviation. Record it rather than glossing it. If an engine is
   unavailable, the remaining engine runs both lanes — it never drops one.
+- **Pair every finder with an independent refuter when the round fans out past two lanes.** The
+  refuter receives one slice's findings, never that finder's work, and is briefed to BREAK them
+  rather than to re-audit the subject. It reproduces each stated vector itself and defaults to
+  refuted when uncertain.
+- Refute on any of six grounds, and name which: the vector does not reproduce; the behaviour is
+  correct and documented; it is unreachable through the public API or a documented seam; it asks
+  for new capability rather than naming a defect; it restates a finding an earlier round
+  repaired; or its diagnosis is wrong — then CONFIRM with the correction.
+- Only a survivor earns a fix unit. An unrefuted finding is a hypothesis. The two scope grounds,
+  unreachable and new capability, are what keep a round from drifting into a redesign.
 - **Give every auditor the means to run its attacks.** A lens that can only read returns derivations,
   and a derivation reads exactly like a verdict — it will confirm a claim that one probe would break.
 - **Tell each auditor exactly where a probe may live, and verify that place works before you say it.**
@@ -87,13 +97,25 @@ nobody claimed.
   concurrent auditor a distinct filename that already satisfies the repository's test naming
   convention; never invent a prefix to dodge collisions, and never let two auditors claim one path. A
   probe left in the mirrored suite is discovered and fails a run nobody else caused.
-- **Run auditors concurrently only when their writes cannot collide.** Read-only lenses still write
-  probes; give each a distinct path and forbid whole-project runs, or serialize the round. **This binds
+- **Run auditors concurrently only when their writes cannot collide.** A lens that can execute
+  still writes probes; give each a distinct path and forbid whole-project runs, or serialize the
+  round. **This binds
   the orchestrator too:** a tree-wide gate run while a round is live sees the auditors' in-flight probes
   and reports a failure nobody caused. Wait for the round, or scope the command to paths no auditor
   owns. Never delete another executor's working file to make your own command pass.
+- **Tell a lane when its own engine wrote the half it is auditing, and tell it to attack that half
+  harder.** A fix round reviewed by the engine that wrote it is the case the round exists to avoid,
+  and where the pass cannot avoid it, naming it is what recovers the round. A clean pass on its own
+  engine's work is the least valuable result a lane can return.
 - Supply the evidence the subject type requires, per the table above.
-- Auditors are read-only and spawn nothing.
+- Auditors edit no source and spawn nothing. Read-only describes the SUBJECT, never the lane's
+  tools.
+- **Read the lane's allowlist before writing its brief.** A lane with no write tool cannot create
+  a probe; a lane with no exec tool cannot run one or read `git`. Naming either stops the unit on
+  arrival over a detail the allowlist already settled.
+- Where the lane cannot execute, run the probe yourself, record its control and its output, and
+  supply that record as the lane's evidence. The Orchestrator produces, the lane rules. Never
+  widen a lane's tools to fit a brief.
 - Blind reports are **immutable**. Nothing an auditor returns is edited, merged, or revised — by
   anyone, including the auditor — once it has been returned.
 
@@ -143,6 +165,14 @@ Follow `references/reconcile.md`. The obligations that are not delegable:
 
 - **Reproduce every sharp finding yourself** before acting on it. An auditor's finding is a
   hypothesis until the orchestrator has run it.
+- **Build before you pack.** `npm pack` runs no build, so it ships whatever `dist/` is on disk. An
+  auditor who packs an artifact to inspect it is reading the last build, not the current source, and
+  will report deleted exports as still shipping. Run the package's build first, and say in the brief
+  that the tarball was built from the commit under audit.
+- **Check the subject before acting on a finding, not only the reasoning.** A brief that names attack
+  vectors teaches the lane those vectors matter, and a lane can hand back the brief's own questions as
+  the subject's claims — demanding coverage for a property the subject never documented. Grep the
+  subject for the claim the finding rests on. Where it is not there, the finding is against the brief.
 - **A disagreement between auditors is rarely a tie to average.** It is usually two correct answers
   to two different questions. Find the question each one answered.
 - **Bound every finding**: state what is _not_ broken, and why the adjacent behaviour that looks the

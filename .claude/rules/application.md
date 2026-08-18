@@ -41,16 +41,20 @@ paths:
 - Published `src` environments never import private `app` modules. Src core is
   host-independent; src browser/server may import src core but never one
   another's implementation. Apply the same environment law to
-  `@orkestrel/<package>/browser` and `/server` exports.
-- App-only manifests are unscoped and `private: true`, with no package export
-  map or publish configuration. Mixed manifests publish only `dist/src`, and
-  Vue remains development-only because app output is never published.
+  `@orkestrel/<package>/browser` and `/server` exports; a package's bare export
+  is its core API.
+- App-only manifests are unscoped and `private: true`, with no `main`,
+  `module`, `types`, export map, or publish configuration. Mixed manifests
+  publish only `dist/src`, and Vue remains development-only because app output
+  is never published.
 - Give app/server process signals to a tested, explicitly stoppable,
   generation-safe runner whose stale failures cannot release a newer run.
 - Return the runner from convenience startup, so normal cleanup cannot be hidden.
-- `ApplicationServerRunner` lives alone in `ApplicationServerRunner.ts`. The
-  `startApplicationServer` convenience factory belongs in `factories.ts`. `main.ts`
-  invokes it and owns no reusable declarations or duplicated signal handling.
+- `ApplicationServerRunner` lives alone in `ApplicationServerRunner.ts`.
+  `startApplicationServer` belongs in `handlers.ts` beside the other process-lifecycle
+  functions, because `factories.ts` admits only `create`-prefixed construction and this
+  one starts a signal-owning resource. `main.ts` invokes it and owns no reusable
+  declarations or duplicated signal handling.
 - Do not add showcase, auth, storage, proxy, CSS framework, or other product
   policy unless the request requires it.
 - Test repeated lifecycle, concurrent calls, malformed environment input,

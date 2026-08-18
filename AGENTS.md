@@ -43,8 +43,7 @@ configs/  thin target wrappers around root Vite/TypeScript configuration
 - **NEVER** add an npm package unless the user explicitly requests it; prefer native APIs.
 - **NEVER** remove a symbol to silence lint. Implement it or annotate `// TODO: [Feature] Brief purpose`.
 - **NEVER** undo user edits in `*/types.ts`.
-- **NEVER** put `readonly` on parameters.
-- **NEVER** use TypeScript `private`; use runtime-enforced `#` fields.
+- **NEVER** write `public`, `protected`, or `private` on a class member, and never declare a parameter property; use runtime-enforced `#` fields.
 - **NEVER** use default exports except where a framework requires them, such as Vue SFCs or config files.
 - **NEVER** use mocks, behavioral fakes, module replacement, framework spies, or fake clocks to simulate project-owned behavior. Use real implementations, recorders, temporary resources, protocol-faithful fixture servers, and inert customizable data stubs.
 - **ALWAYS** make interface properties and public return collections readonly.
@@ -101,7 +100,7 @@ configs/  thin target wrappers around root Vite/TypeScript configuration
 7. **Document:** update the guide, examples, and parity contract.
 8. **Verify:** audit discovery, deferrals, and package contents as applicable. Run the required gates and read their actual output before claiming success.
 
-Quality gates before commit, in order. The acceptance gate is the non-mutating variant; run the mutating `format` and `lint` first only to converge, then prove with the checks:
+Quality gates before commit, in order. The acceptance gate is the non-mutating variant; run the mutating `lint` and then `format` first only to converge, then prove with the checks. `lint --fix` rewrites code and its output is not formatter-clean, so a `format` that ran before it leaves `format:check` failing on the file `lint` just rewrote:
 
 ```text
 npm run format:check → npm run lint:check → npm run check → npm run build → npm test
@@ -129,6 +128,7 @@ Every file below is a normative extension of this root. Read every rule relevant
 | `.claude/rules/browser.md`       | Vue/browser architecture and platform usage                            |
 | `.claude/rules/styles.md`        | SCSS/CSS centralization, tokens, mixins, layers, naming                |
 | `.claude/rules/documentation.md` | Guides, parity, roadmap, showcase, examples                            |
+| `.claude/rules/writing.md`       | Developer prose: reports, replies, vocabulary, claims, structure       |
 | `.claude/rules/quality.md`       | Research, dependency reuse, hardening, completion, package inspection  |
 
 ## Documentation contract
@@ -157,3 +157,15 @@ This governs prose everywhere: chat replies, instruction files, guides, TSDoc, c
 - Keep all substance, nuance, and precision. Cut only what makes text hard to read.
 - Present a tradeoff as option, cost, and recommendation — not as a balanced meditation.
 - Write requirements so they are specific and testable. Replace evaluative words such as "user friendly" or "hardened further" with the concrete condition that closes them.
+
+#### Instruction files
+
+`AGENTS.md`, `.claude/rules/*`, `.agents/*`, `.claude/agents/*`, and every skill are executed, not
+read. An agent loads them mid-task and acts on them. Write them for that reader.
+
+- Write every line as a directive: what to do, what to check, or what to refuse. Delete a line that does none of the three.
+- Name the observable trigger and the required action. "When X, do Y" is actionable; "X matters" is not.
+- State the finding as the rule. Never record how it was found, which session found it, what was tried first, or what a probe proved. That history belongs in the commit message.
+- Cut any clause written to persuade, reassure, or explain the rule to a person. An agent needs the rule and its trigger, not agreement with it.
+- Give a rule one home. Restating it elsewhere creates two copies that drift, and an agent reading the stale one is following this file.
+- Keep an example only when it disambiguates the rule. Delete an example that merely illustrates it.

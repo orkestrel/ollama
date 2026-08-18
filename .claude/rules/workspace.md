@@ -60,9 +60,22 @@ Define aliases in `tsconfig.json` first. `vite.config.ts` derives from `compiler
 - `*/types.ts`: public API contracts.
 - `configs/src/` and `configs/app/`: thin per-target wrappers, including optional
   `configs/src/*bin*` files. Shared logic remains in root configs.
-- `configs/helpers.ts`: the one permitted leaf under `configs/`. It imports nothing from the
-  workspace, which is what keeps it a leaf. Each `configs/src/*.config.ts` imports the root config
-  rather than the leaf, so shared build logic stays in one place.
+- `configs/helpers.ts`, `configs/browsers.ts`, and `configs/policy.ts`: the only permitted leaves
+  under `configs/`. Each imports nothing from the workspace, which is what keeps it a leaf. Each
+  `configs/src/*.config.ts` imports the root config rather than a leaf, so shared build logic stays
+  in one place.
+- Keep `configs/helpers.ts` free of any dependency a core-only workspace does not declare. It is
+  vendored byte-identical to every workspace, so an import there must resolve in all of them.
+  `configs/browsers.ts` exists for that reason: it imports `playwright` and
+  `@vitest/browser-playwright`, and only a workspace with a browser environment is given it.
+- Keep `configs/policy.ts` free of imports entirely. It is the workspace's oxlint plugin, the lint
+  instrument of the policy law, and it is vendored byte-identical to every workspace including a
+  core-only one, so a module that imports nothing at all is the only form that resolves in all of
+  them. Because it may import nothing, keep its own types, data, and functions in that one file: the
+  centralized-kind placement in `.claude/rules/architecture.md` does not reach it.
+- When a file is vendored byte-identical, import nothing that fails to resolve in any target. Import
+  no `@orkestrel/*` package from it: every such package is itself a target and cannot depend on
+  itself.
 
 Environment rules:
 
@@ -110,12 +123,31 @@ environment:
 The second axis is cross-cutting workspace proofs. Each one covers the whole workspace rather than
 one environment, so each is its own project:
 
-| Project       | Files                       | Proves                                                         | In `test` |
-| ------------- | --------------------------- | -------------------------------------------------------------- | --------- |
-| `policy`      | `tests/policy.test.ts`      | Every source file obeys the syntactic coding and placement law | Yes       |
-| `config`      | `tests/config.test.ts`      | Root configuration resolves its aliases, projects, and outputs | Yes       |
-| `guides`      | `tests/guides.test.ts`      | Every documented API exists and every public API is documented | Yes       |
-| `integration` | `tests/integration.test.ts` | The built package works when installed and driven from outside | No        |
+| Project        | Files                        | Proves                                                                                            | Gate                                  |
+| -------------- | ---------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `policy`       | `tests/policy.test.ts`       | Every source file obeys the syntactic coding and placement law                                    | `test`                                |
+| `config`       | `tests/config.test.ts`       | Root configuration resolves its aliases, projects, and outputs                                    | `test`                                |
+| `setup`        | `tests/setup*.test.ts`       | Reusable behavior exported from the root test setup modules works as the consuming suites require | `test`                                |
+| `guides`       | `tests/guides.test.ts`       | Every documented API exists and every public API is documented                                    | `test`                                |
+| `conformance`  | `tests/conformance.test.ts`  | Where this package drifts from the official tooling it tracks                                     | `test`                                |
+| `distribution` | `tests/distribution.test.ts` | The packed package installs and resolves through its public exports                               | `prepublishOnly`; absent when private |
+| `integration`  | `tests/integration.test.ts`  | The package's features work together end to end across environments                               | `test`                                |
+| `service`      | `tests/service/**/*.test.ts` | The live external services this package drives, driven for real                                   | `prepublishOnly`; `test` when private |
+
+- Define the `setup` project only when a root file matches `tests/setup*.test.ts`, exact-case.
+  Include every matching file. When registered, emit `test:setup` and run it from `test`. When no
+  file matches, emit neither the project nor the script.
+
+`conformance`, `integration`, `distribution`, and `service` are four subjects, not four names for
+one.
+Keep `conformance` in `test`: measure this package against an installed official artifact, and start
+any server the proof drives itself. Keep `integration` in `test`: compose the workspace's public
+surfaces without packing, installing, or driving an external service. In a publishing workspace,
+run `distribution` and `service` from `prepublishOnly`: pack and install the package in
+`distribution`, and drive the real service with `tests/setupService.ts`, longer timeouts, and no file
+parallelism in `service`. In a `private: true` workspace, never declare `prepublishOnly`; omit
+`distribution`, reach `service` from `test`, and retain the service project's isolated
+configuration.
 
 One project sits on neither axis. `probe` includes `tmp/probe/**/*.test.ts` so an agent can run a
 throwaway instrument against real sources, aliases and setup. Declare no proof there. Every test
@@ -123,11 +155,12 @@ script names its project, so no gate runs it; its directory is ignored by git; a
 `.claude/rules/tests.md` governs what may live there.
 
 - Define a cross-cutting project only for a proof the package actually has.
-- A live-service project is the fifth kind. It is named for the service it drives, and
-  `.claude/rules/tests.md` governs it.
-- A project leaves the default run for one of two reasons: it drives a live external service, or it
-  is hermetic but slow — it spawns processes, packs, installs, or drives a real build.
-- Every isolated project has its own script, is excluded from `test`, and runs in `prepublishOnly`.
+- A live-service project is the fifth kind. It is the `service` project above, `scripts/service.sh`
+  provisions what it drives, and `.claude/rules/tests.md` governs it. Name it `service` whatever it
+  drives.
+- In a publishing workspace, a project leaves the default run when it drives a live external
+  service or is hermetic but slow — it spawns processes, packs, installs, or drives a real build.
+- Give every isolated project its own script, and place that script by the paragraph above.
 
 Setup assets:
 
@@ -136,8 +169,8 @@ Setup assets:
 - Styles setup loads `setup.css` and the compiled cascade.
 
 Scope with `test:src`, `test:src:core`, `test:app`, `test:app:server`, and equivalent scripts. Each
-cross-cutting project has its own script too: `test:policy`, `test:config`, `test:guides`,
-`test:integration`.
+cross-cutting project has its own script too: `test:policy`, `test:config`, `test:setup`, `test:guides`,
+`test:conformance`, `test:distribution`, `test:integration`, `test:service`.
 
 ## Typechecking and environment isolation
 
@@ -192,7 +225,7 @@ Build/check config alignment:
 | `test`                  | Environment projects plus non-isolated cross-cutting proofs       |
 | `clean`                 | Remove `dist/`                                                    |
 | `copy <from> <to>`      | Copy while creating parent directories                            |
-| `prepublishOnly`        | The gate chain in `AGENTS.md`, then every isolated project        |
+| `prepublishOnly`        | Publishing workspaces only: the gate chain, then isolated proofs  |
 
 Run `show` only **after** formatting. The committed `demo/showcase.html` is generated/minified; formatting after generation would expand its inlined bundle.
 
@@ -206,8 +239,25 @@ Run `show` only **after** formatting. The committed `demo/showcase.html` is gene
 - Node build targets derive from the package's declared supported runtime. Keep `engines`, bundler targets, scoped configs, tests, and documentation aligned; never hard-code one Node version line-wide.
 - Browser framework: Vue 3 when present.
 
+Policy instruments:
+
+- Put every rule of the policy law in exactly one of two instruments. `configs/policy.ts` — the
+  oxlint plugin, namespace `policy` — takes the rules a single file's AST decides. The policy sweep
+  (`tests/setupPolicy.ts`) takes the rules that are path- or text-shaped, and every rule whose
+  subject is suppression itself.
+- Choose between them by what can defeat the rule: an instrument must not be suppressible by the
+  thing it polices. A file-level `oxlint-disable` silently defeats every lint rule in its file,
+  plugin rules included, and nothing inside a file can suppress the sweep.
+- Write each visitor in the plugin's visitor table as a one-line context-binding arrow delegating to
+  a named module-scope `report{Noun}` function. Never write rule logic inline in the table. That
+  arrow is the sanctioned exception to the in-body function-expression limits in
+  `.claude/rules/architecture.md` for exactly that table.
+- Name no individual rule id here. This section fixes the two instruments and how work is assigned
+  between them; each rule's substance stays with the law it enforces.
+
 ## Text integrity
 
 - Store text as UTF-8.
 - Before accepting broad generated or migrated edits, scan changed text for replacement characters, mojibake, unintended control characters, and accidental trailing debris.
 - Preserve intentional Unicode punctuation and symbols; do not “clean” valid text merely because it is non-ASCII.
+- Never renormalize Unicode while rewriting a file. Retyping a line can silently fold a decomposed sequence into its precomposed form — `e` + U+0301 becoming U+00E9 — and the two render identically, so the diff reads as a no-op and review sees nothing. Where the exact code points are the subject, as in an encoding or transport proof, that fold deletes the case the test exists for while leaving it green and named. Move such a line rather than retyping it, and compare bytes with `od -c` or a code-point dump rather than by eye.

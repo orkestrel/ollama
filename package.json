@@ -80,19 +80,19 @@
 		"@orkestrel/abort": "^0.0.7",
 		"@orkestrel/guide": "^0.0.12",
 		"@orkestrel/router": "^0.0.10",
-		"@orkestrel/scaffold": "^0.0.41",
+		"@orkestrel/scaffold": "^0.0.48",
 		"@orkestrel/server": "^0.0.13",
-		"@orkestrel/test": "^0.0.6",
+		"@orkestrel/test": "^0.0.9",
 		"@orkestrel/workspace": "^0.0.5",
 		"@types/node": "^26.1.2",
-		"@vitest/browser-playwright": "^4.1.10",
+		"@vitest/browser-playwright": "^4.1.11",
 		"ollama": "0.6.3",
 		"oxfmt": "^0.61.0",
 		"oxlint": "^1.76.0",
 		"typescript": "^6.0.3",
 		"vite": "^8.2.0",
 		"vite-plugin-dts": "^5.0.3",
-		"vitest": "^4.1.10"
+		"vitest": "^4.1.11"
 	},
 	"engines": {
 		"node": ">=22.12.0"

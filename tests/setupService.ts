@@ -148,35 +148,15 @@ export const SEED_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0, seed
 /** Native-thinking round-trips. */
 export const THINK_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0 })
 
-/** Default maximum attempts for bounded model-behavior retries. */
-export const ATTEMPTS = 6
-
 /**
- * Retry a live scenario until its semantic condition is satisfied.
+ * The elapsed-time bound every live retry gives the `retryUntil` helper, in milliseconds.
  *
- * @typeParam T - The value produced by each attempt
- * @param produce - Execute one live attempt
- * @param satisfied - Decide whether an attempt proves the requested behavior
- * @param description - Describe the behavior in the terminal failure
- * @param attempts - Maximum attempts; defaults to {@link ATTEMPTS}
- * @returns The first value satisfying the condition
+ * @remarks A live attempt is a real generation, so the shipped default budget of 1000 ms would
+ * cut a bounded retry short after its first attempt. This value matches the `service` project's
+ * own 120000 ms test timeout, which leaves the attempt count as the bound that ends a retry and
+ * the runner's timeout as the bound on the wall clock.
  */
-export async function retryUntil<T>(
-	produce: () => Promise<T>,
-	satisfied: (value: T) => boolean,
-	description: string,
-	attempts = ATTEMPTS,
-): Promise<T> {
-	let last: T | undefined
-	for (let n = 0; n < attempts; n += 1) {
-		const value = await produce()
-		if (satisfied(value)) return value
-		last = value
-	}
-	throw new Error(
-		`model did not ${description} in ${attempts} attempts (final value: ${JSON.stringify(last)})`,
-	)
-}
+export const RETRY_BUDGET = 120_000
 
 /** Two-turn tool-loop request recipe. */
 export const TOOL_LOOP_OPTIONS = Object.freeze({ num_predict: 64, temperature: 0 })

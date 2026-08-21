@@ -9,7 +9,7 @@ import {
 	estimateMessages,
 } from '@orkestrel/agent'
 import { createBudget } from '@orkestrel/budget'
-import { collect } from '@orkestrel/test'
+import { collect, retryUntil } from '@orkestrel/test'
 import { createTool, createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/server'
 import { buildTurns, createUserMessage } from '../setup.js'
@@ -18,7 +18,7 @@ import {
 	createLiveOllama,
 	createLiveSummarizer,
 	OLLAMA_CONFIG,
-	retryUntil,
+	RETRY_BUDGET,
 } from '../setupService.js'
 
 const TIMEOUT = 60_000
@@ -116,6 +116,7 @@ describe('Conversation (live) — compaction summarizes via the REAL model', () 
 			// the model genuinely produced a non-empty section summary (never a vacuous pass), failing
 			// loudly if NO attempt across the loop did.
 			const { conversation, before } = await retryUntil(
+				'produce a non-empty compaction section summary',
 				async () => {
 					const attempt = createConversation({ summarize })
 					seed(attempt)
@@ -124,8 +125,7 @@ describe('Conversation (live) — compaction summarizes via the REAL model', () 
 					return { conversation: attempt, before: attemptBefore, section }
 				},
 				(value) => value.section !== undefined && value.section.summary.trim().length > 0,
-				'produce a non-empty compaction section summary',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			// The model authored a NON-EMPTY section summary (a real digest of the folded turns) and a
@@ -212,10 +212,10 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 			// final answer THROUGH the compacted view. FAIL loudly if NO attempt across the loop
 			// achieved it.
 			const best = await retryUntil(
+				'auto-compact mid-run and produce a valid final answer through the compacted view',
 				attemptRun,
 				(tried) => compacted(tried) && tried.result.content.trim().length > 0,
-				'auto-compact mid-run and produce a valid final answer through the compacted view',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			// (a) AUTOMATIC compaction fired mid-run — at least one section, authored by the live
@@ -320,11 +320,11 @@ describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIP
 			// produced a valid (non-empty, non-partial) final answer THROUGH the repeatedly-compacted
 			// view. FAIL loudly if NO attempt across the loop achieved it.
 			const best = await retryUntil(
+				'fold >= 2 sections and produce a valid, non-partial final answer through the repeatedly-compacted view',
 				attemptMulti,
 				(tried) =>
 					multiCompacted(tried) && tried.result.content.trim().length > 0 && !tried.result.partial,
-				'fold >= 2 sections and produce a valid, non-partial final answer through the repeatedly-compacted view',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			// (a) MULTIPLE compactions fired mid-run — at least TWO sections now exist on the injected

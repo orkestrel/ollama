@@ -8,7 +8,7 @@ import type {
 import type { ToolCall, ToolDefinition, ToolInterface, ToolResult } from '@orkestrel/tool'
 import type { TokenUsage } from '@orkestrel/budget'
 import type { RecorderInterface } from '@orkestrel/test'
-import { waitForDelay } from '@orkestrel/test'
+import { flattenHeaders, waitForCondition } from '@orkestrel/test'
 import { arrayOf, isRecord, isString } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
@@ -24,15 +24,6 @@ export const WEATHER_TOOL: ToolDefinition = Object.freeze({
 		required: ['city'],
 	},
 })
-
-/** Flatten fetch headers into a lowercase readonly record. */
-export function flattenHeaders(headers: Headers): Readonly<Record<string, string>> {
-	const result: Record<string, string> = {}
-	headers.forEach((value, key) => {
-		result[key.toLowerCase()] = value
-	})
-	return result
-}
 
 /** One request captured by a recording proxy. */
 export interface RecordedRequest {
@@ -217,15 +208,11 @@ export async function waitForRequest(
 	count = 1,
 	timeoutMs = 10_000,
 ): Promise<void> {
-	const deadline = Date.now() + timeoutMs
-	while (proxy.requests.length < count) {
-		if (Date.now() >= deadline) {
-			throw new Error(
-				`waitForRequest: expected ${count} recorded request(s), got ${proxy.requests.length} after ${timeoutMs}ms`,
-			)
-		}
-		await waitForDelay(10)
-	}
+	await waitForCondition(
+		`the recording proxy to capture ${count} request(s)`,
+		() => proxy.requests.length >= count,
+		{ budget: timeoutMs },
+	)
 }
 
 /** Drive a provider stream to completion and capture deltas plus its returned result. */

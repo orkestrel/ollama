@@ -1,7 +1,7 @@
 import { createAbort } from '@orkestrel/abort'
 import { isProviderAbortError } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
-import { createRecorder } from '@orkestrel/test'
+import { createRecorder, retryUntil } from '@orkestrel/test'
 import { isOllamaHTTPError, OllamaProvider } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../setup.js'
@@ -11,7 +11,7 @@ import {
 	createLiveOllama,
 	FAST_OPTIONS,
 	OLLAMA_CONFIG,
-	retryUntil,
+	RETRY_BUDGET,
 	SEED_OPTIONS,
 	STREAM_OPTIONS,
 	THINK_OPTIONS,
@@ -87,6 +87,7 @@ describe('OllamaProvider (live — generate)', () => {
 		const provider = createLiveOllama({ predict: TOOL_OPTIONS.num_predict })
 
 		const result = await retryUntil(
+			'produce a tool_call for get_weather',
 			() =>
 				provider.generate(
 					[createUserMessage('What is the weather in Paris? Use the get_weather tool.')],
@@ -94,8 +95,7 @@ describe('OllamaProvider (live — generate)', () => {
 					[WEATHER_TOOL],
 				),
 			(value) => (value.tools ?? []).length > 0,
-			'produce a tool_call for get_weather',
-			3,
+			{ attempts: 3, budget: RETRY_BUDGET },
 		)
 
 		const tools = result.tools ?? []
@@ -154,6 +154,7 @@ describe('OllamaProvider (live — generate)', () => {
 	// thinking text (channel separation).
 	it('finishes reasoning and lands the answer in content, not lost or misrouted (think→content seam)', async () => {
 		const result = await retryUntil(
+			'finish reasoning AND land the answer in content within the calibrated think budget',
 			async () => {
 				const provider = new OllamaProvider({
 					model: OLLAMA_CONFIG.model,
@@ -169,8 +170,7 @@ describe('OllamaProvider (live — generate)', () => {
 				)
 			},
 			(value) => (value.thinking ?? '').length > 0 && value.content.length > 0,
-			'finish reasoning AND land the answer in content within the calibrated think budget',
-			3,
+			{ attempts: 3, budget: RETRY_BUDGET },
 		)
 
 		expect((result.thinking ?? '').length).toBeGreaterThan(0)
@@ -247,6 +247,7 @@ describe('OllamaProvider (live — stream)', () => {
 		const provider = createLiveOllama({ predict: TOOL_OPTIONS.num_predict })
 
 		const result = await retryUntil(
+			'produce a tool_call for get_weather',
 			async () =>
 				(
 					await drive(
@@ -258,8 +259,7 @@ describe('OllamaProvider (live — stream)', () => {
 					)
 				).result,
 			(value) => (value.tools ?? []).length > 0,
-			'produce a tool_call for get_weather',
-			3,
+			{ attempts: 3, budget: RETRY_BUDGET },
 		)
 
 		const tools = result.tools ?? []
@@ -424,6 +424,7 @@ describe('OllamaProvider (recording proxy — structured-output schema)', () => 
 			})
 
 			const result = await retryUntil(
+				'return content that JSON.parses to {city: string, population: number}',
 				() =>
 					provider.generate(
 						[createUserMessage('Give me a city and its population.')],
@@ -443,8 +444,7 @@ describe('OllamaProvider (recording proxy — structured-output schema)', () => 
 						return false
 					}
 				},
-				'return content that JSON.parses to {city: string, population: number}',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			const schemaRequest = proxy.requests[proxy.requests.length - 1]

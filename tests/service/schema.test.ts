@@ -1,7 +1,8 @@
 import { createAgent } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
+import { retryUntil } from '@orkestrel/test'
 import { describe, expect, it } from 'vitest'
-import { createLiveOllama, retryUntil } from '../setupService.js'
+import { createLiveOllama, RETRY_BUDGET } from '../setupService.js'
 
 // Agent-level structured output (live) — AgentRunOptions.schema (0.0.6) forwards a
 // JSON-Schema shape to the provider's `stream` as ProviderStreamOptions.schema, a
@@ -34,6 +35,7 @@ describe('Agent (live) — run({ schema }) constrains output to the requested JS
 			}
 
 			const { content, partial } = await retryUntil(
+				'produce content that parses as JSON under a schema constraint',
 				attempt,
 				(value) => {
 					try {
@@ -43,8 +45,7 @@ describe('Agent (live) — run({ schema }) constrains output to the requested JS
 						return false
 					}
 				},
-				'produce content that parses as JSON under a schema constraint',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			const parsed: unknown = JSON.parse(content)

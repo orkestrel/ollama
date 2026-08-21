@@ -5,10 +5,11 @@ import {
 	createInstructionManager,
 	createScope,
 } from '@orkestrel/agent'
+import { retryUntil } from '@orkestrel/test'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { createRecordingProxy, systemText } from '../setupServer.js'
-import { OLLAMA_CONFIG, retryUntil, TOOL_OPTIONS } from '../setupService.js'
+import { OLLAMA_CONFIG, RETRY_BUDGET, TOOL_OPTIONS } from '../setupService.js'
 
 const TIMEOUT = 60_000
 
@@ -74,12 +75,12 @@ describe('AgentContext scope (live, behavioral) — switching scopes changes the
 		'switching scopes changes the answer',
 		async () => {
 			const best = await retryUntil(
+				'answer APRICOT under the apricot scope and COBALT under the cobalt scope',
 				attempt,
 				(value) =>
 					value.contentA.toLowerCase().includes('apricot') &&
 					value.contentB.toLowerCase().includes('cobalt'),
-				'answer APRICOT under the apricot scope and COBALT under the cobalt scope',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(best.contentA.toLowerCase()).toContain('apricot')

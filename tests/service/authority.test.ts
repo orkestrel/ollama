@@ -1,9 +1,9 @@
 import { createAgent, createAuthority } from '@orkestrel/agent'
-import { createRecorder } from '@orkestrel/test'
+import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
 import { describe, expect, it } from 'vitest'
 import { createLookupTool, driveAgent, LOOKUP_DATUM } from '../setupServer.js'
-import { createLiveOllama, retryUntil } from '../setupService.js'
+import { createLiveOllama, RETRY_BUDGET } from '../setupService.js'
 
 // LIVE authority-surface tests — the allow / fail-closed / fallback paths of
 // `createAuthority` beyond the deny-path already covered in tools.test.ts (AGENTS
@@ -29,6 +29,7 @@ describe('Agent tool loop (live) — an allow rule lets the tool execute', () =>
 			})
 
 			const driven = await retryUntil(
+				'let an explicitly allowed lookup call execute',
 				async () => {
 					recorder.clear()
 					denyRecorder.clear()
@@ -52,8 +53,7 @@ describe('Agent tool loop (live) — an allow rule lets the tool execute', () =>
 					return driveAgent(stream)
 				},
 				() => recorder.count >= 1,
-				'let an explicitly allowed lookup call execute',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			const dispatched = driven.tools.find((tool) => tool.call.name === 'lookup')
@@ -86,6 +86,7 @@ describe('Agent tool loop (live) — a rule that throws during evaluation fails 
 			})
 
 			const driven = await retryUntil(
+				'fail closed and deny the lookup call when a rule throws during evaluation',
 				async () => {
 					recorder.clear()
 					denyRecorder.clear()
@@ -107,8 +108,7 @@ describe('Agent tool loop (live) — a rule that throws during evaluation fails 
 					return driveAgent(stream)
 				},
 				() => denyRecorder.count > 0 && recorder.count === 0,
-				'fail closed and deny the lookup call when a rule throws during evaluation',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(denyRecorder.count).toBeGreaterThan(0)
@@ -140,6 +140,7 @@ describe('Agent tool loop (live) — no matching rule falls back to default allo
 			})
 
 			const driven = await retryUntil(
+				'fall back to allow the unmatched lookup call',
 				async () => {
 					recorder.clear()
 					denyRecorder.clear()
@@ -163,8 +164,7 @@ describe('Agent tool loop (live) — no matching rule falls back to default allo
 					return driveAgent(stream)
 				},
 				() => recorder.count >= 1,
-				'fall back to allow the unmatched lookup call',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			const dispatched = driven.tools.find((tool) => tool.call.name === 'lookup')

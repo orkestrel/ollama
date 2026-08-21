@@ -1,10 +1,10 @@
 import type { AgentChunk, AgentResult } from '@orkestrel/agent'
 import { createAgent } from '@orkestrel/agent'
-import { createRecorder } from '@orkestrel/test'
+import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
 import { describe, expect, it } from 'vitest'
 import { createLookupTool } from '../setupServer.js'
-import { ABORT_OPTIONS, createLiveOllama, retryUntil, STREAM_OPTIONS } from '../setupService.js'
+import { ABORT_OPTIONS, createLiveOllama, RETRY_BUDGET, STREAM_OPTIONS } from '../setupService.js'
 
 // Agent lifecycle (live) — the AGENT-LEVEL taxonomy (streaming chunk shape, `status`
 // transitions, `emitter` lifecycle events, and abort semantics) driven through the real
@@ -113,10 +113,10 @@ describe('Agent (live) — the think channel assembles into result.thinking', ()
 			}
 
 			const { thoughts, result } = await retryUntil(
+				'produce non-empty reasoning deltas under think:true',
 				attempt,
 				(value) => value.thoughts.join('').trim().length > 0,
-				'produce non-empty reasoning deltas under think:true',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			// The joined think-chunk deltas equal the settled `thinking` field — the same assembled
@@ -199,10 +199,10 @@ describe('Agent (live) — a construction-time timeout resolves partial, never r
 			}
 
 			const { partial, events } = await retryUntil(
+				'settle a partial result under an exhausted 1ms timeout',
 				attempt,
 				(value) => value.partial === true,
-				'settle a partial result under an exhausted 1ms timeout',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			// result RESOLVES (never rejects) with partial: true, and the emitter fired abort.
@@ -234,10 +234,10 @@ describe('Agent (live) — a per-run timeout override reaches the loop', () => {
 			}
 
 			const { partial, events } = await retryUntil(
+				'settle a partial result under a per-run 1ms timeout override',
 				attempt,
 				(value) => value.partial === true,
-				'settle a partial result under a per-run 1ms timeout override',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(partial).toBe(true)
@@ -276,10 +276,10 @@ describe('Agent (live) — a per-run limit override reaches the loop', () => {
 			}
 
 			const { partial, exhausted } = await retryUntil(
+				'exhaust the per-run limit override with unresolved tool intent',
 				attempt,
 				(value) => value.exhausted.length > 0,
-				'exhaust the per-run limit override with unresolved tool intent',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(partial).toBe(true)

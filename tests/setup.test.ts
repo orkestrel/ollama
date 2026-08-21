@@ -24,7 +24,6 @@ import {
 	createThrowingTool,
 	driveAgent,
 	env,
-	flattenHeaders,
 	forwardHeaders,
 	insatiableResult,
 	isAbortError,
@@ -50,30 +49,6 @@ function requestWithBody(body: Record<string, unknown>): {
 } {
 	return { method: 'POST', path: '/api/chat', headers: {}, body }
 }
-
-describe('flattenHeaders', () => {
-	it('lowercases keys and flattens a Headers instance to a plain record', () => {
-		const headers = new Headers()
-		headers.set('Content-Type', 'application/json')
-		headers.set('X-Trace-Id', 'abc123')
-
-		expect(flattenHeaders(headers)).toEqual({
-			'content-type': 'application/json',
-			'x-trace-id': 'abc123',
-		})
-	})
-
-	it('comma-joins repeated header entries into a single flattened value', () => {
-		const headers = new Headers([
-			['accept', 'a'],
-			['accept', 'b'],
-		])
-
-		expect(flattenHeaders(headers)).toEqual({
-			accept: 'a, b',
-		})
-	})
-})
 
 describe('parseRequestBody', () => {
 	it('returns the record for valid JSON object text', () => {

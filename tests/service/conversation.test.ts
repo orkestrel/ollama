@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { createAgent, createConversationManager } from '@orkestrel/agent'
 import { createBudget } from '@orkestrel/budget'
-import { createRecorder } from '@orkestrel/test'
+import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createOllama } from '@src/server'
 import { buildTurns, createThrowingSummarizer } from '../setup.js'
 import { createRecordingProxy, systemText } from '../setupServer.js'
-import { createLiveOllama, OLLAMA_CONFIG, retryUntil } from '../setupService.js'
+import { createLiveOllama, OLLAMA_CONFIG, RETRY_BUDGET } from '../setupService.js'
 
 const TIMEOUT = 60_000
 const HEAVY_TIMEOUT = 120_000
@@ -39,10 +39,10 @@ describe('Agent (live) — a throwing summarizer under auto-compaction is non-fa
 			}
 
 			const best = await retryUntil(
+				'surface a compactError from a throwing summarizer',
 				attempt,
 				(value) => value.fired >= 1,
-				'surface a compactError from a throwing summarizer',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(best.fired).toBeGreaterThanOrEqual(1)
@@ -87,10 +87,10 @@ describe('Agent (live) — a sentinel instruction survives a long conversation',
 			}
 
 			const best = await retryUntil(
+				'include the word ZEPHYR in the final reply',
 				attempt,
 				(value) => value.content.includes('ZEPHYR'),
-				'include the word ZEPHYR in the final reply',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 			expect(best.content).toContain('ZEPHYR')
 			// Unconditional: the instruction sentinel leads the wire regardless of retry outcome.

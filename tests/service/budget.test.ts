@@ -3,10 +3,10 @@ import type { TokenUsage } from '@orkestrel/budget'
 import { describe, expect, it } from 'vitest'
 import { createAgent } from '@orkestrel/agent'
 import { createTokenBudget } from '@orkestrel/budget'
-import { createRecorder } from '@orkestrel/test'
+import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
 import { createLookupTool, driveAgent } from '../setupServer.js'
-import { createLiveOllama, FAST_OPTIONS, retryUntil, TOOL_LOOP_OPTIONS } from '../setupService.js'
+import { createLiveOllama, FAST_OPTIONS, RETRY_BUDGET, TOOL_LOOP_OPTIONS } from '../setupService.js'
 
 // budget.test.ts — LIVE agent-layer usage accounting + budget enforcement +
 // sequential-reuse (AGENTS §16: no mocks for the inference boundary). OllamaProvider.test.ts
@@ -88,10 +88,10 @@ describe('Agent budget (live) — an exhausted token budget trips the loop', () 
 			}
 
 			const tripped = await retryUntil(
+				'trip the exhausted token budget mid-run',
 				attemptBudgetTrip,
 				(value) => value.partial === true && value.aborted > 0,
-				'trip the exhausted token budget mid-run',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(tripped.partial).toBe(true)
@@ -137,10 +137,10 @@ describe('Agent budget (live) — an exhausted token budget trips MID-GENERATION
 			}
 
 			const tripped = await retryUntil(
+				'trip the token budget mid-generation (no tool loop)',
 				attemptMidStreamTrip,
 				(value) => value.partial === true && value.aborted > 0,
-				'trip the token budget mid-generation (no tool loop)',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(tripped.partial).toBe(true)
@@ -179,10 +179,10 @@ describe('Agent usage (live) — multi-turn usage accumulates across provider ca
 			}
 
 			const attempt = await retryUntil(
+				'produce a ≥2-turn tool-call loop with ≥2 usage chunks',
 				attemptMultiTurn,
 				(value) => value.usages.length >= 2,
-				'produce a ≥2-turn tool-call loop with ≥2 usage chunks',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(attempt.usages.length).toBeGreaterThanOrEqual(2)

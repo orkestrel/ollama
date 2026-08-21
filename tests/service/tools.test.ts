@@ -1,5 +1,5 @@
 import { createAgent, createAuthority } from '@orkestrel/agent'
-import { createRecorder } from '@orkestrel/test'
+import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
@@ -13,7 +13,12 @@ import {
 	THROWING_TOOL_MESSAGE,
 	wireMessages,
 } from '../setupServer.js'
-import { createLiveOllama, OLLAMA_CONFIG, retryUntil, TOOL_LOOP_OPTIONS } from '../setupService.js'
+import {
+	createLiveOllama,
+	OLLAMA_CONFIG,
+	RETRY_BUDGET,
+	TOOL_LOOP_OPTIONS,
+} from '../setupService.js'
 
 // LIVE tool-calling machinery tests — the real OllamaProvider driving the agent's tool
 // loop against the warmed local model (AGENTS §16: no mocks for the inference boundary).
@@ -34,6 +39,7 @@ describe('Agent tool loop (live) — dispatch by name', () => {
 			const failRecorder = createRecorder<[Readonly<Record<string, unknown>>]>()
 
 			const driven = await retryUntil(
+				'call the lookup tool by name',
 				async () => {
 					lookupRecorder.clear()
 					failRecorder.clear()
@@ -56,8 +62,7 @@ describe('Agent tool loop (live) — dispatch by name', () => {
 					return driveAgent(stream)
 				},
 				(value) => value.tools.some((tool) => tool.call.name === 'lookup'),
-				'call the lookup tool by name',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			const dispatched = driven.tools.find((tool) => tool.call.name === 'lookup')
@@ -77,6 +82,7 @@ describe('Agent tool loop (live) — tool-result feedback reaches the wire', () 
 			const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
 			try {
 				const attempt = await retryUntil(
+					're-send the tool result to the model on a subsequent request',
 					async () => {
 						const tools = createToolManager()
 						tools.add(createLookupTool())
@@ -106,8 +112,7 @@ describe('Agent tool loop (live) — tool-result feedback reaches the wire', () 
 							return messages.some((message) => String(message.content).includes(LOOKUP_DATUM))
 						})
 					},
-					're-send the tool result to the model on a subsequent request',
-					3,
+					{ attempts: 3, budget: RETRY_BUDGET },
 				)
 
 				expect(proxy.requests.length).toBeGreaterThanOrEqual(2)
@@ -136,6 +141,7 @@ describe('Agent tool loop (live) — a thrown tool error is isolated', () => {
 			// emitted on some hosts — so this case carries its own predict headroom,
 			// heavier steering, and a deeper retry than the sibling lookup cases.
 			const driven = await retryUntil(
+				'call the fail tool',
 				async () => {
 					recorder.clear()
 					const tools = createToolManager()
@@ -155,8 +161,7 @@ describe('Agent tool loop (live) — a thrown tool error is isolated', () => {
 					return driveAgent(stream)
 				},
 				(value) => value.tools.some((tool) => tool.call.name === 'fail'),
-				'call the fail tool',
-				5,
+				{ attempts: 5, budget: RETRY_BUDGET },
 			)
 
 			const failed = driven.tools.find((tool) => tool.call.name === 'fail')
@@ -192,6 +197,7 @@ describe('Agent tool loop (live) — authority denial blocks execution', () => {
 			})
 
 			const driven = await retryUntil(
+				'fire a deny event for the lookup call',
 				async () => {
 					recorder.clear()
 					denyRecorder.clear()
@@ -213,8 +219,7 @@ describe('Agent tool loop (live) — authority denial blocks execution', () => {
 					return driveAgent(stream)
 				},
 				() => denyRecorder.count > 0,
-				'fire a deny event for the lookup call',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(denyRecorder.count).toBeGreaterThan(0)
@@ -243,6 +248,7 @@ describe('Agent tool loop (live) — turn-limit exhaustion', () => {
 			const abortRecorder = createRecorder<[unknown]>()
 
 			const driven = await retryUntil(
+				'call the tool, consuming the single allowed turn',
 				async () => {
 					recorder.clear()
 					turnRecorder.clear()
@@ -269,8 +275,7 @@ describe('Agent tool loop (live) — turn-limit exhaustion', () => {
 					return driveAgent(stream)
 				},
 				(value) => value.tools.length > 0,
-				'call the tool, consuming the single allowed turn',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			// The tool executed at least once — the sole provider turn `limit: 1` allows, but a
@@ -308,6 +313,7 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 		const abortRecorder = createRecorder<[unknown]>()
 
 		const driven = await retryUntil(
+			'exhaust a two-turn limit under sustained tool pressure',
 			async () => {
 				recorder.clear()
 				exhaustRecorder.clear()
@@ -334,8 +340,7 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 			},
 			(value) =>
 				value.result.partial === true && exhaustRecorder.count > 0 && abortRecorder.count === 0,
-			'exhaust a two-turn limit under sustained tool pressure',
-			3,
+			{ attempts: 3, budget: RETRY_BUDGET },
 		)
 
 		expect(driven.result.partial).toBe(true)
@@ -359,6 +364,7 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 		const abortRecorder = createRecorder<[unknown]>()
 
 		const driven = await retryUntil(
+			'exhaust the default limit under sustained tool pressure',
 			async () => {
 				recorder.clear()
 				exhaustRecorder.clear()
@@ -387,8 +393,7 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 			},
 			(value) =>
 				value.result.partial === true && exhaustRecorder.count > 0 && abortRecorder.count === 0,
-			'exhaust the default limit under sustained tool pressure',
-			3,
+			{ attempts: 3, budget: RETRY_BUDGET },
 		)
 
 		expect(driven.result.partial).toBe(true)
@@ -409,6 +414,7 @@ describe('Agent tool loop (live) — a single turn carries multiple tool calls',
 			const moreRecorder = createRecorder<[Readonly<Record<string, unknown>>]>()
 
 			const attempt = await retryUntil(
+				'dispatch both tools within a single turn',
 				async () => {
 					lookupRecorder.clear()
 					moreRecorder.clear()
@@ -438,8 +444,7 @@ describe('Agent tool loop (live) — a single turn carries multiple tool calls',
 					return multiCallTurn
 				},
 				(multiCallTurn) => multiCallTurn,
-				'dispatch both tools within a single turn',
-				3,
+				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(attempt).toBe(true)

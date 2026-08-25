@@ -1,8 +1,18 @@
-// The shared test infrastructure's own proof. Every helper, fixture, recorder, and
-// guard exported from `tests/setup.ts` and `tests/setupServer.ts` is real code that the
-// module, integration, and live-service suites rely on, so each one is proved here
-// rather than trusted. It covers the whole workspace's fixtures rather than one module,
-// which is why it sits at the tests root in its own `setup` project.
+// The shared test infrastructure's own proof, over two subjects: the conversation
+// padding, the throwing summarizer, and the workspace seeder exported from
+// `tests/setup.ts`, and the host-independent half of `tests/setupServer.ts` — its
+// request-narrowing guards, its refusing transport, its tool fixtures, its agent-stream
+// driver, and its environment readers. Each is real code the module, integration, and
+// live-service suites rely on, so it is proved here rather than trusted.
+//
+// The rest of that surface is proved beside this file. `tests/setupServer.test.ts` owns
+// the Node-resource half of `tests/setupServer.ts`: the recording proxy, the capture
+// wait, the provider-stream driver, and the shared wire tables.
+// `tests/setupService.test.ts` owns the hermetic half of `tests/setupService.ts`, whose
+// live half the `service` project proves against a real daemon.
+//
+// This proof covers the workspace's fixtures rather than one module, which is why it
+// sits at the tests root in its own `setup` project.
 
 import type { AgentResult } from '@orkestrel/agent'
 import type { ToolResult } from '@orkestrel/tool'

@@ -72,7 +72,7 @@
 		"prepack": "npm run build"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.18",
+		"@orkestrel/agent": "^0.0.19",
 		"@orkestrel/budget": "^0.0.8",
 		"@orkestrel/contract": "^0.0.13",
 		"@orkestrel/ndjson": "^0.0.8",
@@ -82,11 +82,11 @@
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.59.0",
 		"@orkestrel/abort": "^0.0.8",
-		"@orkestrel/guide": "^0.0.14",
+		"@orkestrel/guide": "^0.0.15",
 		"@orkestrel/probe": "^0.0.9",
-		"@orkestrel/router": "^0.0.11",
+		"@orkestrel/router": "^0.0.12",
 		"@orkestrel/scaffold": "^0.0.57",
-		"@orkestrel/server": "^0.0.15",
+		"@orkestrel/server": "^0.0.16",
 		"@orkestrel/test": "^0.0.11",
 		"@orkestrel/workspace": "^0.0.6",
 		"@types/node": "^26.4.0",

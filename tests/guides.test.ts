@@ -26,7 +26,7 @@ const FENCE_LANGUAGES = Object.freeze(['ts'])
 /** The fence language whose blocks count as worked examples. */
 const EXAMPLE_LANGUAGE = 'ts'
 /** Each import specifier this package's own guides may resolve against. */
-const MODULES = Object.freeze({ '@src/server': 'src/server' })
+const MODULES = Object.freeze({ '@orkestrel/ollama': 'src/server' })
 /**
  * Declarations deliberately kept out of the barrel, as `symbolKey` strings.
  *

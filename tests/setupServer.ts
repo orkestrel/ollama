@@ -148,6 +148,31 @@ export function createRefusingTransport(): RefusingTransportInterface {
 }
 
 /**
+ * Build a transport that answers `/api/chat` with a canned NDJSON stream.
+ *
+ * Each chunk is enqueued on the response body verbatim, so a caller controls where the
+ * record boundaries fall: a chunk may hold several `\n`-terminated records, split one
+ * record across two chunks, or end the stream on an unterminated line. The daemon is the
+ * third party this stands in for; the bytes and the `Response` are real, so the
+ * provider's decoder, line parser, splitter, and per-record fold all run for real.
+ */
+export function createStreamingTransport(chunks: readonly string[]): typeof globalThis.fetch {
+	return () =>
+		Promise.resolve(
+			new Response(
+				new ReadableStream<Uint8Array>({
+					start(controller) {
+						const encoder = new TextEncoder()
+						for (const chunk of chunks) controller.enqueue(encoder.encode(chunk))
+						controller.close()
+					},
+				}),
+				{ headers: { 'Content-Type': 'application/x-ndjson' } },
+			),
+		)
+}
+
+/**
  * Start a pass-through recording server.
  *
  * The default upstream is deliberately unreachable so request-shape tests remain

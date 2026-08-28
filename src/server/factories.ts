@@ -18,11 +18,11 @@ import { OllamaProvider } from './OllamaProvider.js'
  * point `url` at your own server, inject a custom `fetch`, and have `headers` attach a
  * generated/obfuscated bearer token your server validates — so a browser runtime
  * reaches the LLM through your middleware WITHOUT this library ever handling the real API
- * key. Both omitted ⇒ today's behaviour (the global `fetch`, only a JSON content type).
+ * key. Both omitted ⇒ the global `fetch` and only a JSON content type.
  *
  * The optional `format` is the provider's context-framing default — the PROVIDER-DEFAULT
- * level of `AgentContext`'s format cascade (see [agents.md]; beaten by a manager-options
- * or per-item override, beating the managers' built-in framing), declaring how this
+ * level of `AgentContext`'s format cascade (beaten by a manager-options or per-item
+ * override, beating the managers' built-in framing), declaring how this
  * provider's models prefer context sections framed (e.g. XML group wrappers vs. Markdown
  * headers). It is EXPOSED on the provider for the Agent's `build()` and is NOT Ollama's
  * `/api/chat` `format` wire parameter (structured output) — the two are unrelated despite
@@ -35,7 +35,7 @@ import { OllamaProvider } from './OllamaProvider.js'
  * @example
  * ```ts
  * import { createAbort } from '@orkestrel/abort'
- * import { createOllama } from '@src/server'
+ * import { createOllama } from '@orkestrel/ollama'
  *
  * const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M' })
  * const abort = createAbort()

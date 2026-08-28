@@ -8,6 +8,7 @@ import { createUserMessage } from '../../setup.js'
 import {
 	createRecordingProxy,
 	createRefusingTransport,
+	createStreamingTransport,
 	drive,
 	waitForRequest,
 	WEATHER_TOOL,
@@ -710,5 +711,100 @@ describe('OllamaProvider (deadline cleanup)', () => {
 
 		expect(transport.signals.length).toBe(1)
 		expect(transport.signals[0]?.aborted).toBe(false)
+	})
+})
+
+describe('OllamaProvider (streaming fold over a canned NDJSON daemon)', () => {
+	it('yields each channel-tagged delta and returns the folded result', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"Hel"}}\n',
+				'{"message":{"thinking":"weighing it"}}\n{"message":{"content":"lo"}}\n',
+				'{"message":{"tool_calls":[{"id":"call-1","function":{"name":"weather","arguments":{"city":"Oslo"}}}]}}\n',
+				'{"done":true,"prompt_eval_count":3,"eval_count":4}\n',
+			]),
+		})
+
+		const { deltas, thoughts, result } = await drive(
+			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
+		)
+
+		expect(deltas.join('')).toBe('Hello')
+		expect(thoughts).toEqual(['weighing it'])
+		expect(result.content).toBe('Hello')
+		expect(result.thinking).toBe('weighing it')
+		expect(result.tools).toEqual([{ id: 'call-1', name: 'weather', arguments: { city: 'Oslo' } }])
+		expect(result.usage).toEqual({ prompt: 3, completion: 4, total: 7 })
+	})
+
+	it('accumulates tool calls across records and keeps the usage of the done line', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"message":{"tool_calls":[{"id":"call-1","function":{"name":"weather"}}]}}\n',
+				'{"message":{"tool_calls":[{"id":"call-2","function":{"name":"clock"}}]}}\n',
+				'{"done":true,"prompt_eval_count":1,"eval_count":2}\n',
+				'{"message":{"content":"trailing"}}\n',
+			]),
+		})
+
+		const { result } = await drive(
+			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
+		)
+
+		expect(result.tools?.map((call) => call.name)).toEqual(['weather', 'clock'])
+		expect(result.usage).toEqual({ prompt: 1, completion: 2, total: 3 })
+	})
+
+	it('recovers an unterminated final done line through the tail flush', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"ok"}}\n',
+				'{"done":true,"prompt_eval_count":5,"eval_count":6}',
+			]),
+		})
+
+		const { deltas, result } = await drive(
+			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
+		)
+
+		expect(deltas.join('')).toBe('ok')
+		expect(result.usage).toEqual({ prompt: 5, completion: 6, total: 11 })
+	})
+
+	it('separates inline think tags out of the yielded content and onto thinking', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"<think>reasoning</think>answer"}}\n',
+				'{"done":true,"prompt_eval_count":1,"eval_count":1}\n',
+			]),
+		})
+
+		const { deltas, result } = await drive(
+			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
+		)
+
+		expect(deltas.join('')).toBe('answer')
+		expect(result.content).toBe('answer')
+		expect(result.thinking).toBe('reasoning')
+	})
+
+	it('joins the separated in-content span with the wire-side thinking', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"<think>from content</think>answer","thinking":"from the wire"}}\n',
+				'{"done":true,"prompt_eval_count":1,"eval_count":1}\n',
+			]),
+		})
+
+		const { result } = await drive(
+			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
+		)
+
+		expect(result.thinking).toBe('from content\n\nfrom the wire')
 	})
 })

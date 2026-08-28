@@ -31,6 +31,7 @@ import {
 	createScriptedAgentStream,
 	createLookupTool,
 	createRefusingTransport,
+	createStreamingTransport,
 	createThrowingTool,
 	driveAgent,
 	env,
@@ -195,6 +196,33 @@ describe('createRefusingTransport', () => {
 		await transport.fetch('http://127.0.0.1:1/api/chat').catch(() => {})
 
 		expect(transport.signals.length).toBe(0)
+	})
+})
+
+describe('createStreamingTransport', () => {
+	it('answers with an OK response carrying the NDJSON content type', async () => {
+		const transport = createStreamingTransport(['{"done":true}\n'])
+
+		const response = await transport('http://127.0.0.1:1/api/chat')
+
+		expect(response.ok).toBe(true)
+		expect(response.headers.get('content-type')).toBe('application/x-ndjson')
+	})
+
+	it('streams every chunk verbatim, in order and unaltered', async () => {
+		const transport = createStreamingTransport(['{"a":1}\n{"b":2}\n', '{"c":3}'])
+
+		const response = await transport('http://127.0.0.1:1/api/chat')
+
+		expect(await response.text()).toBe('{"a":1}\n{"b":2}\n{"c":3}')
+	})
+
+	it('serves an empty body when it is given no chunks', async () => {
+		const transport = createStreamingTransport([])
+
+		const response = await transport('http://127.0.0.1:1/api/chat')
+
+		expect(await response.text()).toBe('')
 	})
 })
 

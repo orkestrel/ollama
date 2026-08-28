@@ -28,7 +28,7 @@ export interface OllamaResponse {
  * @remarks
  * This is the typed wire shape asserted against the official `ollama` client's
  * `ChatRequest` by the compile-time parity test; `src/` never imports `ollama` itself.
- * `messages` mirrors the minimal turn shape `#plain` builds (`role` / `content`, plus
+ * `messages` mirrors the minimal turn shape `mapMessages` builds (`role` / `content`, plus
  * `tool_calls` only on a turn that replays them and `images` only on a multimodal
  * turn); `options` and `tools` are only present when configured.
  */
@@ -97,8 +97,8 @@ export interface OllamaOptions {
 	 * The `/api/chat` `think` wire flag; defaults to `false`. When `true`, a thinking-capable
 	 * model (e.g. `qwen3`) separates its reasoning NATIVELY at the wire — the daemon returns it
 	 * on the distinct `message.thinking` channel (surfaced on `ProviderResult.thinking`) rather
-	 * than inline in `message.content`. The default stays `false` so a general-purpose provider
-	 * is backward-compatible and immediate for non-thinking models; the per-call ThinkSplitter
+	 * than inline in `message.content`. The default is `false`, so a non-thinking model needs no
+	 * configuration and answers immediately; the per-call ThinkSplitter
 	 * remains the defensive fallback for daemons/models that still inline `<think>` tags either
 	 * way. Set it `true` for a thinking model whose reasoning you intend to DISPLAY separately.
 	 */
@@ -119,7 +119,9 @@ export interface OllamaOptions {
 	 * token can be refreshed/fetched per call. A returned `Content-Type` overrides the
 	 * default; other headers add to it. Omitted ⇒ only `Content-Type: application/json`.
 	 */
-	readonly headers?: () => Record<string, string> | Promise<Record<string, string>>
+	readonly headers?: () =>
+		| Readonly<Record<string, string>>
+		| Promise<Readonly<Record<string, string>>>
 	/**
 	 * The provider's OPTIONAL context-framing default — the PROVIDER-DEFAULT level of
 	 * `AgentContext`'s format cascade (beaten by a manager-options or per-item override,
@@ -128,8 +130,8 @@ export interface OllamaOptions {
 	 * the provider is framing-agnostic and core's built-in defaults apply unchanged. NOTE:
 	 * this is the prompt-CONTEXT framing consumed by `AgentContext.build()` — it is NOT
 	 * Ollama's `/api/chat` `format` wire parameter (structured-output / JSON schema),
-	 * which this provider does not currently send; the two are unrelated despite the
-	 * shared word.
+	 * which this provider sends only when a call supplies a `schema`; the two are unrelated
+	 * despite the shared word.
 	 */
 	readonly format?: ContextFormatInterface
 }

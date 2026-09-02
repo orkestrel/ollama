@@ -54,7 +54,7 @@ const streamed = step.value // the assembled ProviderResult
 For the full surface — `createOllama`, `OllamaProvider`, `OllamaOptions`,
 tool calls (`ToolDefinition` / `ToolCall` from `@orkestrel/tool`), thinking,
 and the context-framing default — see
-[`guides/src/ollama.md`](guides/src/ollama.md).
+[`guides/ollama.md`](guides/ollama.md).
 
 ## Package
 

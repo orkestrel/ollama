@@ -12,7 +12,7 @@ const HEAVY_TIMEOUT = 120_000
 
 describe('Agent (live) — a throwing summarizer under auto-compaction is non-fatal', () => {
 	it(
-		'compactError fires and the run still completes non-partial',
+		'fault fires and the run still completes non-partial',
 		async () => {
 			const attempt = async (): Promise<{
 				readonly fired: number
@@ -26,20 +26,20 @@ describe('Agent (live) — a throwing summarizer under auto-compaction is non-fa
 					conversations,
 					window: createBudget({
 						max: 20,
-						consume: (messages: ReadonlyArray<{ readonly content: string }>) =>
+						consumer: (messages: ReadonlyArray<{ readonly content: string }>) =>
 							messages.reduce((total, message) => total + message.content.length, 0),
 					}),
 					timeout: TIMEOUT,
 				})
-				const compactErrors = createRecorder<[unknown]>()
-				agent.emitter.on('compactError', (error) => compactErrors.handler(error))
+				const faults = createRecorder<[unknown]>()
+				agent.emitter.on('fault', (error) => faults.handler(error))
 				agent.context.messages.add({ role: 'user', content: 'Please continue.' })
 				const result = await agent.generate()
-				return { fired: compactErrors.count, partial: result.partial }
+				return { fired: faults.count, partial: result.partial }
 			}
 
 			const best = await retryUntil(
-				'surface a compactError from a throwing summarizer',
+				'surface a fault from a throwing summarizer',
 				attempt,
 				(value) => value.fired >= 1,
 				{ attempts: 3, budget: RETRY_BUDGET },

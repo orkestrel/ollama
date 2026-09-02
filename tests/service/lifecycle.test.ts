@@ -48,8 +48,8 @@ describe('Agent (live) — streamed chunk taxonomy, status lifecycle, and emitte
 				if (!sawRunning) {
 					sawRunning = agent.status === 'running'
 				}
-				if (chunk.type === 'token') tokens.push(chunk.content)
-				else if (chunk.type === 'usage') usages.push(chunk.usage)
+				if (chunk.category === 'token') tokens.push(chunk.content)
+				else if (chunk.category === 'usage') usages.push(chunk.usage)
 			}
 			const result = await stream.result
 
@@ -106,7 +106,7 @@ describe('Agent (live) — the think channel assembles into result.thinking', ()
 				const stream = agent.stream({ think: true })
 				const thoughts: string[] = []
 				for await (const chunk of stream.events) {
-					if (chunk.type === 'think') thoughts.push(chunk.content)
+					if (chunk.category === 'think') thoughts.push(chunk.content)
 				}
 				const result = await stream.result
 				return { thoughts, result }
@@ -156,7 +156,7 @@ describe('Agent (live) — abort() mid-stream resolves partial, never rejects', 
 			const chunks: AgentChunk[] = []
 			for await (const chunk of stream.events) {
 				chunks.push(chunk)
-				if (!aborted && chunk.type === 'token') {
+				if (!aborted && chunk.category === 'token') {
 					aborted = true
 					agent.abort('audit-abort')
 				}

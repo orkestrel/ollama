@@ -1,6 +1,6 @@
 import type {
-	ContextFormatInterface,
-	MessageInterface,
+	ContextFormat,
+	Message,
 	ProviderDelta,
 	ProviderInterface,
 	ProviderResult,
@@ -91,7 +91,7 @@ export class OllamaProvider implements ProviderInterface {
 	readonly #headers:
 		| (() => Readonly<Record<string, string>> | Promise<Readonly<Record<string, string>>>)
 		| undefined
-	readonly #format: ContextFormatInterface | undefined
+	readonly #format: ContextFormat | undefined
 
 	constructor(options: OllamaOptions) {
 		this.#model = options.model
@@ -137,14 +137,14 @@ export class OllamaProvider implements ProviderInterface {
 	 * structured-output `format` wire parameter — that one IS sent in `#body`, but only when
 	 * a per-call `ProviderStreamOptions.schema` is supplied; only the word collides.
 	 *
-	 * @returns The configured {@link ContextFormatInterface}, or `undefined` when none
+	 * @returns The configured {@link ContextFormat}, or `undefined` when none
 	 */
-	get format(): ContextFormatInterface | undefined {
+	get format(): ContextFormat | undefined {
 		return this.#format
 	}
 
 	async generate(
-		messages: readonly MessageInterface[],
+		messages: readonly Message[],
 		signal: AbortSignal,
 		tools?: readonly ToolDefinition[],
 		options?: ProviderStreamOptions,
@@ -168,7 +168,7 @@ export class OllamaProvider implements ProviderInterface {
 	}
 
 	async *stream(
-		messages: readonly MessageInterface[],
+		messages: readonly Message[],
 		signal: AbortSignal,
 		tools?: readonly ToolDefinition[],
 		options?: ProviderStreamOptions,
@@ -227,7 +227,7 @@ export class OllamaProvider implements ProviderInterface {
 			// Stream end: a held partial tag that never completed was real content — it is the
 			// final delta (the splitter folds it into its `content` too).
 			const tail = splitter.flush()
-			if (tail.length > 0) yield { type: 'content', text: tail }
+			if (tail.length > 0) yield { channel: 'content', text: tail }
 		} catch (error) {
 			// A mid-stream cancel (the caller's signal or the deadline) surfaces the
 			// partial so the loop can recover what streamed; anything else propagates.
@@ -251,7 +251,7 @@ export class OllamaProvider implements ProviderInterface {
 			} catch {
 				// Never mask the primary error/result with a cancel failure.
 			}
-			parser.reset()
+			parser.clear()
 			timeout.clear()
 		}
 		return assembleResult(splitter.content, joinThinking(splitter, wired), calls, usage)
@@ -276,14 +276,14 @@ export class OllamaProvider implements ProviderInterface {
 		}
 	> {
 		const delta = splitter.split(extractContent(record))
-		if (delta.length > 0) yield { type: 'content', text: delta }
+		if (delta.length > 0) yield { channel: 'content', text: delta }
 		// The PRIMARY live reasoning channel: each native `message.thinking` wire delta is
 		// surfaced as a tagged `thinking` delta AND returned for the caller's `wired`
 		// accumulation (the two stay in lockstep). The ThinkSplitter's in-content
 		// reclassified spans have no per-delta hook — the final `ProviderResult.thinking`
 		// reconciles them; the native channel (think: true) is what streams live.
 		const thinking = extractThinking(record)
-		if (thinking.length > 0) yield { type: 'thinking', text: thinking }
+		if (thinking.length > 0) yield { channel: 'thinking', text: thinking }
 		// Only the `done` line carries usage, so every other record hands the caller's
 		// current value straight back rather than clearing it.
 		return {
@@ -296,7 +296,7 @@ export class OllamaProvider implements ProviderInterface {
 	// Arm the deadline, POST `/api/chat`, and hand back the response + the handles
 	// that bound it. On a non-OK status, clear the deadline and throw with the body.
 	async #fetch(
-		messages: readonly MessageInterface[],
+		messages: readonly Message[],
 		stream: boolean,
 		signal: AbortSignal,
 		tools?: readonly ToolDefinition[],
@@ -365,7 +365,7 @@ export class OllamaProvider implements ProviderInterface {
 	// `format` is the wire's structured-output constraint, forwarded verbatim from the per-call
 	// `ProviderStreamOptions.schema` — unrelated to `OllamaOptions.format` (prompt-context framing).
 	#body(
-		messages: readonly MessageInterface[],
+		messages: readonly Message[],
 		stream: boolean,
 		tools?: readonly ToolDefinition[],
 		options?: ProviderStreamOptions,

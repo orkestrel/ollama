@@ -251,7 +251,7 @@ export async function drive(generator: AsyncGenerator<ProviderDelta, ProviderRes
 	for (;;) {
 		const step = await generator.next()
 		if (step.done) return { deltas, thoughts, result: step.value }
-		if (step.value.type === 'content') deltas.push(step.value.text)
+		if (step.value.channel === 'content') deltas.push(step.value.text)
 		else thoughts.push(step.value.text)
 	}
 }
@@ -295,9 +295,9 @@ export async function driveAgent(stream: AgentStreamInterface): Promise<{
 	const tools: DrivenTool[] = []
 	const usages: TokenUsage[] = []
 	for await (const chunk of stream.events) {
-		if (chunk.type === 'token') tokens.push(chunk.content)
-		else if (chunk.type === 'think') thoughts.push(chunk.content)
-		else if (chunk.type === 'tool') tools.push({ call: chunk.call, result: chunk.result })
+		if (chunk.category === 'token') tokens.push(chunk.content)
+		else if (chunk.category === 'think') thoughts.push(chunk.content)
+		else if (chunk.category === 'tool') tools.push({ call: chunk.call, result: chunk.result })
 		else usages.push(chunk.usage)
 	}
 	const result = await stream.result

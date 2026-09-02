@@ -3,7 +3,7 @@
 // or malformed wire field degrades to a sensible default (empty content, no usage, `{}`
 // arguments), never a throw (§14), and no value is reached through `as`.
 
-import type { MessageInterface, ProviderResult, ThinkSplitterInterface } from '@orkestrel/agent'
+import type { Message, ProviderResult, ThinkSplitterInterface } from '@orkestrel/agent'
 import type { TokenUsage } from '@orkestrel/budget'
 import type { ToolCall } from '@orkestrel/tool'
 import type { WireChatRequest } from './types.js'
@@ -25,7 +25,7 @@ import { isNumber, isRecord, isString } from '@orkestrel/contract'
  * // [{ role: 'user', content: 'Say hello.' }]
  * ```
  */
-export function mapMessages(messages: readonly MessageInterface[]): WireChatRequest['messages'] {
+export function mapMessages(messages: readonly Message[]): WireChatRequest['messages'] {
 	return messages.map((message) => ({
 		role: message.role,
 		content: message.content,

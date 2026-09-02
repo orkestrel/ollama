@@ -1,7 +1,7 @@
 // The Ollama surface's public types. Imports from Orkestrel packages — agent for the
 // provider contract, timeout for the per-call deadline interface.
 
-import type { ContextFormatInterface } from '@orkestrel/agent'
+import type { ContextFormat } from '@orkestrel/agent'
 import type { TimeoutInterface } from '@orkestrel/timeout'
 
 /**
@@ -87,7 +87,11 @@ export interface OllamaOptions {
 	readonly model: string
 	/** The daemon base URL; defaults to `'http://localhost:11434'`. */
 	readonly url?: string
-	/** How long the model stays resident after a call; defaults to `'5m'`. */
+	/**
+	 * How long the model stays resident after a call; defaults to `'5m'`. Mirrors the
+	 * Ollama `/api/chat` `keep_alive` field, whose value this key carries verbatim onto
+	 * {@link WireChatRequest.keep_alive}.
+	 */
 	readonly keepAlive?: string | number
 	/** The per-call deadline in milliseconds; defaults to `120_000`. */
 	readonly timeout?: number
@@ -133,5 +137,18 @@ export interface OllamaOptions {
 	 * which this provider sends only when a call supplies a `schema`; the two are unrelated
 	 * despite the shared word.
 	 */
-	readonly format?: ContextFormatInterface
+	readonly format?: ContextFormat
+}
+
+/**
+ * The options a thrown {@link OllamaHTTPError} accepts beside its message and status —
+ * the standard error `cause` link, named so a consumer can reference the shape.
+ *
+ * @remarks
+ * `cause` is the underlying value that produced the HTTP failure: the transport or
+ * body-read rejection the provider caught before rethrowing. It is `unknown` because a
+ * thrown value is unconstrained. Omitted ⇒ the error carries no cause.
+ */
+export interface OllamaErrorOptions {
+	readonly cause?: unknown
 }

@@ -6,6 +6,10 @@ export const DEFAULT_OLLAMA_URL = 'http://localhost:11434'
 /**
  * How long the model stays resident after a call when `OllamaOptions.keepAlive` is
  * omitted — Ollama's own `keep_alive` default, expressed as a duration string.
+ *
+ * @remarks
+ * The name mirrors the Ollama `/api/chat` `keep_alive` field this value is sent as, so
+ * the constant, the `OllamaOptions.keepAlive` key, and the wire member read as one term.
  */
 export const DEFAULT_KEEP_ALIVE = '5m'
 

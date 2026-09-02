@@ -16,7 +16,7 @@
 // runs its readiness gate at import; that is why the import is deferred until the
 // environment points at the fixture.
 
-import type { ContextFormatInterface } from '@orkestrel/agent'
+import type { ContextFormat } from '@orkestrel/agent'
 import { arrayOf, isRecord } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
@@ -74,7 +74,7 @@ const READY_CHAT: ChatAnswer = { status: 200, content: FIXTURE_CONTENT, park: fa
 const SUMMARY_INSTRUCTION = 'Summarize the conversation so far concisely in one sentence.'
 
 /** A framing default used to prove the option reaches the built provider unchanged. */
-const FRAMING: ContextFormatInterface = {
+const FRAMING: ContextFormat = {
 	instructions: {
 		open: '<instructions>',
 		render: (one) => `<instruction>${one.content}</instruction>`,

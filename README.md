@@ -43,7 +43,7 @@ assembled result when the stream completes:
 const generator = provider.stream(messages, abort.signal)
 let step = await generator.next()
 while (!step.done) {
-	if (step.value.type === 'content') process.stdout.write(step.value.text)
+	if (step.value.channel === 'content') process.stdout.write(step.value.text)
 	step = await generator.next()
 }
 const streamed = step.value // the assembled ProviderResult

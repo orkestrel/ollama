@@ -1,4 +1,4 @@
-import type { MessageInterface } from '@orkestrel/agent'
+import type { Message } from '@orkestrel/agent'
 import { createThinkSplitter } from '@orkestrel/agent'
 import {
 	assembleResult,
@@ -21,7 +21,7 @@ describe('mapMessages', () => {
 	})
 
 	it('emits tool_calls only on a turn that replays them', () => {
-		const replay: MessageInterface = {
+		const replay: Message = {
 			id: '2',
 			role: 'assistant',
 			content: '',
@@ -38,14 +38,14 @@ describe('mapMessages', () => {
 	})
 
 	it('omits tool_calls for an empty calls array', () => {
-		const empty: MessageInterface = { id: '3', role: 'assistant', content: 'done', calls: [] }
+		const empty: Message = { id: '3', role: 'assistant', content: 'done', calls: [] }
 
 		expect(mapMessages([empty])).toEqual([{ role: 'assistant', content: 'done' }])
 	})
 
 	it('forwards images only on a multimodal turn, copied off the source array', () => {
 		const images = ['aGk=']
-		const multimodal: MessageInterface = {
+		const multimodal: Message = {
 			id: '4',
 			role: 'user',
 			content: 'What is this?',

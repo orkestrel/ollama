@@ -540,11 +540,11 @@ describe('driveAgent', () => {
 		const settled: AgentResult = { content: 'ab', partial: false }
 		const stream = createScriptedAgentStream(
 			[
-				{ type: 'think', content: 'reasoning-1' },
-				{ type: 'token', content: 'a' },
-				{ type: 'tool', call, result: toolResult },
-				{ type: 'token', content: 'b' },
-				{ type: 'usage', usage },
+				{ category: 'think', content: 'reasoning-1' },
+				{ category: 'token', content: 'a' },
+				{ category: 'tool', call, result: toolResult },
+				{ category: 'token', content: 'b' },
+				{ category: 'usage', usage },
 			],
 			settled,
 		)

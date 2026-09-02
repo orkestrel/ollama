@@ -1,4 +1,4 @@
-import type { ContextFormatInterface, MessageInterface } from '@orkestrel/agent'
+import type { ContextFormat, Message } from '@orkestrel/agent'
 import { createAbort } from '@orkestrel/abort'
 import { isProviderAbortError } from '@orkestrel/agent'
 import { waitForDelay } from '@orkestrel/test'
@@ -14,7 +14,7 @@ import {
 	WEATHER_TOOL,
 } from '../../setupServer.js'
 
-const FRAMING: ContextFormatInterface = {
+const FRAMING: ContextFormat = {
 	instructions: {
 		open: '<instructions>',
 		render: (one) => `<instruction>${one.content}</instruction>`,
@@ -58,7 +58,7 @@ describe('OllamaProvider (pre-aborted)', () => {
 })
 
 describe('OllamaProvider (context-framing format — no network)', () => {
-	it('exposes the configured ContextFormatInterface verbatim (satisfies the optional ProviderInterface.format)', () => {
+	it('exposes the configured ContextFormat verbatim (satisfies the optional ProviderInterface.format)', () => {
 		const provider = new OllamaProvider({
 			model: 'm',
 			url: 'http://localhost:11434',
@@ -284,7 +284,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({ model: 'test-model', url: proxy.url })
-			const messages: readonly MessageInterface[] = [
+			const messages: readonly Message[] = [
 				{ id: '1', role: 'system', content: 'sys' },
 				{ id: '2', role: 'user', content: 'u' },
 				{
@@ -340,7 +340,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({ model: 'test-model', url: proxy.url })
-			const messages: readonly MessageInterface[] = [
+			const messages: readonly Message[] = [
 				{ id: '1', role: 'user', content: 'Describe this.', images: ['aGVsbG8=', 'd29ybGQ='] },
 				{ id: '2', role: 'user', content: 'No image here.' },
 			]
@@ -366,9 +366,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({ model: 'test-model', url: proxy.url })
-			const messages: readonly MessageInterface[] = [
-				{ id: '1', role: 'user', content: 'hi', images: [] },
-			]
+			const messages: readonly Message[] = [{ id: '1', role: 'user', content: 'hi', images: [] }]
 			const abort = createAbort()
 			const pending = provider.generate(messages, abort.signal).catch(() => {})
 			await waitForRequest(proxy)
@@ -414,7 +412,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({ model: 'test-model', url: proxy.url })
-			const messages: readonly MessageInterface[] = [
+			const messages: readonly Message[] = [
 				{
 					id: crypto.randomUUID(),
 					role: 'system',

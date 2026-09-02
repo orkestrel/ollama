@@ -72,9 +72,9 @@ const DRIVEN_RESULT: ProviderResult = {
 
 /** The deltas `driveScript` replays, interleaving both channels so bucketing is observable. */
 const DRIVEN_DELTAS: readonly ProviderDelta[] = [
-	{ type: 'content', text: 'a' },
-	{ type: 'thinking', text: 'weighing it up' },
-	{ type: 'content', text: 'b' },
+	{ channel: 'content', text: 'a' },
+	{ channel: 'thinking', text: 'weighing it up' },
+	{ channel: 'content', text: 'b' },
 ]
 
 /** The settled value the empty-stream case returns. */

@@ -1,4 +1,4 @@
-import type { MessageInterface } from '@orkestrel/agent'
+import type { Message } from '@orkestrel/agent'
 import type { WorkspaceInterface } from '@orkestrel/workspace'
 
 // ── Agent data-stub factory (real shape, not a mock) ─────────────────────────
@@ -9,14 +9,14 @@ import type { WorkspaceInterface } from '@orkestrel/workspace'
 // `crypto.randomUUID`, global in node and Chromium), so it lives here.
 
 /**
- * Build one user-turn {@link MessageInterface} — the storage layer assigns the `id`; the
+ * Build one user-turn {@link Message} — the storage layer assigns the `id`; the
  * provider sends only role + content over the wire. The drop-in author of a `user` message
  * across the agent + provider tests (live Ollama and Ollama-free alike).
  *
  * @param content - The user message's text content
  * @returns A user-role message with a minted id
  */
-export function createUserMessage(content: string): MessageInterface {
+export function createUserMessage(content: string): Message {
 	return { id: crypto.randomUUID(), role: 'user', content }
 }
 
@@ -27,7 +27,7 @@ export function createUserMessage(content: string): MessageInterface {
 // test can seed any length without inline loops.
 
 /**
- * Build `count` alternating user/assistant {@link MessageInterface}s (user first) — small-talk
+ * Build `count` alternating user/assistant {@link Message}s (user first) — small-talk
  * padding turns whose content varies deterministically by index, for seeding long
  * conversations ahead of a compaction / window round-trip (AGENTS §16.1).
  *
@@ -39,8 +39,8 @@ export function createUserMessage(content: string): MessageInterface {
  * // [{ role: 'user', content: 'Small talk turn 0: ...' }, { role: 'assistant', content: 'Small talk turn 1: ...' }]
  * ```
  */
-export function buildTurns(count: number): readonly MessageInterface[] {
-	const turns: MessageInterface[] = []
+export function buildTurns(count: number): readonly Message[] {
+	const turns: Message[] = []
 	for (let index = 0; index < count; index += 1) {
 		const role = index % 2 === 0 ? 'user' : 'assistant'
 		const content =
@@ -56,23 +56,23 @@ export function buildTurns(count: number): readonly MessageInterface[] {
 //
 // The always-fails counterpart to a live `createLiveSummarizer` — a `summarize`
 // fixture for compaction round-trips that assert on the NON-FATAL warn / error path
-// rather than a successful digest. Matches `ConversationSummarizer` from
-// `@orkestrel/agent`: `(messages: readonly MessageInterface[]) => Promise<string>`.
+// rather than a successful digest. Matches `ConversationSummaryHandler` from
+// `@orkestrel/agent`: `(messages: readonly Message[]) => Promise<string>`.
 
 /** The message every {@link createThrowingSummarizer} invocation rejects with, by default. */
 export const THROWING_SUMMARIZER_MESSAGE = 'throwing-summarizer-always-fails'
 
 /**
  * Build a `summarize` function that always rejects — the compaction-failure fixture
- * (AGENTS §16.1). Compatible with `ConversationSummarizer`
- * (`(messages: readonly MessageInterface[]) => Promise<string>`).
+ * (AGENTS §16.1). Compatible with `ConversationSummaryHandler`
+ * (`(messages: readonly Message[]) => Promise<string>`).
  *
  * @param message - The rejection's `Error` message; defaults to {@link THROWING_SUMMARIZER_MESSAGE}
  * @returns A summarizer function that always rejects with `new Error(message)`
  */
 export function createThrowingSummarizer(
 	message: string = THROWING_SUMMARIZER_MESSAGE,
-): (messages: readonly MessageInterface[]) => Promise<string> {
+): (messages: readonly Message[]) => Promise<string> {
 	return async () => {
 		throw new Error(message)
 	}

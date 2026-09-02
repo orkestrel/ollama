@@ -7,7 +7,7 @@
 // `conformance` project in `tests/conformance.test.ts`; this file proves what a real
 // consumer's context assembly puts on the wire.
 
-import type { ContextFormatInterface } from '@orkestrel/agent'
+import type { ContextFormat } from '@orkestrel/agent'
 import {
 	CONVERSATION_RECAP_PREFIX,
 	createAgent,
@@ -100,7 +100,7 @@ describe('AgentContext (provider-behavior) — a CUSTOM format still reaches the
 			// by build() and the RENDERED XML group ends up in the request the provider sends —
 			// proving a customized format reaches the wire correctly (directive #5: the framing is
 			// asserted on the wire, not inferred from whether the model "understood" it).
-			const format: ContextFormatInterface = {
+			const format: ContextFormat = {
 				instructions: {
 					open: '<instructions>',
 					render: (one) => `<instruction>${one.content}</instruction>`,

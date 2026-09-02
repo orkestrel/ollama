@@ -1,4 +1,4 @@
-import type { ContextFormatInterface, MessageInterface } from '@orkestrel/agent'
+import type { ContextFormat, Message } from '@orkestrel/agent'
 import { isRecord, isString } from '@orkestrel/contract'
 import { createOllama, OllamaProvider } from '@src/server'
 import { env, withScheme } from './setupServer.js'
@@ -16,7 +16,7 @@ export interface LiveProviderOptions {
 	/** The sampling temperature; defaults to `0` for reproducible fixtures. */
 	readonly temperature?: number
 	/** The provider's context-framing default; omission leaves framing undefined. */
-	readonly format?: ContextFormatInterface
+	readonly format?: ContextFormat
 }
 
 /**
@@ -48,7 +48,7 @@ export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider 
 export function createLiveSummarizer(
 	timeoutMs: number,
 	predict = 64,
-): (messages: readonly MessageInterface[]) => Promise<string> {
+): (messages: readonly Message[]) => Promise<string> {
 	const summarizer = createOllama({
 		model: OLLAMA_CONFIG.model,
 		url: OLLAMA_CONFIG.host,

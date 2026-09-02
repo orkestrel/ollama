@@ -86,7 +86,7 @@ describe('S2 — browser → own server (obfuscated token) → live LLM, end-to-
 				const stream = agent.stream()
 				const deltas: string[] = []
 				for await (const chunk of stream.events)
-					if (chunk.type === 'token') deltas.push(chunk.content)
+					if (chunk.category === 'token') deltas.push(chunk.content)
 				const result = await stream.result
 
 				// The streamed NDJSON relayed through the proxy reassembled into the real answer.

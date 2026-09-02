@@ -364,7 +364,7 @@ describe('OllamaProvider (live — abort)', () => {
 					ended = Date.now()
 					break
 				}
-				if (step.value.type === 'content' && first === undefined) first = Date.now()
+				if (step.value.channel === 'content' && first === undefined) first = Date.now()
 				if (Date.now() - started > 6000) probeAbort.abort()
 			}
 		} catch (error) {

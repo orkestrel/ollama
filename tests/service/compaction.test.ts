@@ -42,7 +42,7 @@ describe('Agent (live) — auto-compaction folds a recap while retaining the kep
 				conversations,
 				window: createBudget({
 					max: 20,
-					consume: (messages: ReadonlyArray<{ readonly content: string }>) =>
+					consumer: (messages: ReadonlyArray<{ readonly content: string }>) =>
 						messages.reduce((total, message) => total + message.content.length, 0),
 				}),
 				timeout: TIMEOUT,
@@ -79,7 +79,7 @@ describe('Agent (live) — auto-compaction folds a recap while retaining the kep
 })
 
 describe('Conversation (live) — compaction summarizes via the REAL model', () => {
-	// A REAL ConversationSummarizer built from the live provider — the provider-agnostic seam the
+	// A REAL ConversationSummaryHandler built from the live provider — the provider-agnostic seam the
 	// conversation layer drives. Recipe retuned: num_predict 256→64 (a one-sentence digest fits
 	// comfortably; keeps wall-time bounded per directive #7). This proves compaction works end-to-
 	// end against a genuine model (AGENTS §16 — no mocks for the inference boundary; no skipIf).
@@ -182,7 +182,7 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 				'You MUST call the lookup_code tool to obtain the secret access code, then state the code in your final reply. Never invent a code.',
 			tools,
 			conversations,
-			window: createBudget({ max: 48, consume: estimateMessages }),
+			window: createBudget({ max: 48, consumer: estimateMessages }),
 			timeout: TIMEOUT,
 			limit: 4,
 		})
@@ -277,7 +277,7 @@ describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIP
 				'code in your final reply. Never invent a code.',
 			tools,
 			conversations,
-			window: createBudget({ max: 40, consume: estimateMessages }),
+			window: createBudget({ max: 40, consumer: estimateMessages }),
 			timeout: TIMEOUT,
 			limit: 8,
 		})

@@ -149,6 +149,6 @@ export interface OllamaOptions {
  * body-read rejection the provider caught before rethrowing. It is `unknown` because a
  * thrown value is unconstrained. Omitted ⇒ the error carries no cause.
  */
-export interface OllamaErrorOptions {
+export interface OllamaHTTPErrorOptions {
 	readonly cause?: unknown
 }

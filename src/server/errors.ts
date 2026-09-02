@@ -3,7 +3,7 @@
 // response body both throw it — so a `catch` can branch on `error.status`
 // rather than parsing a message (AGENTS §12).
 
-import type { OllamaErrorOptions } from './types.js'
+import type { OllamaHTTPErrorOptions } from './types.js'
 
 /**
  * An error thrown when the Ollama `/api/chat` HTTP transport fails.
@@ -29,7 +29,7 @@ import type { OllamaErrorOptions } from './types.js'
 export class OllamaHTTPError extends Error {
 	readonly status: number
 
-	constructor(message: string, status: number, options?: OllamaErrorOptions) {
+	constructor(message: string, status: number, options?: OllamaHTTPErrorOptions) {
 		super(message, options)
 		this.name = 'OllamaHTTPError'
 		this.status = status

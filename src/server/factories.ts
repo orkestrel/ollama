@@ -3,7 +3,7 @@ import type { OllamaOptions } from './types.js'
 import { OllamaProvider } from './OllamaProvider.js'
 
 /**
- * Create a local Ollama inference provider — a {@link ProviderInterface} over the
+ * Creates a local Ollama inference provider — a {@link ProviderInterface} over the
  * daemon's `POST /api/chat`, supporting non-streaming `generate` and streaming
  * `stream`.
  *

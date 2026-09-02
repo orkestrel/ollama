@@ -5,7 +5,7 @@ import type { ContextFormat } from '@orkestrel/agent'
 import type { TimeoutInterface } from '@orkestrel/timeout'
 
 /**
- * A live `fetch` to `/api/chat` with the deadline + combined signal that bound it —
+ * Represents a live `fetch` to `/api/chat` with the deadline + combined signal that bound it —
  * the internal wire-shape `OllamaProvider.#fetch` hands back to a consuming call.
  *
  * @remarks
@@ -22,7 +22,7 @@ export interface OllamaResponse {
 }
 
 /**
- * The exact `POST /api/chat` request body `OllamaProvider` sends — the internal typed
+ * Represents the exact `POST /api/chat` request body `OllamaProvider` sends — the internal typed
  * wire contract.
  *
  * @remarks
@@ -58,7 +58,7 @@ export interface WireChatRequest {
 		}
 	}>
 	/**
-	 * The `/api/chat` structured-output constraint — a JSON-Schema object forwarded
+	 * Holds the `/api/chat` structured-output constraint — a JSON-Schema object forwarded
 	 * verbatim from the per-call `ProviderStreamOptions.schema`. This is NOT
 	 * `OllamaOptions.format` (the unrelated prompt-context framing); only present
 	 * when a call supplies a `schema`.
@@ -67,7 +67,7 @@ export interface WireChatRequest {
 }
 
 /**
- * Options for `createOllama` — the local Ollama backend's configuration.
+ * Represents the configuration `createOllama` accepts for the local Ollama backend.
  *
  * @remarks
  * Only `model` is required. `url` defaults to the local daemon, `keepAlive` controls
@@ -85,20 +85,20 @@ export interface WireChatRequest {
  */
 export interface OllamaOptions {
 	readonly model: string
-	/** The daemon base URL; defaults to `'http://localhost:11434'`. */
+	/** Sets the daemon base URL; defaults to `'http://localhost:11434'`. */
 	readonly url?: string
 	/**
-	 * How long the model stays resident after a call; defaults to `'5m'`. Mirrors the
+	 * Sets how long the model stays resident after a call; defaults to `'5m'`. Mirrors the
 	 * Ollama `/api/chat` `keep_alive` field, whose value this key carries verbatim onto
 	 * {@link WireChatRequest.keep_alive}.
 	 */
 	readonly keepAlive?: string | number
-	/** The per-call deadline in milliseconds; defaults to `120_000`. */
+	/** Sets the per-call deadline in milliseconds; defaults to `120_000`. */
 	readonly timeout?: number
-	/** Passthrough sampling options (`temperature` / `seed` / `num_predict` / …). */
+	/** Carries passthrough sampling options (`temperature` / `seed` / `num_predict` / …). */
 	readonly options?: Readonly<Record<string, unknown>>
 	/**
-	 * The `/api/chat` `think` wire flag; defaults to `false`. When `true`, a thinking-capable
+	 * Sets the `/api/chat` `think` wire flag; defaults to `false`. When `true`, a thinking-capable
 	 * model (e.g. `qwen3`) separates its reasoning NATIVELY at the wire — the daemon returns it
 	 * on the distinct `message.thinking` channel (surfaced on `ProviderResult.thinking`) rather
 	 * than inline in `message.content`. The default is `false`, so a non-thinking model needs no
@@ -108,14 +108,14 @@ export interface OllamaOptions {
 	 */
 	readonly think?: boolean
 	/**
-	 * A custom `fetch` implementation for every request; defaults to
+	 * Sets a custom `fetch` implementation for every request; defaults to
 	 * `globalThis.fetch`. Lets a runtime inject its own transport (a browser fetch
 	 * pointed at the developer's server, an instrumented wrapper, …) without changing
 	 * the wire protocol. Omitted ⇒ the global `fetch`.
 	 */
 	readonly fetch?: typeof globalThis.fetch
 	/**
-	 * A dynamic, possibly-async header injector called once per request; its returned
+	 * Sets a dynamic, possibly-async header injector called once per request; its returned
 	 * headers are merged into the request on top of the base `Content-Type`. Use it to
 	 * attach an authorization header — e.g. an obfuscated/generated bearer token the
 	 * developer's server validates before relaying to the real LLM — so a browser
@@ -127,7 +127,7 @@ export interface OllamaOptions {
 		| Readonly<Record<string, string>>
 		| Promise<Readonly<Record<string, string>>>
 	/**
-	 * The provider's OPTIONAL context-framing default — the PROVIDER-DEFAULT level of
+	 * Sets the provider's OPTIONAL context-framing default — the PROVIDER-DEFAULT level of
 	 * `AgentContext`'s format cascade (beaten by a manager-options or per-item override,
 	 * beating the managers' built-in framing). Declares how this provider's models prefer
 	 * context sections framed (e.g. XML group wrappers vs. Markdown headers). Omitted ⇒
@@ -141,7 +141,7 @@ export interface OllamaOptions {
 }
 
 /**
- * The options a thrown {@link OllamaHTTPError} accepts beside its message and status —
+ * Represents the options a thrown {@link OllamaHTTPError} accepts beside its message and status —
  * the standard error `cause` link, named so a consumer can reference the shape.
  *
  * @remarks

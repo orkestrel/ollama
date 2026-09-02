@@ -6,7 +6,7 @@
 import type { OllamaHTTPErrorOptions } from './types.js'
 
 /**
- * An error thrown when the Ollama `/api/chat` HTTP transport fails.
+ * Represents an error thrown when the Ollama `/api/chat` HTTP transport fails.
  *
  * @remarks
  * Carries the response `status` (0 when no HTTP response was received at all,
@@ -37,10 +37,10 @@ export class OllamaHTTPError extends Error {
 }
 
 /**
- * Whether a value is an {@link OllamaHTTPError}.
+ * Checks whether a value is an {@link OllamaHTTPError}.
  *
  * @param value - The value to test
- * @returns `true` when `value` is an `OllamaHTTPError`
+ * @returns True if `value` is an `OllamaHTTPError`; false otherwise
  */
 export function isOllamaHTTPError(value: unknown): value is OllamaHTTPError {
 	return value instanceof OllamaHTTPError

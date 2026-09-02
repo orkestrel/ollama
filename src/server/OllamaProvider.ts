@@ -32,7 +32,7 @@ import {
 import { parseBody } from './parsers.js'
 
 /**
- * The local Ollama inference boundary — a {@link ProviderInterface} over Ollama's
+ * Implements the local Ollama inference boundary — a {@link ProviderInterface} over Ollama's
  * `POST /api/chat`, both non-streaming (`generate`) and streaming NDJSON (`stream`).
  *
  * @remarks
@@ -123,7 +123,7 @@ export class OllamaProvider implements ProviderInterface {
 	}
 
 	/**
-	 * The provider's context-framing default — the PROVIDER-DEFAULT level of
+	 * Exposes the provider's context-framing default — the PROVIDER-DEFAULT level of
 	 * {@link import('@orkestrel/agent').AgentContextInterface.build}'s format cascade (it BEATS
 	 * the managers' built-in framing, is BEATEN by a manager-options or per-item override).
 	 * Satisfies the OPTIONAL {@link ProviderInterface.format} contract member: `undefined`

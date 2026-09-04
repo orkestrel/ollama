@@ -1,15 +1,16 @@
 import type { Message } from '@orkestrel/agent'
+import type { RecorderInterface } from '@orkestrel/test'
 import type { WorkspaceInterface } from '@orkestrel/workspace'
 
 // ── Agent data-stub factory (real shape, not a mock) ─────────────────────────
 //
-// AGENTS §16.1: the repeated agent DATA shape — a user message — built ONCE as a
-// parameterized factory so a test stubs the shape it needs. A REAL data builder,
-// NOT a mock of behaviour. Environment-agnostic (only `@src/core` +
-// `crypto.randomUUID`, global in node and Chromium), so it lives here.
+// The repeated agent DATA shape — a user message — built ONCE as a parameterized
+// factory so a test stubs the shape it needs. A REAL data builder, NOT a mock of
+// behaviour. Environment-agnostic (only `@src/core` + `crypto.randomUUID`, global in
+// node and Chromium), so it lives here.
 
 /**
- * Build one user-turn {@link Message} — the storage layer assigns the `id`; the
+ * Builds one user-turn {@link Message} — the storage layer assigns the `id`; the
  * provider sends only role + content over the wire. The drop-in author of a `user` message
  * across the agent + provider tests (live Ollama and Ollama-free alike).
  *
@@ -20,16 +21,16 @@ export function createUserMessage(content: string): Message {
 	return { id: crypto.randomUUID(), role: 'user', content }
 }
 
-// ── Alternating conversation padding (AGENTS §16.1) ──────────────────────────
+// ── Alternating conversation padding ─────────────────────────────────────────
 //
 // The repeated "seed a long conversation with small-talk turns" shape folded into
 // one deterministic builder — user-first, alternating, varying only by index so a
 // test can seed any length without inline loops.
 
 /**
- * Build `count` alternating user/assistant {@link Message}s (user first) — small-talk
+ * Builds `count` alternating user/assistant {@link Message}s (user first) — small-talk
  * padding turns whose content varies deterministically by index, for seeding long
- * conversations ahead of a compaction / window round-trip (AGENTS §16.1).
+ * conversations ahead of a compaction / window round-trip.
  *
  * @param count - How many turns to build
  * @returns `count` alternating turns, starting with `user`
@@ -52,7 +53,7 @@ export function buildTurns(count: number): readonly Message[] {
 	return turns
 }
 
-// ── Throwing summarizer fixture (AGENTS §16.1) ────────────────────────────────
+// ── Summarizer fixtures ───────────────────────────────────────────────────────
 //
 // The always-fails counterpart to a live `createLiveSummarizer` — a `summarize`
 // fixture for compaction round-trips that assert on the NON-FATAL warn / error path
@@ -63,8 +64,8 @@ export function buildTurns(count: number): readonly Message[] {
 export const THROWING_SUMMARIZER_MESSAGE = 'throwing-summarizer-always-fails'
 
 /**
- * Build a `summarize` function that always rejects — the compaction-failure fixture
- * (AGENTS §16.1). Compatible with `ConversationSummaryHandler`
+ * Builds a `summarize` function that always rejects — the compaction-failure fixture.
+ * Compatible with `ConversationSummaryHandler`
  * (`(messages: readonly Message[]) => Promise<string>`).
  *
  * @param message - The rejection's `Error` message; defaults to {@link THROWING_SUMMARIZER_MESSAGE}
@@ -78,7 +79,30 @@ export function createThrowingSummarizer(
 	}
 }
 
-// ── Workspace seeder (AGENTS §16.1) ───────────────────────────────────────────
+/** The digest every {@link createRecordingSummarizer} invocation resolves with, by default. */
+export const RECORDING_SUMMARIZER_DIGEST = 'recording-summarizer-digest'
+
+/**
+ * Builds a `summarize` function that records the turns it was handed and then resolves a
+ * fixed digest — the never-invoked / invoked-once fixture for a compaction round-trip
+ * that asserts WHETHER the summarizer ran. Compatible with `ConversationSummaryHandler`
+ * (`(messages: readonly Message[]) => Promise<string>`).
+ *
+ * @param recorder - The recorder each invocation hands its turns to
+ * @param digest - The digest the summarizer resolves; defaults to {@link RECORDING_SUMMARIZER_DIGEST}
+ * @returns A summarizer function that records its turns and resolves `digest`
+ */
+export function createRecordingSummarizer(
+	recorder: RecorderInterface<[readonly Message[]]>,
+	digest: string = RECORDING_SUMMARIZER_DIGEST,
+): (messages: readonly Message[]) => Promise<string> {
+	return async (messages) => {
+		recorder.handler(messages)
+		return digest
+	}
+}
+
+// ── Workspace seeder ──────────────────────────────────────────────────────────
 //
 // Deterministic bulk-file seeding for a real @orkestrel/agent workspace — no
 // randomness, fixed filler prose, so a workspace-driven test (context budget,
@@ -96,15 +120,15 @@ export interface FillWorkspaceOptions {
 	readonly sentinelText?: string
 }
 
-// A fixed, repeated sentence — deterministic filler with no randomness.
-const FILLER_SENTENCE =
+/** The fixed sentence {@link fillWorkspace} repeats to fill each generated document. */
+export const FILLER_SENTENCE =
 	'The quick brown fox jumps over the lazy dog and rests beneath the old oak tree. '
 
 /**
- * Populate a {@link WorkspaceInterface} with deterministic filler files — `count` (default
+ * Populates a {@link WorkspaceInterface} with deterministic filler files — `count` (default
  * `12`) text files named `doc-01.md` … `doc-NN.md`, each ~`bytesEach` (default `700`) bytes of
  * fixed repeated prose, plus an optional sentinel file at `sentinelPath` / `sentinelText`
- * (AGENTS §16.1). No randomness — same options, same workspace contents, every run.
+ * No randomness — same options, same workspace contents, every run.
  *
  * @param workspace - The {@link WorkspaceInterface} to write into
  * @param options - Optional {@link FillWorkspaceOptions} tuning

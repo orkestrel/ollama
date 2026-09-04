@@ -1,13 +1,13 @@
 // The Ollama wire leaves — the request projections and the response extractions
 // `OllamaProvider` composes. Each is a pure, total function of its parameters: a missing
 // or malformed wire field degrades to a sensible default (empty content, no usage, `{}`
-// arguments), never a throw (§14), and no value is reached through `as`.
+// arguments), never a throw, and no value is reached through `as`.
 
 import type { Message, ProviderResult, ThinkSplitterInterface } from '@orkestrel/agent'
 import type { TokenUsage } from '@orkestrel/budget'
 import type { ToolCall } from '@orkestrel/tool'
 import type { WireChatRequest } from './types.js'
-import { isNumber, isRecord, isString } from '@orkestrel/contract'
+import { isNumber, isRecord, isString, parseJSONAs } from '@orkestrel/contract'
 
 /**
  * Maps conversation turns onto the `/api/chat` wire's minimal message shape.
@@ -45,7 +45,7 @@ export function mapMessages(messages: readonly Message[]): WireChatRequest['mess
 }
 
 /**
- * Assembles a provider result from a turn's content, reasoning, tool calls, and usage.
+ * Builds a provider result from a turn's content, reasoning, tool calls, and usage.
  *
  * @remarks
  * Only the present optionals are set: no empty `thinking`, no empty `tools`, and no
@@ -55,14 +55,14 @@ export function mapMessages(messages: readonly Message[]): WireChatRequest['mess
  * @param thinking - The joined reasoning, empty when the turn produced none
  * @param tools - The tool calls collected across the turn
  * @param usage - The token usage, or `undefined` when the wire reported none
- * @returns The assembled result carrying only its populated fields
+ * @returns The result carrying only its populated fields
  *
  * @example
  * ```ts
- * assembleResult('ok', '', [], undefined) // { content: 'ok' }
+ * buildResult('ok', '', [], undefined) // { content: 'ok' }
  * ```
  */
-export function assembleResult(
+export function buildResult(
 	content: string,
 	thinking: string,
 	tools: readonly ToolCall[],
@@ -217,13 +217,6 @@ export function extractTools(record: Readonly<Record<string, unknown>>): readonl
  */
 export function extractArguments(value: unknown): Readonly<Record<string, unknown>> {
 	if (isRecord(value)) return value
-	if (isString(value)) {
-		try {
-			const parsed: unknown = JSON.parse(value)
-			if (isRecord(parsed)) return parsed
-		} catch {
-			return {}
-		}
-	}
+	if (isString(value)) return parseJSONAs(value, isRecord) ?? {}
 	return {}
 }

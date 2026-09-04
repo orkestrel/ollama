@@ -14,16 +14,18 @@
 // This proof covers the workspace's fixtures rather than one module, which is why it
 // sits at the tests root in its own `setup` project.
 
-import type { AgentResult } from '@orkestrel/agent'
+import type { AgentResult, Message } from '@orkestrel/agent'
 import type { ToolResult } from '@orkestrel/tool'
-import type { WorkspaceInterface } from '@orkestrel/workspace'
 import { createRecorder } from '@orkestrel/test'
 import { createWorkspace } from '@orkestrel/workspace'
 import { describe, expect, it } from 'vitest'
 import {
 	buildTurns,
+	createRecordingSummarizer,
 	createThrowingSummarizer,
 	fillWorkspace,
+	FILLER_SENTENCE,
+	RECORDING_SUMMARIZER_DIGEST,
 	THROWING_SUMMARIZER_MESSAGE,
 } from './setup.js'
 import {
@@ -368,16 +370,33 @@ describe('createThrowingSummarizer', () => {
 	})
 })
 
-describe('fillWorkspace', () => {
-	function paths(workspace: WorkspaceInterface): readonly string[] {
-		return workspace.files().map((file) => file.path)
-	}
+describe('createRecordingSummarizer', () => {
+	it('records the turns it was handed and resolves the default digest', async () => {
+		const invocations = createRecorder<[readonly Message[]]>()
+		const summarize = createRecordingSummarizer(invocations)
+		const turns = buildTurns(2)
 
+		expect(await summarize(turns)).toBe(RECORDING_SUMMARIZER_DIGEST)
+		expect(invocations.count).toBe(1)
+		expect(invocations.calls[0]).toEqual([turns])
+	})
+
+	it('resolves a custom digest and records nothing until it is called', async () => {
+		const invocations = createRecorder<[readonly Message[]]>()
+		const summarize = createRecordingSummarizer(invocations, 'custom-digest')
+
+		expect(invocations.count).toBe(0)
+		expect(await summarize([])).toBe('custom-digest')
+		expect(invocations.count).toBe(1)
+	})
+})
+
+describe('fillWorkspace', () => {
 	it('writes the default count of doc-NN.md files', () => {
 		const workspace = createWorkspace()
 		fillWorkspace(workspace)
 
-		const names = paths(workspace)
+		const names = workspace.files().map((file) => file.path)
 		expect(names).toHaveLength(12)
 		expect(names).toContain('doc-01.md')
 		expect(names).toContain('doc-12.md')
@@ -387,18 +406,27 @@ describe('fillWorkspace', () => {
 		const workspace = createWorkspace()
 		fillWorkspace(workspace, { count: 3, bytesEach: 100 })
 
-		const names = paths(workspace)
+		const names = workspace.files().map((file) => file.path)
 		expect(names).toEqual(['doc-01.md', 'doc-02.md', 'doc-03.md'])
 		const file = workspace.file('doc-01.md')
 		const content = file?.content
 		expect(content !== undefined && 'text' in content ? content.text.length : -1).toBe(100)
 	})
 
+	it('fills each document with the exported filler sentence', () => {
+		const workspace = createWorkspace()
+		fillWorkspace(workspace, { count: 1, bytesEach: 200 })
+
+		const content = workspace.file('doc-01.md')?.content
+		const text = content !== undefined && 'text' in content ? content.text : ''
+		expect(text.startsWith(FILLER_SENTENCE)).toBe(true)
+	})
+
 	it('writes an optional sentinel file alongside the filler docs', () => {
 		const workspace = createWorkspace()
 		fillWorkspace(workspace, { count: 2, sentinelPath: 'find-me.md', sentinelText: 'needle' })
 
-		expect(paths(workspace)).toContain('find-me.md')
+		expect(workspace.files().map((file) => file.path)).toContain('find-me.md')
 		const content = workspace.file('find-me.md')?.content
 		expect(content !== undefined && 'text' in content ? content.text : undefined).toBe('needle')
 	})

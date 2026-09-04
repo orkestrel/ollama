@@ -1,4 +1,3 @@
-import type { RecordedRequest } from '../setupServer.js'
 import {
 	createAgent,
 	createConversationManager,
@@ -28,55 +27,53 @@ describe('AgentContext scope (live, behavioral) — switching scopes changes the
 		content: 'Begin every reply with the single word COBALT, no matter what the user asks.',
 	}
 
-	interface Attempt {
-		readonly contentA: string
-		readonly requestA: RecordedRequest | undefined
-		readonly contentB: string
-		readonly requestB: RecordedRequest | undefined
-	}
-
-	const attempt = async (): Promise<Attempt> => {
-		const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
-		try {
-			const provider = createOllama({
-				model: OLLAMA_CONFIG.model,
-				url: proxy.url,
-				options: TOOL_OPTIONS,
-			})
-			const conversations = createConversationManager()
-			conversations.add({ id: 'run-a' }) // auto-activates
-			const instructions = createInstructionManager()
-			instructions.add(APRICOT)
-			instructions.add(COBALT)
-			const scope = createScope({ name: 'apricot-scope', instructions: ['apricot-rule'] })
-			const agent = createAgent(provider, { conversations, instructions, scope, timeout: TIMEOUT })
-			agent.context.messages.add({ role: 'user', content: 'Reply with one short sentence.' })
-
-			const resultA = await agent.generate()
-			const requestA = proxy.requests[proxy.requests.length - 1]
-
-			// A fresh conversation on the SAME agent prevents run A's (possibly truncated)
-			// assistant reply from staying in context and being continued mid-sentence by
-			// run B — the two runs must be independent turns, not a continued dialogue.
-			conversations.add({ id: 'run-b' })
-			conversations.switch('run-b')
-			agent.context.apply(createScope({ name: 'cobalt-scope', instructions: ['cobalt-rule'] }))
-			agent.context.messages.add({ role: 'user', content: 'Reply with one short sentence.' })
-			const resultB = await agent.generate()
-			const requestB = proxy.requests[proxy.requests.length - 1]
-
-			return { contentA: resultA.content, requestA, contentB: resultB.content, requestB }
-		} finally {
-			await proxy.stop()
-		}
-	}
-
 	it(
 		'switching scopes changes the answer',
 		async () => {
 			const best = await retryUntil(
 				'answer APRICOT under the apricot scope and COBALT under the cobalt scope',
-				attempt,
+				async () => {
+					const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
+					try {
+						const provider = createOllama({
+							model: OLLAMA_CONFIG.model,
+							url: proxy.url,
+							options: TOOL_OPTIONS,
+						})
+						const conversations = createConversationManager()
+						conversations.add({ id: 'run-a' }) // auto-activates
+						const instructions = createInstructionManager()
+						instructions.add(APRICOT)
+						instructions.add(COBALT)
+						const scope = createScope({ name: 'apricot-scope', instructions: ['apricot-rule'] })
+						const agent = createAgent(provider, {
+							conversations,
+							instructions,
+							scope,
+							timeout: TIMEOUT,
+						})
+						agent.context.messages.add({ role: 'user', content: 'Reply with one short sentence.' })
+
+						const resultA = await agent.generate()
+						const requestA = proxy.requests[proxy.requests.length - 1]
+
+						// A fresh conversation on the SAME agent prevents run A's (possibly truncated)
+						// assistant reply from staying in context and being continued mid-sentence by
+						// run B — the two runs must be independent turns, not a continued dialogue.
+						conversations.add({ id: 'run-b' })
+						conversations.switch('run-b')
+						agent.context.apply(
+							createScope({ name: 'cobalt-scope', instructions: ['cobalt-rule'] }),
+						)
+						agent.context.messages.add({ role: 'user', content: 'Reply with one short sentence.' })
+						const resultB = await agent.generate()
+						const requestB = proxy.requests[proxy.requests.length - 1]
+
+						return { contentA: resultA.content, requestA, contentB: resultB.content, requestB }
+					} finally {
+						await proxy.stop()
+					}
+				},
 				(value) =>
 					value.contentA.toLowerCase().includes('apricot') &&
 					value.contentB.toLowerCase().includes('cobalt'),

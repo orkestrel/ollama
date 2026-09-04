@@ -21,7 +21,7 @@ import {
 } from '../setupService.js'
 
 // LIVE tool-calling machinery tests — the real OllamaProvider driving the agent's tool
-// loop against the warmed local model (AGENTS §16: no mocks for the inference boundary).
+// loop against the warmed local model, with no mocks for the inference boundary.
 // Every assertion here rides on LOOP WIRING (chunk / event / recorder / proxy / partial
 // mechanics) — never on "the model was smart", per directive: a failure here indicates
 // OUR packages (agent / ollama) mishandled a tool call. Every model-choice-dependent step

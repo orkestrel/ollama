@@ -10,7 +10,7 @@ import { OllamaProvider } from './OllamaProvider.js'
  * @remarks
  * Only `model` is required; `url` defaults to the local daemon, `keepAlive` to `'5m'`,
  * `timeout` to `120_000`ms, and `options` is forwarded verbatim as sampling
- * parameters (`temperature` / `seed` / `num_predict` / …). Both calls take an
+ * parameters (`temperature`, `seed`, and `num_predict`). Both calls take an
  * `AbortSignal` to bound the request; a `stream` cancelled mid-flight throws a
  * `ProviderAbortError` carrying the partial result.
  *
@@ -23,7 +23,7 @@ import { OllamaProvider } from './OllamaProvider.js'
  * The optional `format` is the provider's context-framing default — the PROVIDER-DEFAULT
  * level of `AgentContext`'s format cascade (beaten by a manager-options or per-item
  * override, beating the managers' built-in framing), declaring how this
- * provider's models prefer context sections framed (e.g. XML group wrappers vs. Markdown
+ * provider's models prefer context sections framed (for example XML group wrappers vs. Markdown
  * headers). It is EXPOSED on the provider for the Agent's `build()` and is NOT Ollama's
  * `/api/chat` `format` wire parameter (structured output) — the two are unrelated despite
  * the shared word. Omitted ⇒ the provider is framing-agnostic (core's built-in defaults).
@@ -43,7 +43,7 @@ import { OllamaProvider } from './OllamaProvider.js'
  * ```
  *
  * @example
- * Route through your own server with an obfuscated token (deployment scenario S2):
+ * Route through your own server with an obfuscated token:
  * ```ts
  * const provider = createOllama({
  *   model: 'qwen3.5:2b-q4_K_M',

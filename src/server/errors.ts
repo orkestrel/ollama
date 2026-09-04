@@ -1,7 +1,7 @@
 // Errors for the Ollama provider. A single `OllamaHTTPError` carries the
 // `/api/chat` HTTP status at the boundary — non-OK responses and a missing
 // response body both throw it — so a `catch` can branch on `error.status`
-// rather than parsing a message (AGENTS §12).
+// rather than parsing a message.
 
 import type { OllamaHTTPErrorOptions } from './types.js'
 
@@ -9,11 +9,12 @@ import type { OllamaHTTPErrorOptions } from './types.js'
  * Represents an error thrown when the Ollama `/api/chat` HTTP transport fails.
  *
  * @remarks
- * Carries the response `status` (0 when no HTTP response was received at all,
- * e.g. a `null` body). Thrown by {@link OllamaProvider} at its two HTTP
- * failure sites — the non-OK status branch and the null-body branch — so a
- * caller can branch on `error.status` instead of parsing the message. Narrow
- * a caught value with {@link isOllamaHTTPError}.
+ * Carries the machine-readable `code` `'HTTP'` and the response `status` (0 when no
+ * HTTP response was received at all, for example a `null` body). Thrown by
+ * {@link OllamaProvider} at its HTTP failure sites — the non-OK status branch and the
+ * null-body branch — so a caller can branch on `error.code` and read `error.status`
+ * for the HTTP number instead of parsing the message. Narrow a caught value with
+ * {@link isOllamaHTTPError}.
  *
  * @example
  * ```ts
@@ -27,6 +28,11 @@ import type { OllamaHTTPErrorOptions } from './types.js'
  * ```
  */
 export class OllamaHTTPError extends Error {
+	/**
+	 * Names the machine-readable condition this error reports — `'HTTP'`: an `/api/chat`
+	 * transport, status, or body failure.
+	 */
+	readonly code = 'HTTP' as const
 	readonly status: number
 
 	constructor(message: string, status: number, options?: OllamaHTTPErrorOptions) {

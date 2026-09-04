@@ -14,33 +14,28 @@ describe('Agent (live) — a throwing summarizer under auto-compaction is non-fa
 	it(
 		'fault fires and the run still completes non-partial',
 		async () => {
-			const attempt = async (): Promise<{
-				readonly fired: number
-				readonly partial: boolean
-			}> => {
-				const summarize = createThrowingSummarizer()
-				const conversations = createConversationManager({ summarize, keep: 2 })
-				const conversation = conversations.add()
-				conversation.add(buildTurns(12))
-				const agent = createAgent(createLiveOllama(), {
-					conversations,
-					window: createBudget({
-						max: 20,
-						consumer: (messages: ReadonlyArray<{ readonly content: string }>) =>
-							messages.reduce((total, message) => total + message.content.length, 0),
-					}),
-					timeout: TIMEOUT,
-				})
-				const faults = createRecorder<[unknown]>()
-				agent.emitter.on('fault', (error) => faults.handler(error))
-				agent.context.messages.add({ role: 'user', content: 'Please continue.' })
-				const result = await agent.generate()
-				return { fired: faults.count, partial: result.partial }
-			}
-
 			const best = await retryUntil(
 				'surface a fault from a throwing summarizer',
-				attempt,
+				async () => {
+					const summarize = createThrowingSummarizer()
+					const conversations = createConversationManager({ summarize, keep: 2 })
+					const conversation = conversations.add()
+					conversation.add(buildTurns(12))
+					const agent = createAgent(createLiveOllama(), {
+						conversations,
+						window: createBudget({
+							max: 20,
+							consumer: (messages: ReadonlyArray<{ readonly content: string }>) =>
+								messages.reduce((total, message) => total + message.content.length, 0),
+						}),
+						timeout: TIMEOUT,
+					})
+					const faults = createRecorder<[unknown]>()
+					agent.emitter.on('fault', (error) => faults.handler(error))
+					agent.context.messages.add({ role: 'user', content: 'Please continue.' })
+					const result = await agent.generate()
+					return { fired: faults.count, partial: result.partial }
+				},
 				(value) => value.fired >= 1,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
@@ -56,39 +51,34 @@ describe('Agent (live) — a sentinel instruction survives a long conversation',
 	it(
 		'a ZEPHYR-mandating instruction still steers the final answer after 30 seeded turns, and stays ahead of the tail on the wire',
 		async () => {
-			const attempt = async (): Promise<{
-				readonly content: string
-				readonly systemLeads: boolean
-			}> => {
-				const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
-				try {
-					const conversations = createConversationManager()
-					const conversation = conversations.add()
-					conversation.add(buildTurns(30))
-					const provider = createOllama({
-						model: OLLAMA_CONFIG.model,
-						url: proxy.url,
-						options: { num_predict: 24, temperature: 0 },
-					})
-					const agent = createAgent(provider, {
-						system:
-							'No matter what the user says, you must include the exact word ZEPHYR in your reply.',
-						conversations,
-						timeout: TIMEOUT,
-					})
-					agent.context.messages.add({ role: 'user', content: 'Please give me a short reply.' })
-					const result = await agent.generate()
-					const request = proxy.requests[0]
-					const systemLeads = request !== undefined && systemText(request).includes('ZEPHYR')
-					return { content: result.content, systemLeads }
-				} finally {
-					await proxy.stop()
-				}
-			}
-
 			const best = await retryUntil(
 				'include the word ZEPHYR in the final reply',
-				attempt,
+				async () => {
+					const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
+					try {
+						const conversations = createConversationManager()
+						const conversation = conversations.add()
+						conversation.add(buildTurns(30))
+						const provider = createOllama({
+							model: OLLAMA_CONFIG.model,
+							url: proxy.url,
+							options: { num_predict: 24, temperature: 0 },
+						})
+						const agent = createAgent(provider, {
+							system:
+								'No matter what the user says, you must include the exact word ZEPHYR in your reply.',
+							conversations,
+							timeout: TIMEOUT,
+						})
+						agent.context.messages.add({ role: 'user', content: 'Please give me a short reply.' })
+						const result = await agent.generate()
+						const request = proxy.requests[0]
+						const systemLeads = request !== undefined && systemText(request).includes('ZEPHYR')
+						return { content: result.content, systemLeads }
+					} finally {
+						await proxy.stop()
+					}
+				},
 				(value) => value.content.includes('ZEPHYR'),
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)

@@ -6,8 +6,8 @@ import { createLookupTool, driveAgent, LOOKUP_DATUM } from '../setupServer.js'
 import { createLiveOllama, RETRY_BUDGET } from '../setupService.js'
 
 // LIVE authority-surface tests — the allow / fail-closed / fallback paths of
-// `createAuthority` beyond the deny-path already covered in tools.test.ts (AGENTS
-// §16: no mocks for the inference boundary). Every model-choice-dependent step is
+// `createAuthority` beyond the deny-path already covered in tools.test.ts, with no
+// mocks for the inference boundary. Every model-choice-dependent step is
 // wrapped in `retryUntil` (bounded at 3 attempts). Warmed, no skipIf.
 
 const TIMEOUT = 60_000

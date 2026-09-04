@@ -17,6 +17,7 @@
 // environment points at the fixture.
 
 import type { ContextFormat } from '@orkestrel/agent'
+import { createConversation } from '@orkestrel/agent'
 import { arrayOf, isRecord } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
@@ -163,6 +164,7 @@ const {
 	OLLAMA_CONFIG,
 	RETRY_BUDGET,
 	SEED_OPTIONS,
+	seedConversation,
 	STREAM_OPTIONS,
 	THINK_OPTIONS,
 	TOOL_LOOP_OPTIONS,
@@ -337,6 +339,19 @@ describe('createLiveSummarizer', () => {
 		} finally {
 			daemon.chat(READY_CHAT)
 		}
+	})
+})
+
+describe('seedConversation', () => {
+	it('adds the fixed trip-planning exchange, alternating user and assistant turns', () => {
+		const conversation = createConversation()
+
+		seedConversation(conversation)
+
+		const view = conversation.view()
+		expect(view.map((message) => message.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+		expect(view[0]?.content).toContain('Kyoto')
+		expect(new Set(view.map((message) => message.content)).size).toBe(view.length)
 	})
 })
 

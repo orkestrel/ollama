@@ -21,7 +21,7 @@ import {
 } from './constants.js'
 import { OllamaHTTPError } from './errors.js'
 import {
-	assembleResult,
+	buildResult,
 	extractContent,
 	extractThinking,
 	extractTools,
@@ -38,19 +38,19 @@ import { parseBody } from './parsers.js'
  * @remarks
  * - **Wire protocol.** Posts `{ model, messages, stream, keep_alive, think }` plus
  *   passthrough sampling `options` and mapped function `tools`. The `think` flag is
- *   CONFIGURABLE via {@link OllamaOptions.think} (default `false`). Non-stream parses
+ *   CONFIGURABLE through {@link OllamaOptions.think} (default `false`). Non-stream parses
  *   one JSON body; stream consumes NDJSON (one JSON object per `\n`-terminated line) —
  *   deltas carry `message.content`, the final `done: true` line carries the token usage.
- * - **Think separation (H4).** The wire `think` flag is configurable
+ * - **Think separation.** The wire `think` flag is configurable
  *   ({@link OllamaOptions.think}, default `false`). With `think: true` a thinking model's
  *   daemon separates reasoning NATIVELY — returning it on the distinct `message.thinking`
- *   channel (read here via `extractThinking`) instead of inline in `message.content`. EITHER
+ *   channel (read here through `extractThinking`) instead of inline in `message.content`. EITHER
  *   way the per-call {@link ThinkSplitterInterface} is the defensive guarantee: a daemon
  *   may ignore `think: false` for a thinking model and inline `<think>` tags, so every
  *   content delta routes through the splitter, only CLEAN content is yielded / assembled,
  *   and the separated reasoning (plus any daemon-side `message.thinking` deltas) lands on
  *   `ProviderResult.thinking`, never in the conversation.
- * - **Boundary narrowing (§14).** Every wire value arrives as `unknown` and is
+ * - **Boundary narrowing.** Every wire value arrives as `unknown` and is
  *   narrowed through guards (`isRecord` / `isString` / `isNumber`) — never `as`. A
  *   missing / malformed field degrades to a sensible default (empty content, no
  *   usage, `{}` arguments), never a throw.
@@ -79,8 +79,8 @@ import { parseBody } from './parsers.js'
  * ```
  */
 export class OllamaProvider implements ProviderInterface {
-	readonly id = crypto.randomUUID()
 	readonly name = 'ollama'
+	readonly #id: string
 	readonly #model: string
 	readonly #url: string
 	readonly #keepAlive: string | number
@@ -94,6 +94,7 @@ export class OllamaProvider implements ProviderInterface {
 	readonly #format: ContextFormat | undefined
 
 	constructor(options: OllamaOptions) {
+		this.#id = crypto.randomUUID()
 		this.#model = options.model
 		this.#url = options.url ?? DEFAULT_OLLAMA_URL
 		this.#keepAlive = options.keepAlive ?? DEFAULT_KEEP_ALIVE
@@ -104,7 +105,7 @@ export class OllamaProvider implements ProviderInterface {
 		// `message.thinking` channel (`extractThinking`) rather than inline in `message.content`.
 		this.#think = options.think ?? false
 		this.#options = options.options
-		// The transport seam (§21): a custom fetch (defaulting to the global, BOUND to its
+		// The transport seam: a custom fetch (defaulting to the global, BOUND to its
 		// `globalThis` receiver — invoking a bare reference through a field loses the `window`
 		// receiver and browsers throw `Illegal invocation`; node's fetch is receiver-agnostic,
 		// so only a browser runtime ever saw it) and a dynamic header injector — both omitted
@@ -114,12 +115,23 @@ export class OllamaProvider implements ProviderInterface {
 		this.#transport = options.fetch ?? globalThis.fetch.bind(globalThis)
 		this.#headers = options.headers
 		// The context-framing default (the provider-DEFAULT level of AgentContext's format
-		// cascade) — EXPOSE-ONLY: read by the Agent via `build(this.#provider.format)` and
+		// cascade) — EXPOSE-ONLY: read by the Agent through `build(this.#provider.format)` and
 		// consumed by core's cascade, it NEVER enters `#body` / the `/api/chat` wire. It is
 		// NOT Ollama's structured-output `format` wire param — that one IS sent in `#body`,
 		// but only when a per-call `ProviderStreamOptions.schema` is supplied; the two
 		// merely share a word. Omitted ⇒ undefined ⇒ core's built-in framing.
 		this.#format = options.format
+	}
+
+	/**
+	 * Exposes this instance's identity — a fresh `crypto.randomUUID()` minted at
+	 * construction, satisfying the {@link ProviderInterface.id} contract member. A second
+	 * provider built from identical options carries a distinct id.
+	 *
+	 * @returns The instance's minted identifier
+	 */
+	get id(): string {
+		return this.#id
 	}
 
 	/**
@@ -151,7 +163,7 @@ export class OllamaProvider implements ProviderInterface {
 	): Promise<ProviderResult> {
 		const { response, timeout } = await this.#fetch(messages, false, signal, tools, options)
 		try {
-			const record = await parseBody(response)
+			const record = (await parseBody(response)) ?? {}
 			// The one-body call routes through the SAME splitter as the stream (the daemon may
 			// ignore `think: false` — the splitter is the guarantee): the assembled content is
 			// CLEAN (the splitter's authoritative `content`, which also covers the qwen3
@@ -161,7 +173,7 @@ export class OllamaProvider implements ProviderInterface {
 			splitter.split(extractContent(record))
 			splitter.flush()
 			const thinking = joinThinking(splitter, extractThinking(record))
-			return assembleResult(splitter.content, thinking, extractTools(record), extractUsage(record))
+			return buildResult(splitter.content, thinking, extractTools(record), extractUsage(record))
 		} finally {
 			timeout.clear()
 		}
@@ -188,7 +200,7 @@ export class OllamaProvider implements ProviderInterface {
 		const reader = body.getReader()
 		const decoder = new TextDecoder()
 		const parser = createNDJSONParser()
-		// The per-call think separator (H4): every wire content delta routes through it, so
+		// The per-call think separator: every wire content delta routes through it, so
 		// only CLEAN content is yielded / assembled even when the daemon ignores `think: false`
 		// for a thinking model; daemon-side `message.thinking` deltas accumulate beside it.
 		// The ASSEMBLED content is the splitter's authoritative `content` — across the qwen3
@@ -197,7 +209,7 @@ export class OllamaProvider implements ProviderInterface {
 		// so the result stays clean even though those deltas could not be recalled.
 		const splitter = createThinkSplitter()
 		// The per-stream accumulators, folded from every `#deltas` return across the live
-		// loop and the post-loop NDJSON tail flush below.
+		// loop and the post-loop NDJSON tail flush following.
 		let wired = ''
 		const calls: ToolCall[] = []
 		let usage: TokenUsage | undefined
@@ -206,7 +218,7 @@ export class OllamaProvider implements ProviderInterface {
 				const { value, done } = await reader.read()
 				if (done) break
 				// Pair the streaming decoder with the line parser: the decoder handles
-				// partial multi-byte CHARS, the parser handles partial LINES (§14).
+				// partial multi-byte CHARS, the parser handles partial LINES.
 				for (const record of parser.parse(decoder.decode(value, { stream: true }))) {
 					const increment = yield* this.#deltas(record, splitter, usage)
 					wired += increment.thinking
@@ -233,11 +245,11 @@ export class OllamaProvider implements ProviderInterface {
 			// partial so the loop can recover what streamed; anything else propagates.
 			if (combined.aborted) {
 				// Flush the splitter's held partial tail first (mirrors the
-				// normal-completion assembly above) so the recovered partial includes
+				// normal-completion assembly preceding) so the recovered partial includes
 				// any clean content that never crossed a tag boundary.
 				splitter.flush()
 				throw new ProviderAbortError(
-					assembleResult(splitter.content, joinThinking(splitter, wired), calls, usage),
+					buildResult(splitter.content, joinThinking(splitter, wired), calls, usage),
 				)
 			}
 			throw error
@@ -254,7 +266,7 @@ export class OllamaProvider implements ProviderInterface {
 			parser.clear()
 			timeout.clear()
 		}
-		return assembleResult(splitter.content, joinThinking(splitter, wired), calls, usage)
+		return buildResult(splitter.content, joinThinking(splitter, wired), calls, usage)
 	}
 
 	// Per-record streaming step shared between the live NDJSON loop and the post-loop
@@ -336,7 +348,7 @@ export class OllamaProvider implements ProviderInterface {
 		} catch (error) {
 			// `fetch` rejected (pre-aborted signal / unreachable / network) or the status
 			// was non-OK — clear the deadline so the armed timer can't outlive the failed
-			// call. The caller's `finally` only takes ownership once we return a response.
+			// call. The caller's `finally` only takes ownership once `#fetch` returns a response.
 			timeout.clear()
 			throw error
 		}
@@ -347,9 +359,9 @@ export class OllamaProvider implements ProviderInterface {
 	// bearer the server validates). Merge order: `Content-Type` is seeded first, then
 	// the hook's entries overlay it — so the hook ADDS auth headers but only clobbers
 	// `Content-Type` if the dev explicitly returns one. Awaited (the hook may be async,
-	// e.g. refreshing a token); called inside `#fetch`'s try so a hook rejection clears
-	// the armed deadline like any other request failure. §14: the hook's result is a
-	// `Readonly<Record<string, string>>` already — merged via `Object.entries`, no `as`.
+	// for example refreshing a token); called inside `#fetch`'s try so a hook rejection
+	// clears the armed deadline like any other request failure. The hook's result is a
+	// `Readonly<Record<string, string>>` already — merged through `Object.entries`, no `as`.
 	async #requestHeaders(): Promise<Record<string, string>> {
 		const headers: Record<string, string> = { 'Content-Type': 'application/json' }
 		if (this.#headers !== undefined) {

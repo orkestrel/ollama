@@ -15,8 +15,9 @@ npm install @orkestrel/ollama
 
 - Node.js >= 22
 - A running Ollama daemon (default `http://localhost:11434`) with a pulled
-  model — required at runtime by any consumer, and by this repo's live-only
-  `src:server` test suite
+  model — required at runtime by any consumer, and by this repository's live
+  `service` test project; the `src:server` project is hermetic and passes with
+  the daemon down
 - ESM + CJS (dual-format build)
 
 ## Usage
@@ -30,7 +31,7 @@ const abort = createAbort()
 const messages = [{ id: '1', role: 'user', content: 'Reply with exactly: ok' }] as const
 
 const result = await provider.generate(messages, abort.signal)
-result.content // 'ok'
+result.content // the assistant's answer text
 result.usage // { prompt, completion, total }
 ```
 

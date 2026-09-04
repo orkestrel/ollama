@@ -18,6 +18,7 @@ describe('OllamaHTTPError', () => {
 		)
 
 		expect(error.cause).toBe(transport)
+		expect(error.code).toBe('HTTP')
 		expect(error.status).toBe(500)
 		expect(error.name).toBe('OllamaHTTPError')
 		expect(isOllamaHTTPError(error)).toBe(true)
@@ -27,6 +28,7 @@ describe('OllamaHTTPError', () => {
 		const error = new OllamaHTTPError('Ollama API error: no response body', 0)
 
 		expect(error.cause).toBeUndefined()
+		expect(error.code).toBe('HTTP')
 		expect(error.status).toBe(0)
 	})
 })

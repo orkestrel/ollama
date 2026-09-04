@@ -8,17 +8,17 @@ describe('parseBody', () => {
 		expect(body).toEqual({ message: { content: 'ok' } })
 	})
 
-	it('degrades an empty body to an empty record', async () => {
-		expect(await parseBody(new Response(''))).toEqual({})
+	it('yields undefined for an empty body', async () => {
+		expect(await parseBody(new Response(''))).toBeUndefined()
 	})
 
-	it('degrades a malformed body to an empty record rather than throwing', async () => {
-		expect(await parseBody(new Response('{"message":'))).toEqual({})
+	it('yields undefined for a malformed body rather than throwing', async () => {
+		expect(await parseBody(new Response('{"message":'))).toBeUndefined()
 	})
 
-	it('degrades valid JSON that is not an object to an empty record', async () => {
-		expect(await parseBody(new Response('42'))).toEqual({})
-		expect(await parseBody(new Response('["ok"]'))).toEqual({})
-		expect(await parseBody(new Response('null'))).toEqual({})
+	it('yields undefined for valid JSON that is not an object', async () => {
+		expect(await parseBody(new Response('42'))).toBeUndefined()
+		expect(await parseBody(new Response('["ok"]'))).toBeUndefined()
+		expect(await parseBody(new Response('null'))).toBeUndefined()
 	})
 })

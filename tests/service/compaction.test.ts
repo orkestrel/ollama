@@ -1,5 +1,3 @@
-import type { AgentResult, ConversationInterface } from '@orkestrel/agent'
-import type { DrivenTool } from '../setupServer.js'
 import { describe, expect, it } from 'vitest'
 import {
 	CONVERSATION_RECAP_PREFIX,
@@ -19,6 +17,7 @@ import {
 	createLiveSummarizer,
 	OLLAMA_CONFIG,
 	RETRY_BUDGET,
+	seedConversation,
 } from '../setupService.js'
 
 const TIMEOUT = 60_000
@@ -81,8 +80,8 @@ describe('Agent (live) — auto-compaction folds a recap while retaining the kep
 describe('Conversation (live) — compaction summarizes via the REAL model', () => {
 	// A REAL ConversationSummaryHandler built from the live provider — the provider-agnostic seam the
 	// conversation layer drives. Recipe retuned: num_predict 256→64 (a one-sentence digest fits
-	// comfortably; keeps wall-time bounded per directive #7). This proves compaction works end-to-
-	// end against a genuine model (AGENTS §16 — no mocks for the inference boundary; no skipIf).
+	// comfortably; keeps wall-time bounded). This proves compaction works end-to-
+	// end against a genuine model — no mocks for the inference boundary, and no skipIf.
 	// Assertion strategy: STRUCTURAL only (non-empty summaries, view() shrinks to 1) — never
 	// exact prose.
 	// The instruction rides as the FINAL user turn AFTER the folded messages — a reasoning chat
@@ -91,27 +90,10 @@ describe('Conversation (live) — compaction summarizes via the REAL model', () 
 	// what reliably elicits the digest. (Documented as the recommended summarizer shape.)
 	const summarize = createLiveSummarizer(TIMEOUT)
 
-	// The folded turns — enough that a one-sentence summary is meaningfully shorter than the
-	// originals (so the post-compaction view() is provably smaller).
-	const seed = (conversation: ReturnType<typeof createConversation>): void => {
-		conversation.add([
-			{ role: 'user', content: 'My name is Ada and I am planning a trip to Kyoto in spring.' },
-			{
-				role: 'assistant',
-				content: 'Kyoto in spring is lovely — the cherry blossoms peak in early April.',
-			},
-			{ role: 'user', content: 'I want to visit temples and try traditional food.' },
-			{
-				role: 'assistant',
-				content: 'Fushimi Inari and Kinkaku-ji are must-sees; try kaiseki and yudofu.',
-			},
-		])
-	}
-
 	it(
 		'compact() folds the live tail into a section + rollup, both authored by the live model, and view() shrinks',
 		async () => {
-			// Bounded retry (explicit attempts=3, per directive #7) over the small model's
+			// Bounded retry (explicit attempts=3) over the small model's
 			// nondeterminism: each attempt is a FRESH conversation seeded + compacted, retried until
 			// the model genuinely produced a non-empty section summary (never a vacuous pass), failing
 			// loudly if NO attempt across the loop did.
@@ -119,7 +101,7 @@ describe('Conversation (live) — compaction summarizes via the REAL model', () 
 				'produce a non-empty compaction section summary',
 				async () => {
 					const attempt = createConversation({ summarize })
-					seed(attempt)
+					seedConversation(attempt)
 					const attemptBefore = attempt.view().length
 					const section = await attempt.compact()
 					return { conversation: attempt, before: attemptBefore, section }
@@ -149,8 +131,8 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 	// produces a valid final answer THROUGH the compacted context. The deterministic loop trigger
 	// is pinned in tests/src/core/agents/Agent.test.ts; here a genuine model drives the tool-call
 	// turn that crosses the threshold, the conversation's REAL-model summarizer folds the tail, and
-	// the model answers from the compacted view. Warmed, no skipIf (AGENTS §16). Recipe retuned:
-	// summarizer num_predict 256→64, bounded retry attempts=3 (directive #7). Assertion strategy:
+	// the model answers from the compacted view. Warmed, no skipIf, no mocks. Recipe retuned:
+	// summarizer num_predict 256→64, bounded retry attempts=3. Assertion strategy:
 	// STRUCTURAL only (section count + non-empty summary, non-empty non-partial final answer).
 
 	const summarize = createLiveSummarizer(TIMEOUT)
@@ -161,60 +143,51 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 	// the fed-back result THROUGH the compacted view).
 	const SENTINEL = '8254'
 
-	const attemptRun = async (): Promise<{
-		readonly conversation: ConversationInterface
-		readonly result: AgentResult
-		readonly tools: readonly DrivenTool[]
-	}> => {
-		const conversations = createConversationManager({ summarize, keep: 1 })
-		const conversation = conversations.add() // auto-activates — the agent's message source
-		const tools = createToolManager()
-		tools.add(
-			createTool({
-				name: 'lookup_code',
-				description: 'Look up the secret access code. Takes no arguments.',
-				parameters: { type: 'object', properties: {} },
-				execute: () => ({ code: SENTINEL }),
-			}),
-		)
-		const agent = createAgent(createLiveOllama(), {
-			system:
-				'You MUST call the lookup_code tool to obtain the secret access code, then state the code in your final reply. Never invent a code.',
-			tools,
-			conversations,
-			window: createBudget({ max: 48, consumer: estimateMessages }),
-			timeout: TIMEOUT,
-			limit: 4,
-		})
-		agent.context.messages.add({
-			role: 'user',
-			content:
-				'What is the secret access code? You MUST call the lookup_code tool, then tell me the code.',
-		})
-		const stream = agent.stream()
-		const { tools: driven, result } = await driveAgent(stream)
-		return { conversation, result, tools: driven }
-	}
-
-	// Whether an attempt genuinely auto-compacted mid-run: at least one section folded, authored by
-	// the live model (a non-empty summary). This is the load-bearing trigger proof.
-	const compacted = (tried: { readonly conversation: ConversationInterface }): boolean => {
-		const section = tried.conversation.sections[0]
-		return section !== undefined && section.summary.trim().length > 0
-	}
-
 	it(
 		'a real multi-turn run with window set folds the tail mid-run + answers from the compacted view',
 		async () => {
-			// Bounded retry, explicit attempts=3 (directive #7) over the 2B model's tool-use
+			// Bounded retry, explicit attempts=3 over the 2B model's tool-use
 			// nondeterminism — each attempt is a FRESH conversation + agent. Retry until an attempt
 			// genuinely (a) auto-compacted mid-run AND (b) produced a valid (non-empty, non-partial)
 			// final answer THROUGH the compacted view. FAIL loudly if NO attempt across the loop
 			// achieved it.
 			const best = await retryUntil(
 				'auto-compact mid-run and produce a valid final answer through the compacted view',
-				attemptRun,
-				(tried) => compacted(tried) && tried.result.content.trim().length > 0,
+				async () => {
+					const conversations = createConversationManager({ summarize, keep: 1 })
+					const conversation = conversations.add() // auto-activates — the agent's message source
+					const tools = createToolManager()
+					tools.add(
+						createTool({
+							name: 'lookup_code',
+							description: 'Look up the secret access code. Takes no arguments.',
+							parameters: { type: 'object', properties: {} },
+							execute: () => ({ code: SENTINEL }),
+						}),
+					)
+					const agent = createAgent(createLiveOllama(), {
+						system:
+							'You MUST call the lookup_code tool to obtain the secret access code, then state the code in your final reply. Never invent a code.',
+						tools,
+						conversations,
+						window: createBudget({ max: 48, consumer: estimateMessages }),
+						timeout: TIMEOUT,
+						limit: 4,
+					})
+					agent.context.messages.add({
+						role: 'user',
+						content:
+							'What is the secret access code? You MUST call the lookup_code tool, then tell me the code.',
+					})
+					const stream = agent.stream()
+					const { tools: driven, result } = await driveAgent(stream)
+					return { conversation, result, tools: driven }
+				},
+				// A genuine mid-run auto-compaction: at least one section folded, authored by the
+				// live model (a non-empty summary). This is the load-bearing trigger proof.
+				(tried) =>
+					(tried.conversation.sections[0]?.summary.trim().length ?? 0) > 0 &&
+					tried.result.content.trim().length > 0,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
@@ -246,7 +219,7 @@ describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIP
 	// The deterministic pre-first-turn / non-fatal / futile paths are pinned in Agent.test.ts; here
 	// a genuine model drives several tool-call turns, the real-model summarizer folds the tail on
 	// EACH between-turns check (a tiny window crossed every turn), and the model answers from the
-	// multiply-compacted view. Warmed, no skipIf, bounded-retry (attempts=3, directive #7).
+	// multiply-compacted view. Warmed, no skipIf, bounded-retry (attempts=3).
 	// Assertion strategy: STRUCTURAL only.
 	const summarize = createLiveSummarizer(TIMEOUT)
 
@@ -256,74 +229,79 @@ describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIP
 	// verbatim across each fold so the run never loses its immediate footing.
 	const SENTINEL = '7193'
 
-	const attemptMulti = async (): Promise<{
-		readonly conversation: ConversationInterface
-		readonly result: AgentResult
-	}> => {
-		const conversations = createConversationManager({ summarize, keep: 1 })
-		const conversation = conversations.add() // auto-activates — the agent's message source
-		const tools = createToolManager()
-		tools.add(
-			createTool({
-				name: 'lookup_secret',
-				description: 'Look up the secret access code. Takes no arguments.',
-				parameters: { type: 'object', properties: {} },
-				execute: () => ({ code: SENTINEL }),
-			}),
-		)
-		const agent = createAgent(createLiveOllama(), {
-			system:
-				'You MUST call the lookup_secret tool to obtain the secret access code, then state the ' +
-				'code in your final reply. Never invent a code.',
-			tools,
-			conversations,
-			window: createBudget({ max: 40, consumer: estimateMessages }),
-			timeout: TIMEOUT,
-			limit: 8,
-		})
-		// SEED a prior multi-turn history (a resumed / long conversation) — six turns whose absolute
-		// footprint already exceeds the tiny window, so the PRE-FIRST-TURN check folds them into the
-		// first section before the model is ever called.
-		conversation.add([
-			{ role: 'user', content: 'Hi, I am planning a trip and need help organizing the details.' },
-			{ role: 'assistant', content: 'Happy to help — tell me your destination and dates.' },
-			{ role: 'user', content: 'Kyoto, in early April, for about a week with my family.' },
-			{ role: 'assistant', content: 'Great — early April is cherry-blossom season in Kyoto.' },
-			{ role: 'user', content: 'We are interested in temples, gardens, and traditional food.' },
-			{ role: 'assistant', content: 'Fushimi Inari, Kinkaku-ji, and a kaiseki dinner are musts.' },
-		])
-		agent.context.messages.add({
-			role: 'user',
-			content:
-				'Before we continue planning, what is the secret access code? You MUST call the ' +
-				'lookup_secret tool, then tell me the code.',
-		})
-		const stream = agent.stream()
-		await collect(stream.events)
-		const result = await stream.result
-		return { conversation, result }
-	}
-
-	// Whether an attempt forced MULTIPLE folds: at least TWO sections, each authored by the live model
-	// (a non-empty summary). This is the load-bearing multi-compaction proof.
-	const multiCompacted = (tried: { readonly conversation: ConversationInterface }): boolean => {
-		const sections = tried.conversation.sections
-		return sections.length >= 2 && sections.every((section) => section.summary.trim().length > 0)
-	}
-
 	it(
 		'forces ≥ 2 mid-run folds and produces a valid final answer through the repeatedly-compacted context',
 		async () => {
-			// Bounded retry, explicit attempts=3 (directive #7) over the 2B model's tool-use
+			// Bounded retry, explicit attempts=3 over the 2B model's tool-use
 			// nondeterminism — each attempt is a FRESH conversation + agent. Retry until an attempt
 			// genuinely (a) folded ≥ 2 sections (each a non-empty model-written summary) AND (b)
 			// produced a valid (non-empty, non-partial) final answer THROUGH the repeatedly-compacted
 			// view. FAIL loudly if NO attempt across the loop achieved it.
 			const best = await retryUntil(
 				'fold >= 2 sections and produce a valid, non-partial final answer through the repeatedly-compacted view',
-				attemptMulti,
+				async () => {
+					const conversations = createConversationManager({ summarize, keep: 1 })
+					const conversation = conversations.add() // auto-activates — the agent's message source
+					const tools = createToolManager()
+					tools.add(
+						createTool({
+							name: 'lookup_secret',
+							description: 'Look up the secret access code. Takes no arguments.',
+							parameters: { type: 'object', properties: {} },
+							execute: () => ({ code: SENTINEL }),
+						}),
+					)
+					const agent = createAgent(createLiveOllama(), {
+						system:
+							'You MUST call the lookup_secret tool to obtain the secret access code, then state the ' +
+							'code in your final reply. Never invent a code.',
+						tools,
+						conversations,
+						window: createBudget({ max: 40, consumer: estimateMessages }),
+						timeout: TIMEOUT,
+						limit: 8,
+					})
+					// SEED a prior multi-turn history (a resumed / long conversation) — six turns whose
+					// absolute footprint already exceeds the tiny window, so the PRE-FIRST-TURN check
+					// folds them into the first section before the model is ever called.
+					conversation.add([
+						{
+							role: 'user',
+							content: 'Hi, I am planning a trip and need help organizing the details.',
+						},
+						{ role: 'assistant', content: 'Happy to help — tell me your destination and dates.' },
+						{ role: 'user', content: 'Kyoto, in early April, for about a week with my family.' },
+						{
+							role: 'assistant',
+							content: 'Great — early April is cherry-blossom season in Kyoto.',
+						},
+						{
+							role: 'user',
+							content: 'We are interested in temples, gardens, and traditional food.',
+						},
+						{
+							role: 'assistant',
+							content: 'Fushimi Inari, Kinkaku-ji, and a kaiseki dinner are musts.',
+						},
+					])
+					agent.context.messages.add({
+						role: 'user',
+						content:
+							'Before we continue planning, what is the secret access code? You MUST call the ' +
+							'lookup_secret tool, then tell me the code.',
+					})
+					const stream = agent.stream()
+					await collect(stream.events)
+					const result = await stream.result
+					return { conversation, result }
+				},
+				// MULTIPLE folds: at least TWO sections, each authored by the live model (a non-empty
+				// summary). This is the load-bearing multi-compaction proof.
 				(tried) =>
-					multiCompacted(tried) && tried.result.content.trim().length > 0 && !tried.result.partial,
+					tried.conversation.sections.length >= 2 &&
+					tried.conversation.sections.every((section) => section.summary.trim().length > 0) &&
+					tried.result.content.trim().length > 0 &&
+					!tried.result.partial,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 

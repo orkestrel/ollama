@@ -1,5 +1,3 @@
-import type { AgentResult } from '@orkestrel/agent'
-import type { TokenUsage } from '@orkestrel/budget'
 import { describe, expect, it } from 'vitest'
 import { createAgent } from '@orkestrel/agent'
 import { createTokenBudget } from '@orkestrel/budget'
@@ -9,7 +7,7 @@ import { createLookupTool, driveAgent } from '../setupServer.js'
 import { createLiveOllama, FAST_OPTIONS, RETRY_BUDGET, TOOL_LOOP_OPTIONS } from '../setupService.js'
 
 // budget.test.ts — LIVE agent-layer usage accounting + budget enforcement +
-// sequential-reuse (AGENTS §16: no mocks for the inference boundary). OllamaProvider.test.ts
+// sequential-reuse, with no mocks for the inference boundary. OllamaProvider.test.ts
 // already pins the PROVIDER-level usage invariants (prompt + completion === total on a single
 // provider.generate() call); this file probes the AGENT layer: how createAgent's loop
 // aggregates provider-level usage into AgentResult.usage / usage chunks, how an exhausted
@@ -64,32 +62,27 @@ describe('Agent budget (live) — an exhausted token budget trips the loop', () 
 			// the small model's tool-use nondeterminism: an attempt that answers directly in one
 			// turn (no second call ever attempted) would finish naturally instead of tripping, so
 			// we retry until an attempt genuinely observed the trip.
-			const attemptBudgetTrip = async (): Promise<{
-				readonly partial: boolean
-				readonly aborted: number
-			}> => {
-				const recorder = createRecorder<[reason: unknown]>()
-				const budget = createTokenBudget({ max: 5, scope: 'completion' })
-				const tools = createToolManager()
-				tools.add(createLookupTool())
-				const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
-					system:
-						'You MUST call the lookup tool with query "test" to obtain the reference datum, ' +
-						'then state it in your final reply. Never invent a value.',
-					tools,
-					budget,
-					limit: 4,
-					timeout: TIMEOUT,
-					on: { abort: recorder.handler },
-				})
-				agent.context.messages.add({ role: 'user', content: 'Look up the reference datum.' })
-				const result = await agent.generate()
-				return { partial: result.partial, aborted: recorder.count }
-			}
-
 			const tripped = await retryUntil(
 				'trip the exhausted token budget mid-run',
-				attemptBudgetTrip,
+				async () => {
+					const recorder = createRecorder<[reason: unknown]>()
+					const budget = createTokenBudget({ max: 5, scope: 'completion' })
+					const tools = createToolManager()
+					tools.add(createLookupTool())
+					const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
+						system:
+							'You MUST call the lookup tool with query "test" to obtain the reference datum, ' +
+							'then state it in your final reply. Never invent a value.',
+						tools,
+						budget,
+						limit: 4,
+						timeout: TIMEOUT,
+						on: { abort: recorder.handler },
+					})
+					agent.context.messages.add({ role: 'user', content: 'Look up the reference datum.' })
+					const result = await agent.generate()
+					return { partial: result.partial, aborted: recorder.count }
+				},
 				(value) => value.partial === true && value.aborted > 0,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
@@ -116,29 +109,23 @@ describe('Agent budget (live) — an exhausted token budget trips MID-GENERATION
 			// under the ~2000 chars a full 512-token completion would produce — 1000 is an honest,
 			// non-brittle upper bound that still proves the trip happened mid-stream, not at natural
 			// completion.
-			const attemptMidStreamTrip = async (): Promise<{
-				readonly partial: boolean
-				readonly aborted: number
-				readonly length: number
-			}> => {
-				const recorder = createRecorder<[reason: unknown]>()
-				const budget = createTokenBudget({ max: 5, scope: 'completion' })
-				const agent = createAgent(createLiveOllama({ predict: 512, temperature: 0 }), {
-					budget,
-					timeout: TIMEOUT,
-					on: { abort: recorder.handler },
-				})
-				agent.context.messages.add({
-					role: 'user',
-					content: 'Write a long, detailed essay about the history of the printing press.',
-				})
-				const { result } = await driveAgent(agent.stream())
-				return { partial: result.partial, aborted: recorder.count, length: result.content.length }
-			}
-
 			const tripped = await retryUntil(
 				'trip the token budget mid-generation (no tool loop)',
-				attemptMidStreamTrip,
+				async () => {
+					const recorder = createRecorder<[reason: unknown]>()
+					const budget = createTokenBudget({ max: 5, scope: 'completion' })
+					const agent = createAgent(createLiveOllama({ predict: 512, temperature: 0 }), {
+						budget,
+						timeout: TIMEOUT,
+						on: { abort: recorder.handler },
+					})
+					agent.context.messages.add({
+						role: 'user',
+						content: 'Write a long, detailed essay about the history of the printing press.',
+					})
+					const { result } = await driveAgent(agent.stream())
+					return { partial: result.partial, aborted: recorder.count, length: result.content.length }
+				},
 				(value) => value.partial === true && value.aborted > 0,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
@@ -159,28 +146,23 @@ describe('Agent usage (live) — multi-turn usage accumulates across provider ca
 			// (num_predict:64) — a tool-call turn followed by an answer turn yields ≥2 provider
 			// calls, hence ≥2 usage chunks. Bounded retry (attempts=3) over the small model's
 			// tool-use nondeterminism wraps the "≥2 turns happened" condition.
-			const attemptMultiTurn = async (): Promise<{
-				readonly usages: readonly TokenUsage[]
-				readonly result: AgentResult
-			}> => {
-				const tools = createToolManager()
-				tools.add(createLookupTool())
-				const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
-					system:
-						'You MUST call the lookup tool with query "test" to obtain the reference datum, ' +
-						'then state it in your final reply. Never invent a value.',
-					tools,
-					limit: 4,
-					timeout: TIMEOUT,
-				})
-				agent.context.messages.add({ role: 'user', content: 'Look up the reference datum.' })
-				const { usages, result } = await driveAgent(agent.stream())
-				return { usages, result }
-			}
-
 			const attempt = await retryUntil(
 				'produce a ≥2-turn tool-call loop with ≥2 usage chunks',
-				attemptMultiTurn,
+				async () => {
+					const tools = createToolManager()
+					tools.add(createLookupTool())
+					const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
+						system:
+							'You MUST call the lookup tool with query "test" to obtain the reference datum, ' +
+							'then state it in your final reply. Never invent a value.',
+						tools,
+						limit: 4,
+						timeout: TIMEOUT,
+					})
+					agent.context.messages.add({ role: 'user', content: 'Look up the reference datum.' })
+					const { usages, result } = await driveAgent(agent.stream())
+					return { usages, result }
+				},
 				(value) => value.usages.length >= 2,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)

@@ -5,7 +5,13 @@ import { createRecorder, retryUntil } from '@orkestrel/test'
 import { isOllamaHTTPError, OllamaProvider } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../setup.js'
-import { createRecordingProxy, drive, waitForRequest, WEATHER_TOOL } from '../setupServer.js'
+import {
+	createRecordingProxy,
+	createRecordingTransport,
+	drive,
+	waitForRequest,
+	WEATHER_TOOL,
+} from '../setupServer.js'
 import {
 	ABORT_OPTIONS,
 	createLiveOllama,
@@ -79,8 +85,8 @@ describe('OllamaProvider (live — generate)', () => {
 
 	// Recipe: 'What is the weather in Paris? Use the get_weather tool.' / num_predict:32
 	// (TOOL_OPTIONS) / think:false. Assertion: structural — tool-call shape
-	// (non-empty id, correct name, object arguments). Bounded retry (attempts=3, per
-	// directive #7) over the small model's nondeterminism — probe measured 3/3 hit rate,
+	// (non-empty id, correct name, object arguments). Bounded retry (attempts=3) over
+	// the small model's nondeterminism — probe measured 3/3 hit rate,
 	// but a small sample, so each attempt reissues the SAME call until one carries at
 	// least one tool call; the strict shape assertions then run on that response.
 	it('populates result.tools when the model calls a tool (id/name/arguments)', async () => {
@@ -239,8 +245,8 @@ describe('OllamaProvider (live — stream)', () => {
 
 	// Recipe: 'What is the weather in Tokyo? Use the get_weather tool.' / num_predict:32
 	// (TOOL_OPTIONS) / think:false. Assertion: structural — tool calls assembled across
-	// stream lines, correct name, non-empty id. Bounded retry (attempts=3, per
-	// directive #7) over the small model's nondeterminism — probe measured 3/3 hit rate,
+	// stream lines, correct name, non-empty id. Bounded retry (attempts=3) over the
+	// small model's nondeterminism — probe measured 3/3 hit rate,
 	// but a small sample, so each attempt reissues the SAME call until one carries at
 	// least one tool call; the strict shape assertions then run on that response.
 	it('assembles tool calls from a streamed turn', async () => {
@@ -353,7 +359,7 @@ describe('OllamaProvider (live — abort)', () => {
 			options,
 		})
 		const probeAbort = createAbort()
-		const started = Date.now()
+		const started = performance.now()
 		let first: number | undefined
 		let ended: number | undefined
 		const generator = probe.stream([createUserMessage(prompt)], probeAbort.signal)
@@ -361,16 +367,16 @@ describe('OllamaProvider (live — abort)', () => {
 			for (;;) {
 				const step = await generator.next()
 				if (step.done) {
-					ended = Date.now()
+					ended = performance.now()
 					break
 				}
-				if (step.value.channel === 'content' && first === undefined) first = Date.now()
-				if (Date.now() - started > 6000) probeAbort.abort()
+				if (step.value.channel === 'content' && first === undefined) first = performance.now()
+				if (performance.now() - started > 6000) probeAbort.abort()
 			}
 		} catch (error) {
 			// The caller cap tripped while the stream was mid-flight — that end is the window edge.
 			if (!isProviderAbortError(error)) throw error
-			ended = Date.now()
+			ended = performance.now()
 		}
 		if (first === undefined || ended === undefined) throw new Error('probe produced no content')
 		const window = ended - first
@@ -406,7 +412,7 @@ describe('OllamaProvider (recording proxy — structured-output schema)', () => 
 	// Assertion: wire-truth — the recorded body carries `format` deep-equal to the
 	// schema (deterministic); response-shape — the assembled content JSON.parses to an
 	// object with a string `city` and a numeric `population` (bounded retry, attempts=3,
-	// per directive #7, over the small model's nondeterminism at this budget). Also
+	// over the small model's nondeterminism at this budget). Also
 	// proves the negative: a schema-less call on the SAME proxy carries no `format` key.
 	const SCHEMA = {
 		type: 'object',
@@ -475,20 +481,16 @@ describe('OllamaProvider (recording proxy — structured-output schema)', () => 
 describe('OllamaProvider (recording proxy — transport seam custom fetch)', () => {
 	// Recipe: 'hi' / FAST_OPTIONS-scale (default options) / think:false. Assertion:
 	// provider-behavior — the injected fetch is the one used (a real delegating
-	// recorder per AGENTS §16.1, not a mock), exactly once, and the real content
+	// recorder, not a mock), exactly once, and the real content
 	// still comes back through it.
 	it('uses the injected fetch, not the global (a real delegating recorder)', async () => {
 		const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
 		try {
 			const calls = createRecorder<readonly [string]>()
-			const transport: typeof globalThis.fetch = (input, init) => {
-				calls.handler(String(input))
-				return globalThis.fetch(input, init)
-			}
 			const provider = new OllamaProvider({
 				model: OLLAMA_CONFIG.model,
 				url: proxy.url,
-				fetch: transport,
+				fetch: createRecordingTransport(calls),
 				options: FAST_OPTIONS,
 			})
 			const result = await provider.generate([createUserMessage('hi')], createAbort().signal)
@@ -506,14 +508,10 @@ describe('OllamaProvider (recording proxy — transport seam custom fetch)', () 
 		const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
 		try {
 			const calls = createRecorder<readonly [string]>()
-			const transport: typeof globalThis.fetch = (input, init) => {
-				calls.handler(String(input))
-				return globalThis.fetch(input, init)
-			}
 			const provider = new OllamaProvider({
 				model: OLLAMA_CONFIG.model,
 				url: proxy.url,
-				fetch: transport,
+				fetch: createRecordingTransport(calls),
 				options: FAST_OPTIONS,
 			})
 			const { result } = await drive(

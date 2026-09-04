@@ -11,10 +11,11 @@ import type { ProviderDelta, ProviderResult } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
-import { waitForAbort } from '@orkestrel/test'
+import { createRecorder, waitForAbort } from '@orkestrel/test'
 import { describe, expect, it } from 'vitest'
 import {
 	createRecordingProxy,
+	createRecordingTransport,
 	drive,
 	INSATIABLE_TOOL_CHUNKS,
 	insatiableResult,
@@ -169,6 +170,25 @@ describe('createRecordingProxy', () => {
 		await proxy.stop()
 
 		await expect(fetch(url, { method: 'POST', body: '{}' })).rejects.toThrow(Error)
+	})
+})
+
+describe('createRecordingTransport', () => {
+	it("records the request's URL and then forwards it to the global fetch", async () => {
+		const calls = createRecorder<readonly [string]>()
+		const proxy = await createRecordingProxy()
+		try {
+			const transport = createRecordingTransport(calls)
+			const url = `${proxy.url}/api/chat`
+			await transport(url, { method: 'POST', body: '{}' }).catch(() => {})
+
+			await waitForRequest(proxy)
+
+			expect(calls.count).toBe(1)
+			expect(calls.calls[0]).toEqual([url])
+		} finally {
+			await proxy.stop()
+		}
 	})
 })
 

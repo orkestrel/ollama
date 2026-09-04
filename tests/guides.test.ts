@@ -1,7 +1,10 @@
 // The consumer-side guides-parity drop-in: runs `@orkestrel/guide`'s checks against
-// this repo's own `guides/README.md` manifest. The five constants below are this
-// package's own, and are the only part a sibling package changes.
+// this repo's own `guides/README.md` manifest. The constants following and the flagship-fence
+// transcription at the end are this package's own; the parity loop between them is the
+// shared drop-in a sibling package carries unchanged.
 
+import type { ContextFormat } from '@orkestrel/agent'
+import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import {
 	computeSymbolKey,
@@ -32,7 +35,7 @@ const MODULES = Object.freeze({ '@orkestrel/ollama': 'src/server' })
  *
  * A class that one-class-per-file evicted from its single consumer cannot become a
  * local, so it stays exported without being public. Naming it here is what makes that
- * intentional rather than forgotten — and the second assertion below fails when a name
+ * intentional rather than forgotten — and the second assertion following fails when a name
  * here stops being stranded, so the list cannot rot.
  */
 const INTERNAL: readonly string[] = Object.freeze([])
@@ -117,7 +120,7 @@ for (const entry of manifest) {
 				.map((fence) => fence.code)
 			const names = guide
 				.surface()
-				.filter((symbol) => symbol.kind === 'function')
+				.filter((symbol) => symbol.keyword === 'function')
 				.map((symbol) => symbol.name)
 			expect(findUnexampled(names, fences, source.examples())).toEqual([])
 		})
@@ -168,3 +171,32 @@ for (const entry of manifest) {
 		})
 	})
 }
+
+// The guide's headline fences, transcribed and executed against the real source. Name
+// resolution is what the preceding loop proves; this block proves the values the fence
+// comments claim. Only the hermetic half runs here — the `guides` project has no daemon,
+// so a fence claim about a live model's output is asserted in `tests/service/`.
+describe('flagship fences', () => {
+	// `guides/ollama.md` § Surface — the 80% fence: create a provider once, then generate.
+	it('createOllama returns a named provider exposing generate and stream', () => {
+		const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M' })
+
+		expect(provider.name).toBe('ollama')
+		expect(typeof provider.generate).toBe('function')
+		expect(typeof provider.stream).toBe('function')
+	})
+
+	// `guides/ollama.md` § Context framing — `provider.format` is the ContextFormat passed in.
+	it('createOllama exposes the framing default it was given, and undefined without one', () => {
+		const format: ContextFormat = {
+			instructions: {
+				open: '<instructions>',
+				render: (instruction) => `<instruction>${instruction.content}</instruction>`,
+				close: '</instructions>',
+			},
+		}
+
+		expect(createOllama({ model: 'qwen3.5:2b-q4_K_M', format }).format).toBe(format)
+		expect(createOllama({ model: 'qwen3.5:2b-q4_K_M' }).format).toBeUndefined()
+	})
+})

@@ -1,7 +1,7 @@
 # Guides
 
 A dual-axis index into this repository's guides — by concept, and by
-directory (AGENTS §22).
+directory.
 
 ## By concept
 
@@ -33,9 +33,5 @@ this repository is generated and checked against.
 The runtime dependencies — `@orkestrel/agent`, `@orkestrel/budget`,
 `@orkestrel/contract`, `@orkestrel/ndjson`, `@orkestrel/timeout`, and
 `@orkestrel/tool` — carry their own guides in their own repositories. This guide
-set mirrors only the toolchain above, so a dependency's surface is read where it
+set mirrors only the toolchain earlier, so a dependency's surface is read where it
 is published rather than from a copy that drifts.
-
-## See also
-
-- [`AGENTS.md`](../AGENTS.md) — the rules; §22 documentation-as-contracts.

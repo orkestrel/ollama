@@ -4,7 +4,7 @@ import { createOllama } from '@src/server'
 import { createRecordingProxy } from '../setupServer.js'
 import { FAST_OPTIONS, OLLAMA_CONFIG, STREAM_OPTIONS } from '../setupService.js'
 
-// S2 — the BROWSER → OWN-SERVER → LLM deployment, end-to-end. The unit-level header-injection
+// The BROWSER → OWN-SERVER → LLM deployment, end-to-end. The unit-level header-injection
 // + custom-fetch tests live in OllamaProvider.test.ts; this hardens the full SCENARIO: the
 // centralized recording proxy (a real @orkestrel/server + @orkestrel/router HTTP server) that
 // (i) RECORDS the inbound request — asserting it carried ONLY an obfuscated bearer token, never
@@ -19,7 +19,7 @@ const TIMEOUT = 60_000
 
 const OBFUSCATED = 'Bearer obfuscated-7f3a-token'
 
-describe('S2 — browser → own server (obfuscated token) → live LLM, end-to-end', () => {
+describe('browser → own server (obfuscated token) → live LLM, end-to-end', () => {
 	it(
 		'a real generate() flows through the dev-server proxy carrying ONLY the obfuscated token, and a real answer comes back',
 		async () => {
@@ -48,7 +48,7 @@ describe('S2 — browser → own server (obfuscated token) → live LLM, end-to-
 				expect(result.partial).toBe(false)
 
 				// The proxy recorded exactly the obfuscated token on the inbound /api/chat — and NO
-				// real API key (there is none browser-side). This is the load-bearing S2 assertion: the
+				// real API key (there is none browser-side). This is the load-bearing assertion: the
 				// browser authenticated to the dev server with the obfuscated token alone.
 				const inbound = proxy.requests.find((seen) => seen.path === '/api/chat')
 				if (inbound === undefined) throw new Error('proxy never recorded an /api/chat request')

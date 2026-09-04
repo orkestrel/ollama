@@ -1,4 +1,4 @@
-import type { ContextFormat, Message } from '@orkestrel/agent'
+import type { ContextFormat, ConversationInterface, Message } from '@orkestrel/agent'
 import { isRecord, isString } from '@orkestrel/contract'
 import { createOllama, OllamaProvider } from '@src/server'
 import { env, withScheme } from './setupServer.js'
@@ -68,6 +68,29 @@ export function createLiveSummarizer(
 				AbortSignal.timeout(timeoutMs),
 			)
 		).content
+}
+
+/**
+ * Seed a conversation with the fixed trip-planning exchange compaction round-trips fold.
+ *
+ * The seeded turns are long enough that a one-sentence digest is measurably shorter, so a
+ * post-compaction `view()` is provably smaller than the seeded one.
+ *
+ * @param conversation - The conversation to add the turns to
+ */
+export function seedConversation(conversation: ConversationInterface): void {
+	conversation.add([
+		{ role: 'user', content: 'My name is Ada and I am planning a trip to Kyoto in spring.' },
+		{
+			role: 'assistant',
+			content: 'Kyoto in spring is lovely — the cherry blossoms peak in early April.',
+		},
+		{ role: 'user', content: 'I want to visit temples and try traditional food.' },
+		{
+			role: 'assistant',
+			content: 'Fushimi Inari and Kinkaku-ji are must-sees; try kaiseki and yudofu.',
+		},
+	])
 }
 
 /**

@@ -1,7 +1,7 @@
 import type { Message } from '@orkestrel/agent'
 import { createThinkSplitter } from '@orkestrel/agent'
 import {
-	assembleResult,
+	buildResult,
 	extractArguments,
 	extractContent,
 	extractThinking,
@@ -63,16 +63,16 @@ describe('mapMessages', () => {
 	})
 })
 
-describe('assembleResult', () => {
+describe('buildResult', () => {
 	it('carries content alone when nothing else is present', () => {
-		expect(assembleResult('ok', '', [], undefined)).toEqual({ content: 'ok' })
+		expect(buildResult('ok', '', [], undefined)).toEqual({ content: 'ok' })
 	})
 
 	it('adds every populated optional', () => {
 		const calls = [{ id: 'call-1', name: 'weather', arguments: {} }]
 		const usage = { prompt: 3, completion: 4, total: 7 }
 
-		expect(assembleResult('ok', 'weighing it', calls, usage)).toEqual({
+		expect(buildResult('ok', 'weighing it', calls, usage)).toEqual({
 			content: 'ok',
 			thinking: 'weighing it',
 			tools: calls,
@@ -81,7 +81,7 @@ describe('assembleResult', () => {
 	})
 
 	it('omits an empty thinking string and an empty tools array', () => {
-		expect(Object.keys(assembleResult('', '', [], undefined))).toEqual(['content'])
+		expect(Object.keys(buildResult('', '', [], undefined))).toEqual(['content'])
 	})
 })
 

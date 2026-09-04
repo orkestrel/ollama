@@ -8,7 +8,7 @@ import { ABORT_OPTIONS, createLiveOllama, RETRY_BUDGET, STREAM_OPTIONS } from '.
 
 // Agent lifecycle (live) — the AGENT-LEVEL taxonomy (streaming chunk shape, `status`
 // transitions, `emitter` lifecycle events, and abort semantics) driven through the real
-// `OllamaProvider` (AGENTS §16: no mocks for the inference boundary). Assertions are
+// `OllamaProvider` — no mocks for the inference boundary. Assertions are
 // STRUCTURAL — chunk/event/status/partial mechanics — never model prose. Complements the
 // deterministic Agent.test.ts (loop trigger, cancel-path shapes) with genuine live
 // round-trips proving OUR plumbing (this repo's provider) drives the agent's contract
@@ -20,8 +20,7 @@ describe('Agent (live) — streamed chunk taxonomy, status lifecycle, and emitte
 	it(
 		'tokens assemble into result.content, a usage chunk is observed, status transitions idle→running→done, and the emitter fires start→turn→usage→finish in order matching the result',
 		async () => {
-			// One live generation carries three complementary structural proofs (fewer live calls,
-			// per directive #7): (1) the PULL chunk stream's token/usage taxonomy assembles into the
+			// One live generation carries three complementary structural proofs (fewer live calls): (1) the PULL chunk stream's token/usage taxonomy assembles into the
 			// settled result; (2) `status` visibly transitions across the run; (3) the PUSH emitter
 			// fires the documented lifecycle events in order, and `finish`'s payload IS the result.
 			const provider = createLiveOllama({ predict: STREAM_OPTIONS.num_predict, temperature: 0 })
@@ -91,30 +90,25 @@ describe('Agent (live) — the think channel assembles into result.thinking', ()
 			// drains the budget first, so content may legitimately be empty; only the thinking channel
 			// is asserted). The model's willingness to actually emit non-empty reasoning at this cap is
 			// nondeterministic, so the genuinely model-dependent half (non-empty thoughts) is wrapped in
-			// a bounded retry (directive #7, attempts=3); the STRUCTURAL invariant (thoughts join equals
+			// a bounded retry (attempts=3); the STRUCTURAL invariant (thoughts join equals
 			// settled thinking) is re-asserted unconditionally on whichever attempt satisfied it.
-			const attempt = async (): Promise<{
-				readonly thoughts: readonly string[]
-				readonly result: AgentResult
-			}> => {
-				const provider = createLiveOllama({ predict: 32, temperature: 0 })
-				const agent = createAgent(provider, { timeout: TIMEOUT })
-				agent.context.messages.add({
-					role: 'user',
-					content: 'Briefly reason step by step about what 2 + 2 equals, then answer.',
-				})
-				const stream = agent.stream({ think: true })
-				const thoughts: string[] = []
-				for await (const chunk of stream.events) {
-					if (chunk.category === 'think') thoughts.push(chunk.content)
-				}
-				const result = await stream.result
-				return { thoughts, result }
-			}
-
 			const { thoughts, result } = await retryUntil(
 				'produce non-empty reasoning deltas under think:true',
-				attempt,
+				async () => {
+					const provider = createLiveOllama({ predict: 32, temperature: 0 })
+					const agent = createAgent(provider, { timeout: TIMEOUT })
+					agent.context.messages.add({
+						role: 'user',
+						content: 'Briefly reason step by step about what 2 + 2 equals, then answer.',
+					})
+					const stream = agent.stream({ think: true })
+					const attemptThoughts: string[] = []
+					for await (const chunk of stream.events) {
+						if (chunk.category === 'think') attemptThoughts.push(chunk.content)
+					}
+					const attemptResult = await stream.result
+					return { thoughts: attemptThoughts, result: attemptResult }
+				},
 				(value) => value.thoughts.join('').trim().length > 0,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
@@ -186,21 +180,19 @@ describe('Agent (live) — a construction-time timeout resolves partial, never r
 			// exhaustion (budget.test.ts): a construction-time `timeout` (ms) folds into the same
 			// `AbortSignal.any` cancel the loop arms per turn. Bounded retry (attempts=3) only to
 			// absorb the astronomically-rare instant-completion race.
-			const attempt = async (): Promise<{ readonly partial: boolean; readonly events: number }> => {
-				const provider = createLiveOllama({ predict: 32, temperature: 0 })
-				const agent = createAgent(provider, { timeout: 1 })
-				agent.context.messages.add({ role: 'user', content: 'Say hello.' })
-
-				const abortEvents: unknown[] = []
-				agent.emitter.on('abort', (reason) => abortEvents.push(reason))
-
-				const result = await agent.generate()
-				return { partial: result.partial, events: abortEvents.length }
-			}
-
 			const { partial, events } = await retryUntil(
 				'settle a partial result under an exhausted 1ms timeout',
-				attempt,
+				async () => {
+					const provider = createLiveOllama({ predict: 32, temperature: 0 })
+					const agent = createAgent(provider, { timeout: 1 })
+					agent.context.messages.add({ role: 'user', content: 'Say hello.' })
+
+					const abortEvents: unknown[] = []
+					agent.emitter.on('abort', (reason) => abortEvents.push(reason))
+
+					const result = await agent.generate()
+					return { partial: result.partial, events: abortEvents.length }
+				},
 				(value) => value.partial === true,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
@@ -221,21 +213,19 @@ describe('Agent (live) — a per-run timeout override reaches the loop', () => {
 			// `??` semantics over the construction default. The agent here is constructed with NO
 			// timeout at all, so a partial+abort outcome proves the PER-RUN 1ms bound reached the
 			// loop, not any construction-time default.
-			const attempt = async (): Promise<{ readonly partial: boolean; readonly events: number }> => {
-				const provider = createLiveOllama({ predict: 32, temperature: 0 })
-				const agent = createAgent(provider, {})
-				agent.context.messages.add({ role: 'user', content: 'Say hello.' })
-
-				const abortEvents: unknown[] = []
-				agent.emitter.on('abort', (reason) => abortEvents.push(reason))
-
-				const result = await agent.generate({ timeout: 1 })
-				return { partial: result.partial, events: abortEvents.length }
-			}
-
 			const { partial, events } = await retryUntil(
 				'settle a partial result under a per-run 1ms timeout override',
-				attempt,
+				async () => {
+					const provider = createLiveOllama({ predict: 32, temperature: 0 })
+					const agent = createAgent(provider, {})
+					agent.context.messages.add({ role: 'user', content: 'Say hello.' })
+
+					const abortEvents: unknown[] = []
+					agent.emitter.on('abort', (reason) => abortEvents.push(reason))
+
+					const result = await agent.generate({ timeout: 1 })
+					return { partial: result.partial, events: abortEvents.length }
+				},
 				(value) => value.partial === true,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
@@ -254,30 +244,28 @@ describe('Agent (live) — a per-run limit override reaches the loop', () => {
 			// AgentRunOptions.limit (0.0.6) overrides AgentOptions.limit for this run only. The
 			// agent here is constructed WITHOUT a limit override (the constructed default applies),
 			// so an exhaust-at-1-turn outcome proves the PER-RUN limit reached the loop.
-			const attempt = async (): Promise<{
-				readonly partial: boolean
-				readonly exhausted: readonly number[]
-			}> => {
-				const tools = createToolManager()
-				tools.add(createLookupTool())
-				const exhaustRecorder = createRecorder<[number]>()
-				const agent = createAgent(createLiveOllama(), {
-					system: 'You MUST call the lookup tool with query "datum" immediately.',
-					tools,
-					timeout: TIMEOUT,
-					on: { exhaust: (turns) => exhaustRecorder.handler(turns) },
-				})
-				agent.context.messages.add({
-					role: 'user',
-					content: 'Call the lookup tool with query "datum" right now.',
-				})
-				const result = await agent.generate({ limit: 1 })
-				return { partial: result.partial, exhausted: exhaustRecorder.calls.map((call) => call[0]) }
-			}
-
 			const { partial, exhausted } = await retryUntil(
 				'exhaust the per-run limit override with unresolved tool intent',
-				attempt,
+				async () => {
+					const tools = createToolManager()
+					tools.add(createLookupTool())
+					const exhaustRecorder = createRecorder<[number]>()
+					const agent = createAgent(createLiveOllama(), {
+						system: 'You MUST call the lookup tool with query "datum" immediately.',
+						tools,
+						timeout: TIMEOUT,
+						on: { exhaust: (turns) => exhaustRecorder.handler(turns) },
+					})
+					agent.context.messages.add({
+						role: 'user',
+						content: 'Call the lookup tool with query "datum" right now.',
+					})
+					const result = await agent.generate({ limit: 1 })
+					return {
+						partial: result.partial,
+						exhausted: exhaustRecorder.calls.map((call) => call[0]),
+					}
+				},
 				(value) => value.exhausted.length > 0,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)

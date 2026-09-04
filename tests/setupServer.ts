@@ -9,7 +9,7 @@ import type { ToolCall, ToolDefinition, ToolInterface, ToolResult } from '@orkes
 import type { TokenUsage } from '@orkestrel/budget'
 import type { RecorderInterface } from '@orkestrel/test'
 import { flattenHeaders, waitForCondition } from '@orkestrel/test'
-import { arrayOf, isRecord, isString } from '@orkestrel/contract'
+import { arrayOf, isRecord, isString, parseJSONAs } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
 import { createTool } from '@orkestrel/tool'
@@ -42,12 +42,7 @@ export interface RecordingProxyInterface {
 
 /** Parse a JSON request body when it is a record. */
 export function parseRequestBody(text: string): Record<string, unknown> | undefined {
-	try {
-		const parsed: unknown = JSON.parse(text)
-		return isRecord(parsed) ? parsed : undefined
-	} catch {
-		return undefined
-	}
+	return parseJSONAs(text, isRecord)
 }
 
 /** Minimal message shape recorded from the provider wire. */
@@ -125,7 +120,7 @@ export interface RefusingTransportInterface {
 }
 
 /**
- * Build a transport that records each request's abort signal and then refuses it.
+ * Builds a transport that records each request's abort signal and then refuses it.
  *
  * A recorded signal is the caller-visible handle on the deadline a provider arms
  * around the request: an uncleared deadline aborts that signal when it expires, so a
@@ -148,7 +143,7 @@ export function createRefusingTransport(): RefusingTransportInterface {
 }
 
 /**
- * Build a transport that answers `/api/chat` with a canned NDJSON stream.
+ * Builds a transport that answers `/api/chat` with a canned NDJSON stream.
  *
  * Each chunk is enqueued on the response body verbatim, so a caller controls where the
  * record boundaries fall: a chunk may hold several `\n`-terminated records, split one
@@ -173,7 +168,22 @@ export function createStreamingTransport(chunks: readonly string[]): typeof glob
 }
 
 /**
- * Start a pass-through recording server.
+ * Builds a transport that records each request's URL and then delegates to the global fetch.
+ *
+ * @param calls - The recorder that captures each request's URL, in call order
+ * @returns The transport to inject as a provider's `fetch` option
+ */
+export function createRecordingTransport(
+	calls: RecorderInterface<readonly [string]>,
+): typeof globalThis.fetch {
+	return (input, init) => {
+		calls.handler(String(input))
+		return globalThis.fetch(input, init)
+	}
+}
+
+/**
+ * Starts a pass-through recording server.
  *
  * The default upstream is deliberately unreachable so request-shape tests remain
  * hermetic; live service tests pass the selected Ollama host explicitly.

@@ -6,8 +6,8 @@ import { createLiveOllama, RETRY_BUDGET } from '../setupService.js'
 
 // Agent-level structured output (live) — AgentRunOptions.schema (0.0.6) forwards a
 // JSON-Schema shape to the provider's `stream` as ProviderStreamOptions.schema, a
-// per-run structured-output constraint (AGENTS §16: no mocks for the inference
-// boundary). Daemon-probe-proven: schema { city: string, population: number } at
+// per-run structured-output constraint: no mocks for the inference boundary.
+// Daemon-probe-proven: schema { city: string, population: number } at
 // num_predict 64, temperature 0 yields exactly-shaped compact JSON. Warmed, no
 // skipIf.
 
@@ -17,26 +17,24 @@ describe('Agent (live) — run({ schema }) constrains output to the requested JS
 	it(
 		'a { city, population } schema yields content that parses to an object with a string city and numeric population, resolving non-partial',
 		async () => {
-			const attempt = async (): Promise<{
-				readonly content: string
-				readonly partial: boolean
-			}> => {
-				const provider = createLiveOllama({ predict: 64, temperature: 0 })
-				const agent = createAgent(provider, { timeout: TIMEOUT })
-				agent.context.messages.add({ role: 'user', content: 'Give me a city and its population.' })
-				const result = await agent.generate({
-					schema: {
-						type: 'object',
-						properties: { city: { type: 'string' }, population: { type: 'number' } },
-						required: ['city', 'population'],
-					},
-				})
-				return { content: result.content, partial: result.partial }
-			}
-
 			const { content, partial } = await retryUntil(
 				'produce content that parses as JSON under a schema constraint',
-				attempt,
+				async () => {
+					const provider = createLiveOllama({ predict: 64, temperature: 0 })
+					const agent = createAgent(provider, { timeout: TIMEOUT })
+					agent.context.messages.add({
+						role: 'user',
+						content: 'Give me a city and its population.',
+					})
+					const result = await agent.generate({
+						schema: {
+							type: 'object',
+							properties: { city: { type: 'string' }, population: { type: 'number' } },
+							required: ['city', 'population'],
+						},
+					})
+					return { content: result.content, partial: result.partial }
+				},
 				(value) => {
 					try {
 						const parsed: unknown = JSON.parse(value.content)

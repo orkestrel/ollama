@@ -7,7 +7,7 @@
 // `conformance` project in `tests/conformance.test.ts`; this file proves what a real
 // consumer's context assembly puts on the wire.
 
-import type { ContextFormat } from '@orkestrel/agent'
+import type { ContextFormat, Message } from '@orkestrel/agent'
 import {
 	CONVERSATION_RECAP_PREFIX,
 	createAgent,
@@ -23,6 +23,7 @@ import { createBinaryContent, createFile } from '@orkestrel/workspace'
 import { createOllama } from '@src/server'
 import { describe, expect, it } from 'vitest'
 import {
+	createRecordingSummarizer,
 	createThrowingSummarizer,
 	createUserMessage,
 	fillWorkspace,
@@ -41,8 +42,8 @@ import {
 
 const TIMEOUT = 60_000
 
-// A tiny 1x1 transparent PNG, base64-encoded — a hardcoded binary fixture (AGENTS §16.1: fine to
-// hardcode a small deterministic binary payload inline rather than generating one).
+// A tiny 1x1 transparent PNG, base64-encoded — a hardcoded binary fixture: a small
+// deterministic binary payload inline rather than a generated one.
 const TINY_PNG_BASE64 =
 	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
@@ -56,7 +57,7 @@ describe('AgentContext (provider-behavior) — a constraining instruction reache
 			// is irrelevant; the proxy records the REQUEST before forwarding, so we only need the wire
 			// shape. Assertion strategy: the recorded body.messages carries the exact sentinel
 			// instruction text, in a message ordered before the user turn — proving the instructions
-			// section reaches the wire in its canonical position (directive #5's fix for "obeyed").
+			// section reaches the wire in its canonical position.
 			const proxy = await createRecordingProxy()
 			try {
 				const provider = createOllama({
@@ -98,7 +99,7 @@ describe('AgentContext (provider-behavior) — a CUSTOM format still reaches the
 		async () => {
 			// Recipe: { num_predict: 8, temperature: 0 }. Assertion strategy: the provider's format cascade level is applied
 			// by build() and the RENDERED XML group ends up in the request the provider sends —
-			// proving a customized format reaches the wire correctly (directive #5: the framing is
+			// proving a customized format reaches the wire correctly (the framing is
 			// asserted on the wire, not inferred from whether the model "understood" it).
 			const format: ContextFormat = {
 				instructions: {
@@ -201,7 +202,7 @@ describe('Conversation.reference (provider-behavior) — cross-conversation attr
 	// Conversation A is ACTIVE (a one-fact A-context: "we are debugging auth"); a SEPARATE
 	// conversation B's reference() — carrying a B-fact ("the team chose Postgres") — is written
 	// into A's ACTIVE WORKSPACE (the SOLE document context build() folds into the system block).
-	// Assertion strategy (directive #5's conversion): the DETERMINISTIC reference-block content is
+	// Assertion strategy: the DETERMINISTIC reference-block content is
 	// still asserted directly, and the "surfaces + attributes" model-output claim is replaced with a
 	// provider-behavior assertion — the recorded request body the provider sends carries the
 	// reference document text (Postgres + its "planning" provenance label), proving the B-fact and
@@ -269,7 +270,7 @@ describe('Conversation.reference (provider-behavior) — cross-conversation attr
 describe('Conversation.reference (provider-behavior) — cherry-pick ONE relevant message, not the whole history', () => {
 	// B has ~5 short messages, exactly ONE relevant ("the API endpoint is /v2/sync"). We pull ONLY
 	// it via B.search('endpoint') → reference({ messages }) → write into A's active workspace.
-	// Assertion strategy (directive #5's conversion): (1) DETERMINISTICALLY the rendered reference
+	// Assertion strategy: (1) DETERMINISTICALLY the rendered reference
 	// carries only that one message — NOT B's other four (cherry-pick, never a full dump that
 	// re-bloats a small model's context); (2) the "model recalls the endpoint" output claim is
 	// REPLACED with a provider-behavior assertion — the recorded request body carries the
@@ -800,12 +801,10 @@ describe('Conversation.compact() (pure, no daemon) — the two deterministic sur
 	})
 
 	it('compact() on a short conversation is a no-op and never invokes the summarizer', async () => {
-		const invocations = createRecorder<[readonly unknown[]]>()
-		const summarize = async (messages: readonly unknown[]): Promise<string> => {
-			invocations.handler(messages)
-			return 'unused'
-		}
-		const conversation = createConversation({ summarize })
+		const invocations = createRecorder<[readonly Message[]]>()
+		const conversation = createConversation({
+			summarize: createRecordingSummarizer(invocations),
+		})
 		const result = await conversation.compact()
 		expect(result).toBeUndefined()
 		expect(invocations.count).toBe(0)

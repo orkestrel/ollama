@@ -89,13 +89,13 @@
 		"@orkestrel/server": "^0.0.18",
 		"@orkestrel/test": "^0.0.13",
 		"@orkestrel/workspace": "^0.0.7",
-		"@types/node": "^26.4.0",
+		"@types/node": "^26.4.1",
 		"ollama": "0.6.3",
-		"oxfmt": "^0.65.0",
-		"oxlint": "^1.80.0",
+		"oxfmt": "^0.66.0",
+		"oxlint": "^1.81.0",
 		"typescript": "^6.0.3",
 		"vite": "^8.2.2",
-		"vite-plugin-dts": "^5.0.3",
+		"vite-plugin-dts": "^5.1.0",
 		"vitest": "^4.1.11"
 	},
 	"engines": {

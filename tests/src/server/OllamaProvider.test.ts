@@ -404,8 +404,8 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 	})
 
 	// Recipe: a system+user conversation through the proxy. Assertion: provider-
-	// behavior — the FULL ordered conversation rides the wire (not just the last
-	// message) — a provider-behavior replacement for the model-obedience "system →
+	// behavior — the FULL ordered conversation rides the wire (not the last
+	// message alone) — a provider-behavior replacement for the model-obedience "system →
 	// blue" test, which asserted MODEL behavior (forbidden by doctrine).
 	// bounded by abort-once-recorded, no generation awaited.
 	it('sends the whole conversation (system + user) in order on the wire', async () => {

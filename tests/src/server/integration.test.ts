@@ -206,7 +206,7 @@ describe('Conversation.reference (provider-behavior) — cross-conversation attr
 	// still asserted directly, and the "surfaces + attributes" model-output claim is replaced with a
 	// provider-behavior assertion — the recorded request body the provider sends carries the
 	// reference document text (Postgres + its "planning" provenance label), proving the B-fact and
-	// its attribution reach the wire via the active workspace framing (no dependency on whether the
+	// its attribution reach the wire through the active workspace framing (no dependency on whether the
 	// model then repeats it correctly).
 
 	it(
@@ -269,7 +269,7 @@ describe('Conversation.reference (provider-behavior) — cross-conversation attr
 
 describe('Conversation.reference (provider-behavior) — cherry-pick ONE relevant message, not the whole history', () => {
 	// B has ~5 short messages, exactly ONE relevant ("the API endpoint is /v2/sync"). We pull ONLY
-	// it via B.search('endpoint') → reference({ messages }) → write into A's active workspace.
+	// it through B.search('endpoint') → reference({ messages }) → write into A's active workspace.
 	// Assertion strategy: (1) DETERMINISTICALLY the rendered reference
 	// carries only that one message — NOT B's other four (cherry-pick, never a full dump that
 	// re-bloats a small model's context); (2) the "model recalls the endpoint" output claim is
@@ -703,7 +703,7 @@ describe('AgentContext workspaces (hermetic provider behavior) — large-context
 	it(
 		'image files are not fenced as text',
 		async () => {
-			// Recipe: FAST_OPTIONS. One text file + one image file (seated via the workspace
+			// Recipe: FAST_OPTIONS. One text file + one image file (seated through the workspace
 			// constructor `seed` — the only way to seat a non-text/binary file per
 			// WorkspaceOptions.seed's documented contract) are placed in the active workspace. The text file's content must
 			// fence into the system block; the image's base64 payload must never appear as fenced

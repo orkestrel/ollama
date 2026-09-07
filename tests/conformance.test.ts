@@ -80,9 +80,9 @@ describe('official ollama type parity (compile-time gate)', () => {
 	})
 
 	// --- Response-read parity ---------------------------------------------------
-	// Every field our provider READS via @orkestrel/contract guards on `unknown`,
+	// Every field our provider READS through @orkestrel/contract guards on `unknown`,
 	// declared locally here (there is no src type for it) and checked against the
-	// official ChatResponse/Message/ToolCall shapes as currently installed.
+	// official ChatResponse/Message/ToolCall shapes as installed.
 
 	interface ReadChatResponse {
 		readonly message: {
@@ -121,7 +121,7 @@ describe('official ollama type parity (compile-time gate)', () => {
 		>()
 	})
 
-	// The provider reads `arguments` as `unknown` and narrows it via
+	// The provider reads `arguments` as `unknown` and narrows it through
 	// `@orkestrel/contract` guards at runtime — the safe compile-time direction is
 	// that whatever the official (loosely-typed) response actually contains is
 	// assignable into our conservative `unknown` read type, not the reverse.

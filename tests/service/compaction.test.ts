@@ -201,7 +201,7 @@ describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues
 			expect(best.result.partial).toBe(false)
 			// (c) The emitted `tool` chunk(s) from the SAME run carry [call, result] shape — the
 			// call names the registered tool, and its result is defined (never dropped) — proving
-			// the tool-chunk payload the agent stream emits, not just the eventual final answer.
+			// the tool-chunk payload the agent stream emits, not the eventual final answer alone.
 			expect(best.tools.length).toBeGreaterThan(0)
 			for (const driven of best.tools) {
 				expect(driven.call.name).toBe('lookup_code')

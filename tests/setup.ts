@@ -60,7 +60,7 @@ export function buildTurns(count: number): readonly Message[] {
 // rather than a successful digest. Matches `ConversationSummaryHandler` from
 // `@orkestrel/agent`: `(messages: readonly Message[]) => Promise<string>`.
 
-/** The message every {@link createThrowingSummarizer} invocation rejects with, by default. */
+/** Names the message every {@link createThrowingSummarizer} invocation rejects with, by default. */
 export const THROWING_SUMMARIZER_MESSAGE = 'throwing-summarizer-always-fails'
 
 /**
@@ -79,7 +79,7 @@ export function createThrowingSummarizer(
 	}
 }
 
-/** The digest every {@link createRecordingSummarizer} invocation resolves with, by default. */
+/** Names the digest every {@link createRecordingSummarizer} invocation resolves with, by default. */
 export const RECORDING_SUMMARIZER_DIGEST = 'recording-summarizer-digest'
 
 /**
@@ -108,7 +108,7 @@ export function createRecordingSummarizer(
 // randomness, fixed filler prose, so a workspace-driven test (context budget,
 // document listing) is reproducible run to run.
 
-/** Tuning for {@link fillWorkspace} — all optional. */
+/** Represents the tuning {@link fillWorkspace} accepts — all optional. */
 export interface FillWorkspaceOptions {
 	/** How many `doc-NN.md` files to write; defaults to `12`. */
 	readonly count?: number
@@ -120,7 +120,7 @@ export interface FillWorkspaceOptions {
 	readonly sentinelText?: string
 }
 
-/** The fixed sentence {@link fillWorkspace} repeats to fill each generated document. */
+/** Names the fixed sentence {@link fillWorkspace} repeats to fill each generated document. */
 export const FILLER_SENTENCE =
 	'The quick brown fox jumps over the lazy dog and rests beneath the old oak tree. '
 

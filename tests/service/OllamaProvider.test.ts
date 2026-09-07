@@ -145,7 +145,7 @@ describe('OllamaProvider (live — generate)', () => {
 		expect(result.content).not.toContain('</think>')
 	})
 
-	// Recipe: 'What is 2+2? Reply with just the number.' / inline
+	// Recipe: `'What is 2+2? Reply with just the number.'` / inline
 	// { num_predict: 768, temperature: 0 } / think:true. Calibration note: at
 	// temperature:0 a retry replays the SAME trace on a given host, so the prompt —
 	// not the budget — must guarantee the trace closes: compliance-style prompts

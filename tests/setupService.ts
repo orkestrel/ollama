@@ -3,13 +3,13 @@ import { isRecord, isString } from '@orkestrel/contract'
 import { createOllama, OllamaProvider } from '@src/server'
 import { env, withScheme } from './setupServer.js'
 
-/** The live daemon and model selected for the service axis. */
+/** Names the live daemon and model selected for the service axis. */
 export const OLLAMA_CONFIG = Object.freeze({
 	host: withScheme(env('OLLAMA_HOST', 'http://localhost:11434')),
 	model: env('OLLAMA_MODEL', 'qwen3.5:2b-q4_K_M'),
 })
 
-/** Tuning for a live Ollama test provider. */
+/** Represents the tuning a live Ollama test provider accepts. */
 export interface LiveProviderOptions {
 	/** The Ollama `num_predict` cap; defaults to `32`. */
 	readonly predict?: number
@@ -20,7 +20,7 @@ export interface LiveProviderOptions {
 }
 
 /**
- * Build a concrete provider against the selected live daemon and warmed model.
+ * Builds a concrete provider against the selected live daemon and warmed model.
  *
  * @param options - Optional prediction, temperature, and framing overrides
  * @returns A concrete provider configured for the service axis
@@ -35,7 +35,7 @@ export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider 
 }
 
 /**
- * Build a live summarizer for conversation-compaction scenarios.
+ * Builds a live summarizer for conversation-compaction scenarios.
  *
  * The fixed summarization instruction is appended as the final user turn because a
  * reasoning chat model may treat a prompt ending on an assistant turn as already
@@ -71,7 +71,7 @@ export function createLiveSummarizer(
 }
 
 /**
- * Seed a conversation with the fixed trip-planning exchange compaction round-trips fold.
+ * Seeds a conversation with the fixed trip-planning exchange compaction round-trips fold.
  *
  * The seeded turns are long enough that a one-sentence digest is measurably shorter, so a
  * post-compaction `view()` is provably smaller than the seeded one.
@@ -94,7 +94,7 @@ export function seedConversation(conversation: ConversationInterface): void {
 }
 
 /**
- * Check that the daemon answers and reports the selected model as installed.
+ * Checks whether the daemon answers and reports the selected model as installed.
  *
  * @returns `true` only when `/api/tags` succeeds and includes the configured model
  */
@@ -118,7 +118,7 @@ export async function isOllamaReady(): Promise<boolean> {
 }
 
 /**
- * Warm the selected model with a one-token chat request.
+ * Warms the selected model with a one-token chat request.
  *
  * @returns A promise that resolves after the response body has been drained
  * @throws When the daemon cannot be reached or rejects the warmup
@@ -153,26 +153,26 @@ export async function warmOllama(): Promise<void> {
 	await response.text()
 }
 
-/** Content and usage round-trips. */
+/** Names the request options for content and usage round-trips. */
 export const FAST_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0 })
 
-/** Multi-delta streaming round-trips. */
+/** Names the request options for multi-delta streaming round-trips. */
 export const STREAM_OPTIONS = Object.freeze({ num_predict: 16, temperature: 0 })
 
-/** Tool-call round-trips. */
+/** Names the request options for tool-call round-trips. */
 export const TOOL_OPTIONS = Object.freeze({ num_predict: 32, temperature: 0 })
 
-/** Mid-stream abort and deadline round-trips. */
+/** Names the request options for mid-stream abort and deadline round-trips. */
 export const ABORT_OPTIONS = Object.freeze({ num_predict: 64, temperature: 0 })
 
-/** Seeded deterministic round-trips. */
+/** Names the request options for seeded deterministic round-trips. */
 export const SEED_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0, seed: 42 })
 
-/** Native-thinking round-trips. */
+/** Names the request options for native-thinking round-trips. */
 export const THINK_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0 })
 
 /**
- * The elapsed-time bound every live retry gives the `retryUntil` helper, in milliseconds.
+ * Names the elapsed-time bound every live retry gives the `retryUntil` helper, in milliseconds.
  *
  * @remarks A live attempt is a real generation, so the shipped default budget of 1000 ms would
  * cut a bounded retry short after its first attempt. This value matches the `service` project's
@@ -181,7 +181,7 @@ export const THINK_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0 })
  */
 export const RETRY_BUDGET = 120_000
 
-/** Two-turn tool-loop request recipe. */
+/** Names the request options for the two-turn tool-loop recipe. */
 export const TOOL_LOOP_OPTIONS = Object.freeze({ num_predict: 64, temperature: 0 })
 
 if (!(await isOllamaReady())) {

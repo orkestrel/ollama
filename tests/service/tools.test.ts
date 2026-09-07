@@ -436,7 +436,7 @@ describe('Agent tool loop (live) — a single turn carries multiple tool calls',
 					await driveAgent(stream)
 					// The provider replays each requested turn as a stored assistant message
 					// carrying its `calls` — a message with 2+ calls proves a SINGLE turn
-					// dispatched multiple tool calls together (structurally observable via the
+					// dispatched multiple tool calls together (structurally observable through the
 					// conversation store, not inferred from ordering).
 					const multiCallTurn = agent.context.messages
 						.messages()

@@ -65,7 +65,7 @@ describe('createOllama (live)', () => {
 	})
 	it('the transport seam (a headers hook) does not break the real daemon path', async () => {
 		// Recipe: FAST_OPTIONS. The transport seam is orthogonal to the wire: a dynamic header the real
-		// Ollama simply ignores must still produce a normal generation against the live daemon —
+		// Ollama ignores must still produce a normal generation against the live daemon —
 		// proof the header-merge doesn't perturb the actual request path.
 		const provider = createOllama({
 			model: OLLAMA_CONFIG.model,

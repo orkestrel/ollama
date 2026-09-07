@@ -14,7 +14,7 @@ import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
 import { createTool } from '@orkestrel/tool'
 
-/** Weather function definition shared by provider wire and live tool-call tests. */
+/** Defines the weather function shared by provider wire and live tool-call tests. */
 export const WEATHER_TOOL: ToolDefinition = Object.freeze({
 	name: 'get_weather',
 	description: 'Get the current weather for a city.',
@@ -25,7 +25,7 @@ export const WEATHER_TOOL: ToolDefinition = Object.freeze({
 	},
 })
 
-/** One request captured by a recording proxy. */
+/** Represents one request captured by a recording proxy. */
 export interface RecordedRequest {
 	readonly method: string
 	readonly path: string
@@ -33,69 +33,69 @@ export interface RecordedRequest {
 	readonly body: Record<string, unknown>
 }
 
-/** A running recording proxy. */
+/** Represents a running recording proxy. */
 export interface RecordingProxyInterface {
 	readonly url: string
 	readonly requests: readonly RecordedRequest[]
 	stop(): Promise<void>
 }
 
-/** Parse a JSON request body when it is a record. */
+/** Parses a JSON request body when it is a record. */
 export function parseRequestBody(text: string): Record<string, unknown> | undefined {
 	return parseJSONAs(text, isRecord)
 }
 
-/** Minimal message shape recorded from the provider wire. */
+/** Represents the minimal message shape recorded from the provider wire. */
 export interface WireMessage {
 	readonly role: string
 	readonly content: string
 	readonly images?: readonly string[]
 }
 
-/** Narrow an unknown value to a recorded wire message. */
+/** Narrows an unknown value to a recorded wire message. */
 export function isWireMessage(value: unknown): value is WireMessage {
 	if (!isRecord(value) || !isString(value.role) || !isString(value.content)) return false
 	return value.images === undefined || arrayOf(isString)(value.images)
 }
 
-/** Narrow a captured request's messages, returning an empty collection when malformed. */
+/** Narrows a captured request's messages, returning an empty collection when malformed. */
 export function wireMessages(request: RecordedRequest): readonly WireMessage[] {
 	const { messages } = request.body
 	return arrayOf(isWireMessage)(messages) ? messages : []
 }
 
-/** Join every captured message's content. */
+/** Joins every captured message's content. */
 export function wireText(request: RecordedRequest): string {
 	return wireMessages(request)
 		.map((message) => message.content)
 		.join('\n')
 }
 
-/** Minimal function tool shape recorded from the provider wire. */
+/** Represents the minimal function tool shape recorded from the provider wire. */
 export interface WireTool {
 	readonly function: {
 		readonly name: string
 	}
 }
 
-/** Narrow an unknown value to a recorded function tool. */
+/** Narrows an unknown value to a recorded function tool. */
 export function isWireTool(value: unknown): value is WireTool {
 	return isRecord(value) && isRecord(value.function) && isString(value.function.name)
 }
 
-/** Return the function names advertised on a captured provider request. */
+/** Returns the function names advertised on a captured provider request. */
 export function wireTools(request: RecordedRequest): readonly string[] {
 	const { tools } = request.body
 	return arrayOf(isWireTool)(tools) ? tools.map((tool) => tool.function.name) : []
 }
 
-/** Return the leading system message, when present. */
+/** Returns the leading system message, when present. */
 export function systemText(request: RecordedRequest): string {
 	const [first] = wireMessages(request)
 	return first !== undefined && first.role === 'system' ? first.content : ''
 }
 
-/** Clone forwarding headers while removing connection-specific values. */
+/** Clones forwarding headers while removing connection-specific values. */
 export function forwardHeaders(headers: Headers): Headers {
 	const forwarded = new Headers(headers)
 	forwarded.delete('host')
@@ -103,15 +103,15 @@ export function forwardHeaders(headers: Headers): Headers {
 	return forwarded
 }
 
-/** Narrow a fetch rejection to an abort error. */
+/** Narrows a fetch rejection to an abort error. */
 export function isAbortError(error: unknown): error is Error {
 	return error instanceof Error && error.name === 'AbortError'
 }
 
-/** The rejection message a refusing transport reports in place of a network failure. */
+/** Names the rejection message a refusing transport reports in place of a network failure. */
 export const REFUSED_TRANSPORT_MESSAGE = 'fetch failed'
 
-/** A transport that refuses every request after recording the signal it rode. */
+/** Represents a transport that refuses every request after recording the signal it rode. */
 export interface RefusingTransportInterface {
 	/** The abort signal each issued request carried, in call order. */
 	readonly signals: readonly AbortSignal[]
@@ -237,7 +237,7 @@ export async function createRecordingProxy(
 	}
 }
 
-/** Wait until a recording proxy has captured the requested number of calls. */
+/** Waits until a recording proxy has captured the requested number of calls. */
 export async function waitForRequest(
 	proxy: RecordingProxyInterface,
 	count = 1,
@@ -250,7 +250,7 @@ export async function waitForRequest(
 	)
 }
 
-/** Drive a provider stream to completion and capture deltas plus its returned result. */
+/** Drives a provider stream to completion and captures deltas plus its returned result. */
 export async function drive(generator: AsyncGenerator<ProviderDelta, ProviderResult>): Promise<{
 	readonly deltas: readonly string[]
 	readonly thoughts: readonly string[]
@@ -266,14 +266,14 @@ export async function drive(generator: AsyncGenerator<ProviderDelta, ProviderRes
 	}
 }
 
-/** Read a non-empty environment variable, or return its fallback. */
+/** Reads a non-empty environment variable, or returns its fallback. */
 export function env(name: string, fallback: string): string {
 	const value = process.env[name]
 	return value !== undefined && value.length > 0 ? value : fallback
 }
 
 /**
- * Normalize an Ollama-style host value to an absolute HTTP URL.
+ * Normalizes an Ollama-style host value to an absolute HTTP URL.
  *
  * @param value - The host value, with or without an HTTP scheme
  * @returns The absolute HTTP URL
@@ -286,13 +286,13 @@ export function withScheme(value: string): string {
 	return value.startsWith('http://') || value.startsWith('https://') ? value : `http://${value}`
 }
 
-/** A driven tool-call chunk paired with its execution result. */
+/** Represents a driven tool-call chunk paired with its execution result. */
 export interface DrivenTool {
 	readonly call: ToolCall
 	readonly result: ToolResult
 }
 
-/** Drain an agent stream and bucket every observable chunk. */
+/** Drains an agent stream and buckets every observable chunk. */
 export async function driveAgent(stream: AgentStreamInterface): Promise<{
 	readonly tokens: readonly string[]
 	readonly thoughts: readonly string[]
@@ -314,7 +314,7 @@ export async function driveAgent(stream: AgentStreamInterface): Promise<{
 	return { tokens, thoughts, tools, usages, result }
 }
 
-/** Build an in-process agent stream over deterministic chunks. */
+/** Builds an in-process agent stream over deterministic chunks. */
 export function createScriptedAgentStream(
 	chunks: readonly AgentChunk[],
 	result: AgentResult,
@@ -328,10 +328,10 @@ export function createScriptedAgentStream(
 	}
 }
 
-/** Distinctive datum returned by the lookup tool fixture. */
+/** Names the distinctive datum the lookup tool fixture returns. */
 export const LOOKUP_DATUM = 'drizzle-42'
 
-/** Build the deterministic lookup tool shared by service and wire-shape tests. */
+/** Builds the deterministic lookup tool shared by service and wire-shape tests. */
 export function createLookupTool(
 	recorder?: RecorderInterface<[Readonly<Record<string, unknown>>]>,
 ): ToolInterface {
@@ -350,10 +350,10 @@ export function createLookupTool(
 	})
 }
 
-/** Error message thrown by the failing tool fixture. */
+/** Names the error message the failing tool fixture throws. */
 export const THROWING_TOOL_MESSAGE = 'throwing-tool-always-fails'
 
-/** Build a tool that records its call and then fails. */
+/** Builds a tool that records its call and then fails. */
 export function createThrowingTool(
 	recorder?: RecorderInterface<[Readonly<Record<string, unknown>>]>,
 ): ToolInterface {
@@ -368,15 +368,15 @@ export function createThrowingTool(
 	})
 }
 
-/** Number of chunks exposed by the sustained-pressure tool fixture. */
+/** Names how many chunks the sustained-pressure tool fixture exposes. */
 export const INSATIABLE_TOOL_CHUNKS = 12
 
-/** Build the progress text returned by a sustained-pressure tool call. */
+/** Builds the progress text a sustained-pressure tool call returns. */
 export function insatiableResult(n: number): string {
 	return `Chunk ${n} of ${INSATIABLE_TOOL_CHUNKS} received. The data is incomplete. You MUST call the more tool again now to get chunk ${n + 1}.`
 }
 
-/** Build a stateful tool that keeps requesting another tool turn. */
+/** Builds a stateful tool that keeps requesting another tool turn. */
 export function createInsatiableTool(
 	recorder?: RecorderInterface<[Readonly<Record<string, unknown>>]>,
 ): ToolInterface {

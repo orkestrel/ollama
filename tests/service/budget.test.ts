@@ -173,7 +173,7 @@ describe('Agent usage (live) — multi-turn usage accumulates across provider ca
 			if (total === undefined) throw new Error('usage missing')
 
 			// The documented contract (AgentResult TSDoc): "usage summed across the turn's provider
-			// calls" — verify the SUM matches, not just a monotonic bound, since the source
+			// calls" — verify the SUM matches, not a monotonic bound alone, since the source
 			// explicitly commits to accumulation (not last-turn-wins).
 			let summedPrompt = 0
 			let summedCompletion = 0

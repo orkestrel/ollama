@@ -45,7 +45,7 @@ export function mapMessages(messages: readonly Message[]): WireChatRequest['mess
 }
 
 /**
- * Builds a provider result from a turn's content, reasoning, tool calls, and usage.
+ * Builds a `ProviderResult` from a turn's content, reasoning, tool calls, and usage.
  *
  * @remarks
  * Only the present optionals are set: no empty `thinking`, no empty `tools`, and no
@@ -121,11 +121,12 @@ export function extractThinking(record: Readonly<Record<string, unknown>>): stri
 }
 
 /**
- * Joins a call's two reasoning carriers into the result's `thinking`.
+ * Joins a call's reasoning carriers — the splitter's separated in-content spans and the
+ * accumulated wire-side `message.thinking` — into the result's `thinking`.
  *
  * @param splitter - The per-call splitter holding the separated in-content spans
  * @param wired - The accumulated wire-side `message.thinking` text
- * @returns The two carriers separated by a blank line, or whichever one is non-empty
+ * @returns The carriers separated by a blank line, or whichever one is non-empty
  *
  * @example
  * ```ts

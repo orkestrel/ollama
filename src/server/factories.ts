@@ -10,36 +10,43 @@ import { OllamaProvider } from './OllamaProvider.js'
  * @remarks
  * Only `model` is required; `url` defaults to the local daemon, `keepAlive` to `'5m'`,
  * `timeout` to `120_000`ms, and `options` is forwarded verbatim as sampling
- * parameters (`temperature`, `seed`, and `num_predict`). Both calls take an
+ * parameters (`temperature`, `seed`, and `num_predict`). Each call takes an
  * `AbortSignal` to bound the request; a `stream` cancelled mid-flight throws a
  * `ProviderAbortError` carrying the partial result.
  *
  * The optional `fetch` + `headers` form a transport seam (see {@link OllamaOptions}):
  * point `url` at your own server, inject a custom `fetch`, and have `headers` attach a
  * generated/obfuscated bearer token your server validates — so a browser runtime
- * reaches the LLM through your middleware WITHOUT this library ever handling the real API
+ * reaches the LLM through your middleware without this library ever handling the real API
  * key. Both omitted ⇒ the global `fetch` and only a JSON content type.
  *
- * The optional `format` is the provider's context-framing default — the PROVIDER-DEFAULT
+ * The optional `format` is the provider's context-framing default — the provider-default
  * level of `AgentContext`'s format cascade (beaten by a manager-options or per-item
  * override, beating the managers' built-in framing), declaring how this
  * provider's models prefer context sections framed (for example XML group wrappers vs. Markdown
- * headers). It is EXPOSED on the provider for the Agent's `build()` and is NOT Ollama's
- * `/api/chat` `format` wire parameter (structured output) — the two are unrelated despite
- * the shared word. Omitted ⇒ the provider is framing-agnostic (core's built-in defaults).
+ * headers). It is exposed on the provider for the Agent's `build()` and is not Ollama's
+ * `/api/chat` `format` wire parameter (structured output) — the framing default and that
+ * wire parameter are unrelated despite the shared word. Omitted ⇒ the provider is
+ * framing-agnostic (core's built-in defaults).
  *
  * @param options - `model` (required), and optional `url` / `keepAlive` / `timeout` /
  *   `options` / `fetch` / `headers` / `format` (see {@link OllamaOptions})
  * @returns A working {@link ProviderInterface} backed by Ollama
  *
- * @example
+ * @example createOllama + generate
  * ```ts
  * import { createAbort } from '@orkestrel/abort'
  * import { createOllama } from '@orkestrel/ollama'
  *
- * const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M' })
+ * const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M', options: { temperature: 0 } })
  * const abort = createAbort()
+ * const messages = [
+ * 	{ id: '1', role: 'user', content: 'Summarize the release notes for version 2.0.' },
+ * ] as const
+ *
  * const result = await provider.generate(messages, abort.signal)
+ * console.log(result.content)
+ * if (result.usage) charge(result.usage) // fold into a token budget
  * ```
  *
  * @example

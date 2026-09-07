@@ -30,7 +30,9 @@ export interface OllamaResponse {
  * `ChatRequest` by the compile-time parity test; `src/` never imports `ollama` itself.
  * `messages` mirrors the minimal turn shape `mapMessages` builds (`role` / `content`, plus
  * `tool_calls` only on a turn that replays them and `images` only on a multimodal
- * turn); `options` and `tools` are only present when configured.
+ * turn); `options` and `tools` are only present when configured. `format` carries the
+ * `/api/chat` structured-output constraint, forwarded verbatim from the per-call
+ * `ProviderStreamOptions.schema` and absent when no schema is supplied.
  */
 export interface WireChatRequest {
 	readonly model: string

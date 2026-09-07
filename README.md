@@ -1,9 +1,15 @@
 # @orkestrel/ollama
 
-A typed local-LLM provider for the `@orkestrel` line — a `ProviderInterface`
-implementation over a local Ollama daemon's `POST /api/chat`, with NDJSON
-streaming, tool calls, thinking, and usage accounting, built on pure
-web-standard `fetch` / `ReadableStream` (no Ollama SDK dependency).
+> A typed local-LLM provider for the `@orkestrel` line: a `ProviderInterface` over a
+> local Ollama daemon's `POST /api/chat`, with non-streaming `generate`, NDJSON
+> `stream`, tool calls, thinking, and usage accounting, built on web-standard `fetch`
+> and `ReadableStream` with no Ollama SDK dependency.
+
+Create a provider with the `createOllama` function, hand it a conversation and a
+bounding `AbortSignal`, and read the assembled `ProviderResult` the `generate`
+method resolves — or drive the `stream` method for live deltas. Point `url` at your
+own server and attach a short-lived token through `headers` where a browser runtime
+must not hold the real key.
 
 ## Install
 

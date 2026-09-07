@@ -155,6 +155,24 @@ export class OllamaProvider implements ProviderInterface {
 		return this.#format
 	}
 
+	/**
+	 * Generates one complete turn and resolves the assembled result — the clean content,
+	 * any separated reasoning, any tool calls, and any usage the wire reported.
+	 *
+	 * @remarks
+	 * Sends `stream: false` and parses one JSON body. Content routes through a per-call
+	 * think splitter, so the assembled content stays clean even where the daemon renders a
+	 * thinking model's reasoning inline; the separated spans and any daemon-side
+	 * `message.thinking` land on `thinking`. The caller's signal and the armed deadline
+	 * both cancel the request, and the deadline is cleared once the body is read.
+	 *
+	 * @param messages - The conversation turns to send
+	 * @param signal - The caller's bounding signal, folded with the armed deadline
+	 * @param tools - The callable tools to advertise for this turn, when the caller passes any
+	 * @param options - The per-call overrides, `think` and `schema` among them
+	 * @returns The assembled result of the turn
+	 * @throws {@link OllamaHTTPError} When the daemon answers a non-OK status.
+	 */
 	async generate(
 		messages: readonly Message[],
 		signal: AbortSignal,
@@ -179,6 +197,25 @@ export class OllamaProvider implements ProviderInterface {
 		}
 	}
 
+	/**
+	 * Streams one turn, yielding a channel-tagged delta per non-empty content or reasoning
+	 * span and returning the assembled result when the stream completes.
+	 *
+	 * @remarks
+	 * Sends `stream: true` and consumes NDJSON — one JSON object per newline-terminated
+	 * line — pairing a streaming `TextDecoder` with the `NDJSONParser` so a record split
+	 * across byte reads is reassembled. The returned result's content is the splitter's
+	 * clean accumulation, beside any tool calls collected across lines and the usage the
+	 * `done` line carries. A cancel mid-flight throws a `ProviderAbortError` carrying the
+	 * partial assembled so far.
+	 *
+	 * @param messages - The conversation turns to send
+	 * @param signal - The caller's bounding signal, folded with the armed deadline
+	 * @param tools - The callable tools to advertise for this turn, when the caller passes any
+	 * @param options - The per-call overrides, `think` and `schema` among them
+	 * @returns The assembled result of the turn, after the last delta
+	 * @throws {@link OllamaHTTPError} When the daemon answers a non-OK status or a `null` body.
+	 */
 	async *stream(
 		messages: readonly Message[],
 		signal: AbortSignal,

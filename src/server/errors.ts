@@ -13,7 +13,8 @@ import type { OllamaHTTPErrorOptions } from './types.js'
  * HTTP response was received at all, for example a `null` body). Thrown by
  * {@link OllamaProvider} at its HTTP failure sites — the non-OK status branch and the
  * null-body branch — so a caller can branch on `error.code` and read `error.status`
- * for the HTTP number instead of parsing the message. Narrow a caught value with
+ * for the HTTP number instead of parsing the message. The message carries a body excerpt
+ * bounded to {@link MAX_ERROR_BODY_LENGTH} — `2048` characters. Narrow a caught value with
  * {@link isOllamaHTTPError}.
  *
  * @example
@@ -44,6 +45,10 @@ export class OllamaHTTPError extends Error {
 
 /**
  * Checks whether a value is an {@link OllamaHTTPError}.
+ *
+ * @remarks
+ * The check is an `instanceof` test, so it narrows a caught `unknown` to the error class
+ * without parsing the thrown message.
  *
  * @param value - The value to test
  * @returns True if `value` is an `OllamaHTTPError`; false otherwise

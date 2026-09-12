@@ -62,7 +62,7 @@ import { OllamaProvider } from './OllamaProvider.js'
  *
  * @example
  * Declare a context-framing default — wrap the instructions section in an XML group (the
- * provider-default level of `AgentContext`'s cascade; NOT the wire `format`):
+ * provider-default level of `AgentContext`'s cascade; not the wire `format`):
  * ```ts
  * const provider = createOllama({
  *   model: 'qwen3.5:2b-q4_K_M',

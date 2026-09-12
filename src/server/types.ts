@@ -61,7 +61,7 @@ export interface WireChatRequest {
 	}>
 	/**
 	 * Holds the `/api/chat` structured-output constraint — a JSON-Schema object forwarded
-	 * verbatim from the per-call `ProviderStreamOptions.schema`. This is NOT
+	 * verbatim from the per-call `ProviderStreamOptions.schema`. This is not
 	 * `OllamaOptions.format` (the unrelated prompt-context framing); only present
 	 * when a call supplies a `schema`.
 	 */
@@ -79,8 +79,8 @@ export interface WireChatRequest {
  *
  * The optional `fetch` + `headers` form a **transport seam**: by default the provider
  * talks straight to a local daemon over `globalThis.fetch` with only a JSON content
- * type, but a browser-side runtime can inject a custom transport AND a dynamic header
- * (for example an obfuscated bearer token) so requests route through the developer's OWN
+ * type, but a browser-side runtime can inject both a custom transport and a dynamic header
+ * (for example an obfuscated bearer token) so requests route through the developer's own
  * server, which validates that header and forwards to the real LLM. Your app never
  * holds a real API key — the real key lives only on the developer's server; the
  * `headers` hook supplies whatever short-lived/obfuscated token that server expects.
@@ -105,12 +105,12 @@ export interface OllamaOptions {
 	readonly options?: Readonly<Record<string, unknown>>
 	/**
 	 * Sets the `/api/chat` `think` wire flag; defaults to `false`. When `true`, a thinking-capable
-	 * model (for example `qwen3`) separates its reasoning NATIVELY at the wire — the daemon returns it
+	 * model (for example `qwen3`) separates its reasoning natively at the wire — the daemon returns it
 	 * on the distinct `message.thinking` channel (surfaced on `ProviderResult.thinking`) rather
 	 * than inline in `message.content`. The default is `false`, so a non-thinking model needs no
 	 * configuration and answers immediately; the per-call ThinkSplitter
 	 * remains the defensive fallback for daemons/models that still inline `<think>` tags either
-	 * way. Set it `true` for a thinking model whose reasoning you intend to DISPLAY separately.
+	 * way. Set it `true` for a thinking model whose reasoning you intend to display separately.
 	 */
 	readonly think?: boolean
 	/**
@@ -125,7 +125,7 @@ export interface OllamaOptions {
 	 * headers are merged into the request on top of the base `Content-Type`. Use it to
 	 * attach an authorization header — for example an obfuscated/generated bearer token the
 	 * developer's server validates before relaying to the real LLM — so a browser
-	 * runtime can authenticate WITHOUT your app ever handling a real API key. Async so a
+	 * runtime can authenticate without your app ever handling a real API key. Async so a
 	 * token can be refreshed/fetched per call. A returned `Content-Type` overrides the
 	 * default; other headers add to it. Omitted ⇒ only `Content-Type: application/json`.
 	 */
@@ -133,12 +133,12 @@ export interface OllamaOptions {
 		| Readonly<Record<string, string>>
 		| Promise<Readonly<Record<string, string>>>
 	/**
-	 * Sets the provider's OPTIONAL context-framing default — the PROVIDER-DEFAULT level of
+	 * Sets the provider's optional context-framing default — the provider-default level of
 	 * `AgentContext`'s format cascade (beaten by a manager-options or per-item override,
 	 * beating the managers' built-in framing). Declares how this provider's models prefer
 	 * context sections framed (for example XML group wrappers vs. Markdown headers). Omitted ⇒
-	 * the provider is framing-agnostic and core's built-in defaults apply unchanged. NOTE:
-	 * this is the prompt-CONTEXT framing consumed by `AgentContext.build()` — it is NOT
+	 * the provider is framing-agnostic and core's built-in defaults apply unchanged. This
+	 * is the prompt-context framing consumed by `AgentContext.build()` — it is not
 	 * Ollama's `/api/chat` `format` wire parameter (structured-output / JSON schema),
 	 * which this provider sends only when a call supplies a `schema`; the two are unrelated
 	 * despite the shared word.

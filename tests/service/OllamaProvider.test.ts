@@ -153,7 +153,7 @@ describe('OllamaProvider (live — generate)', () => {
 	// loop that consumed a 768 budget without landing content, while trivial
 	// arithmetic closes in a few dozen thinking tokens on every observed host (do
 	// not shrink the budget toward THINK_OPTIONS-scale; it will go vacuous again,
-	// per the sibling case above where content "may be empty"). Assertion:
+	// per the preceding sibling case where content "may be empty"). Assertion:
 	// structural — thinking non-empty, content non-empty (the think→content
 	// transition seam: the model finished reasoning and the answer landed in the
 	// CONTENT channel, not lost or misrouted), and content does not contain the

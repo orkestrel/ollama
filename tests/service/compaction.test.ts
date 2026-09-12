@@ -223,7 +223,7 @@ describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIP
 	// Assertion strategy: STRUCTURAL only.
 	const summarize = createLiveSummarizer(TIMEOUT)
 
-	// The forced tool call (the proven reliable pattern from the block above): a no-arg lookup the
+	// The forced tool call (the proven reliable pattern from the preceding block): a no-arg lookup the
 	// system prompt MANDATES, returning a sentinel the model cannot derive — so a final answer that
 	// states it could only come THROUGH the compacted context. keep: 1 retains the most recent message
 	// verbatim across each fold so the run never loses its immediate footing.

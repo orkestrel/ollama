@@ -1,14 +1,15 @@
 // Ollama constants — the provider's defaults.
 
 /**
- * Names the local Ollama daemon base URL assumed when `OllamaOptions.url` is omitted,
- * `'http://localhost:11434'`.
+ * Names the local Ollama daemon base URL, `'http://localhost:11434'`, assumed when
+ * `OllamaOptions.url` is omitted.
  */
 export const DEFAULT_OLLAMA_URL = 'http://localhost:11434'
 
 /**
- * Names how long the model stays resident after a call when `OllamaOptions.keepAlive` is
- * omitted, `'5m'` — Ollama's own `keep_alive` default, expressed as a duration string.
+ * Names how long the model stays resident after a call — `'5m'` when
+ * `OllamaOptions.keepAlive` is omitted, Ollama's own `keep_alive` default, expressed as a
+ * duration string.
  *
  * @remarks
  * The name mirrors the Ollama `/api/chat` `keep_alive` field this value is sent as, so
@@ -17,14 +18,14 @@ export const DEFAULT_OLLAMA_URL = 'http://localhost:11434'
 export const DEFAULT_KEEP_ALIVE = '5m'
 
 /**
- * Names the per-call deadline in milliseconds when `OllamaOptions.timeout` is omitted,
- * `120_000` — generous enough that a cold model load does not trip it.
+ * Names the per-call deadline in milliseconds, `120_000`, when `OllamaOptions.timeout` is
+ * omitted — generous enough that a cold model load does not trip it.
  */
 export const DEFAULT_PROVIDER_TIMEOUT = 120_000
 
 /**
- * Names the cap, in characters, on how much of a non-OK response body is
- * incorporated into a thrown {@link OllamaHTTPError}'s message, `2048`.
+ * Names the character cap, `2048`, on how much of a non-OK response body is
+ * incorporated into a thrown {@link OllamaHTTPError}'s message.
  *
  * @remarks
  * Bounds the excerpt so a defensive proxy or a misbehaving daemon handing

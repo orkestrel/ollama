@@ -38,16 +38,16 @@ import { parseBody } from './parsers.js'
  * @remarks
  * - **Wire protocol.** Posts `{ model, messages, stream, keep_alive, think }` plus
  *   passthrough sampling `options` and mapped function `tools`. The `think` flag is
- *   CONFIGURABLE through {@link OllamaOptions.think} (default `false`). Non-stream parses
+ *   configurable through {@link OllamaOptions.think} (default `false`). Non-stream parses
  *   one JSON body; stream consumes NDJSON (one JSON object per `\n`-terminated line) —
  *   deltas carry `message.content`, the final `done: true` line carries the token usage.
  * - **Think separation.** The wire `think` flag is configurable
  *   ({@link OllamaOptions.think}, default `false`). With `think: true` a thinking model's
- *   daemon separates reasoning NATIVELY — returning it on the distinct `message.thinking`
- *   channel (read here through `extractThinking`) instead of inline in `message.content`. EITHER
+ *   daemon separates reasoning natively — returning it on the distinct `message.thinking`
+ *   channel (read here through `extractThinking`) instead of inline in `message.content`. Either
  *   way the per-call {@link ThinkSplitterInterface} is the defensive guarantee: a daemon
  *   may ignore `think: false` for a thinking model and inline `<think>` tags, so every
- *   content delta routes through the splitter, only CLEAN content is yielded / assembled,
+ *   content delta routes through the splitter, only clean content is yielded / assembled,
  *   and the separated reasoning (plus any daemon-side `message.thinking` deltas) lands on
  *   `ProviderResult.thinking`, never in the conversation.
  * - **Boundary narrowing.** Every wire value arrives as `unknown` and is
@@ -56,11 +56,11 @@ import { parseBody } from './parsers.js'
  *   usage, `{}` arguments), never a throw.
  * - **Bounded.** Each call arms a {@link Timeout} for `OllamaOptions.timeout` and
  *   passes `AbortSignal.any([timeout.signal, signal])` to `fetch`, so the caller's
- *   signal AND the deadline both cancel the request. The timeout is always cleared —
+ *   signal and the deadline both cancel the request. The timeout is always cleared —
  *   in `#fetch` if the request fails/aborts, otherwise in the consuming call's `finally`.
  * - **Abort recovers partial.** A `stream` cancelled mid-flight throws a
  *   `ProviderAbortError` carrying the partial result assembled so far; pairing the
- *   `TextDecoder({ stream: true })` with the {@link NDJSONParser} parser keeps multi-byte
+ *   `TextDecoder({ stream: true })` with the `createNDJSONParser` parser keeps multi-byte
  *   UTF-8 splits and partial lines honest.
  * - **Event-free.** A pure functional boundary — no Emitter, no events.
  * - **Transport seam.** {@link OllamaOptions.fetch} swaps the transport (default
@@ -99,25 +99,25 @@ export class OllamaProvider implements ProviderInterface {
 		this.#url = options.url ?? DEFAULT_OLLAMA_URL
 		this.#keepAlive = options.keepAlive ?? DEFAULT_KEEP_ALIVE
 		this.#timeout = options.timeout ?? DEFAULT_PROVIDER_TIMEOUT
-		// The `/api/chat` `think` wire flag — DEFAULT `false`, so a non-thinking model needs no
-		// configuration and answers immediately. A thinking model whose reasoning is DISPLAYED
+		// The `/api/chat` `think` wire flag — default `false`, so a non-thinking model needs no
+		// configuration and answers immediately. A thinking model whose reasoning is displayed
 		// separately sets `think: true`, and the daemon then returns it on the
 		// `message.thinking` channel (`extractThinking`) rather than inline in `message.content`.
 		this.#think = options.think ?? false
 		this.#options = options.options
-		// The transport seam: a custom fetch (defaulting to the global, BOUND to its
+		// The transport seam: a custom fetch (defaulting to the global, bound to its
 		// `globalThis` receiver — invoking a bare reference through a field loses the `window`
 		// receiver and browsers throw `Illegal invocation`; node's fetch is receiver-agnostic,
 		// so only a browser runtime ever saw it) and a dynamic header injector — both omitted
 		// by default, so the request goes out over the global fetch carrying only the JSON
-		// content type. The injected transport is `#transport` (the request METHOD already
+		// content type. The injected transport is `#transport` (the request method already
 		// owns the `#fetch` name).
 		this.#transport = options.fetch ?? globalThis.fetch.bind(globalThis)
 		this.#headers = options.headers
-		// The context-framing default (the provider-DEFAULT level of AgentContext's format
-		// cascade) — EXPOSE-ONLY: read by the Agent through `build(this.#provider.format)` and
-		// consumed by core's cascade, it NEVER enters `#body` / the `/api/chat` wire. It is
-		// NOT Ollama's structured-output `format` wire param — that one IS sent in `#body`,
+		// The context-framing default (the provider-default level of AgentContext's format
+		// cascade) — expose-only: read by the Agent through `build(this.#provider.format)` and
+		// consumed by core's cascade, it never enters `#body` / the `/api/chat` wire. It is
+		// not Ollama's structured-output `format` wire param — that one is sent in `#body`,
 		// but only when a per-call `ProviderStreamOptions.schema` is supplied; the two
 		// merely share a word. Omitted ⇒ undefined ⇒ core's built-in framing.
 		this.#format = options.format
@@ -135,18 +135,18 @@ export class OllamaProvider implements ProviderInterface {
 	}
 
 	/**
-	 * Exposes the provider's context-framing default — the PROVIDER-DEFAULT level of
-	 * {@link import('@orkestrel/agent').AgentContextInterface.build}'s format cascade (it BEATS
-	 * the managers' built-in framing, is BEATEN by a manager-options or per-item override).
-	 * Satisfies the OPTIONAL {@link ProviderInterface.format} contract member: `undefined`
+	 * Exposes the provider's context-framing default — the provider-default level of
+	 * {@link import('@orkestrel/agent').AgentContextInterface.build}'s format cascade (it beats
+	 * the managers' built-in framing, is beaten by a manager-options or per-item override).
+	 * Satisfies the optional {@link ProviderInterface.format} contract member: `undefined`
 	 * when {@link OllamaOptions.format} was omitted (the framing-agnostic default ⇒ core's
 	 * built-in framing applies unchanged), else the exact configured framing the Agent
 	 * threads into `build()`.
 	 *
 	 * @remarks
-	 * EXPOSE-ONLY — read by the Agent loop and consumed by core's cascade; it is NEVER sent
-	 * on the `/api/chat` wire (it is absent from `#body` / the request). This is NOT Ollama's
-	 * structured-output `format` wire parameter — that one IS sent in `#body`, but only when
+	 * Expose-only — read by the Agent loop and consumed by core's cascade; it is never sent
+	 * on the `/api/chat` wire (it is absent from `#body` / the request). This is not Ollama's
+	 * structured-output `format` wire parameter — that one is sent in `#body`, but only when
 	 * a per-call `ProviderStreamOptions.schema` is supplied; only the word collides.
 	 *
 	 * @returns The configured {@link ContextFormat}, or `undefined` when none
@@ -182,10 +182,10 @@ export class OllamaProvider implements ProviderInterface {
 		const { response, timeout } = await this.#fetch(messages, false, signal, tools, options)
 		try {
 			const record = (await parseBody(response)) ?? {}
-			// The one-body call routes through the SAME splitter as the stream (the daemon may
+			// The one-body call routes through the same splitter as the stream (the daemon may
 			// ignore `think: false` — the splitter is the guarantee): the assembled content is
-			// CLEAN (the splitter's authoritative `content`, which also covers the qwen3
-			// template's IMPLICIT leading open), the separated spans + any wire-side
+			// clean (the splitter's authoritative `content`, which also covers the qwen3
+			// template's implicit leading open), the separated spans + any wire-side
 			// `message.thinking` land on `thinking`.
 			const splitter = createThinkSplitter()
 			splitter.split(extractContent(record))
@@ -238,11 +238,11 @@ export class OllamaProvider implements ProviderInterface {
 		const decoder = new TextDecoder()
 		const parser = createNDJSONParser()
 		// The per-call think separator: every wire content delta routes through it, so
-		// only CLEAN content is yielded / assembled even when the daemon ignores `think: false`
+		// only clean content is yielded / assembled even when the daemon ignores `think: false`
 		// for a thinking model; daemon-side `message.thinking` deltas accumulate beside it.
-		// The ASSEMBLED content is the splitter's authoritative `content` — across the qwen3
-		// template's IMPLICIT leading open (a bare `</think>` with the open pre-seeded into the
-		// prompt scaffold) the splitter RECLASSIFIES the already-yielded prefix into `thinking`,
+		// The assembled content is the splitter's authoritative `content` — across the qwen3
+		// template's implicit leading open (a bare `</think>` with the open pre-seeded into the
+		// prompt scaffold) the splitter reclassifies the already-yielded prefix into `thinking`,
 		// so the result stays clean even though those deltas could not be recalled.
 		const splitter = createThinkSplitter()
 		// The per-stream accumulators, folded from every `#deltas` return across the live
@@ -255,7 +255,7 @@ export class OllamaProvider implements ProviderInterface {
 				const { value, done } = await reader.read()
 				if (done) break
 				// Pair the streaming decoder with the line parser: the decoder handles
-				// partial multi-byte CHARS, the parser handles partial LINES.
+				// partial multi-byte characters, the parser handles partial lines.
 				for (const record of parser.parse(decoder.decode(value, { stream: true }))) {
 					const increment = yield* this.#deltas(record, splitter, usage)
 					wired += increment.thinking
@@ -309,7 +309,7 @@ export class OllamaProvider implements ProviderInterface {
 	// Per-record streaming step shared between the live NDJSON loop and the post-loop
 	// tail flush in `stream()` — a `#` private method (not a free helper) because it is
 	// the streaming spine that composes the wire leaves and drives the splitter, and
-	// because its yields are the stream's own. It mutates nothing: it RETURNS the record's
+	// because its yields are the stream's own. It mutates nothing: it returns the record's
 	// increments (`thinking` / `calls` / `usage`) and `stream()` folds them, so the
 	// accumulator's shape is written once, here.
 	*#deltas(
@@ -326,8 +326,8 @@ export class OllamaProvider implements ProviderInterface {
 	> {
 		const delta = splitter.split(extractContent(record))
 		if (delta.length > 0) yield { channel: 'content', text: delta }
-		// The PRIMARY live reasoning channel: each native `message.thinking` wire delta is
-		// surfaced as a tagged `thinking` delta AND returned for the caller's `wired`
+		// The primary live reasoning channel: each native `message.thinking` wire delta is
+		// surfaced as a tagged `thinking` delta and returned for the caller's `wired`
 		// accumulation (the two stay in lockstep). The ThinkSplitter's in-content
 		// reclassified spans have no per-delta hook — the final `ProviderResult.thinking`
 		// reconciles them; the native channel (think: true) is what streams live.
@@ -392,9 +392,9 @@ export class OllamaProvider implements ProviderInterface {
 	}
 
 	// The request headers — the base JSON content type, plus the dynamic `headers`
-	// hook's result merged ON TOP when configured (so a dev can attach an obfuscated
+	// hook's result merged on top when configured (so a dev can attach an obfuscated
 	// bearer the server validates). Merge order: `Content-Type` is seeded first, then
-	// the hook's entries overlay it — so the hook ADDS auth headers but only clobbers
+	// the hook's entries overlay it — so the hook adds auth headers but only clobbers
 	// `Content-Type` if the dev explicitly returns one. Awaited (the hook may be async,
 	// for example refreshing a token); called inside `#fetch`'s try so a hook rejection
 	// clears the armed deadline like any other request failure. The hook's result is a
@@ -408,7 +408,7 @@ export class OllamaProvider implements ProviderInterface {
 	}
 
 	// The `/api/chat` request body — conditional `options` / `tools` / `format` only when set. The
-	// wire `think` flag honours a PER-CALL override (`options.think`) over the constructor default
+	// wire `think` flag honours a per-call override (`options.think`) over the constructor default
 	// (`#think`), so a caller can flip reasoning on / off for one turn without reconfiguring the
 	// provider; no per-call option ⇒ the constructed default.
 	// `format` is the wire's structured-output constraint, forwarded verbatim from the per-call

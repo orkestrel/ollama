@@ -137,7 +137,7 @@ describe('isAbortError', () => {
 		const value: unknown = error
 
 		expect(isAbortError(value)).toBe(true)
-		if (!isAbortError(value)) throw new Error('unreachable: isAbortError narrowed true above')
+		if (!isAbortError(value)) throw new Error('unreachable: isAbortError narrowed true earlier')
 		expect(value.message).toBe('aborted')
 	})
 

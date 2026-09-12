@@ -176,7 +176,7 @@ describe('Agent (live) — a construction-time timeout resolves partial, never r
 	it(
 		'timeout: 1 (ms) folds into the turn cancel and settles a partial result with an abort event, completing the abort-funnel trilogy',
 		async () => {
-			// Completes the abort-funnel trilogy alongside external abort() (above) and budget
+			// Completes the abort-funnel trilogy alongside external abort() (preceding) and budget
 			// exhaustion (budget.test.ts): a construction-time `timeout` (ms) folds into the same
 			// `AbortSignal.any` cancel the loop arms per turn. Bounded retry (attempts=3) only to
 			// absorb the astronomically-rare instant-completion race.

@@ -353,7 +353,7 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 	}, 120_000)
 
 	it('the default limit exhausts under sustained tool pressure', async () => {
-		// Source-verified (0.0.7): the same exhaustion contract as the limit:2 test above,
+		// Source-verified (0.0.7): the same exhaustion contract as the preceding limit:2 test,
 		// under NO explicit `limit` option — the loop's DEFAULT of 10. The `more` tool now
 		// reports concrete counting progress ("chunk n of 12") instead of a static "call
 		// again" instruction, giving the model an explicit unfinished plan to keep following

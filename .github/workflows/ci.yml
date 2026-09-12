@@ -46,7 +46,7 @@ jobs:
         run: npm test
 
       - name: Provision live service
-        run: bash scripts/service.sh
+        run: bash scripts/ollama.sh
 
       - name: Run live service tests
         run: npm run test:service

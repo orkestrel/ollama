@@ -125,9 +125,9 @@ export const conformance = (): UserConfig => ({
 	},
 })
 
-// The live external services this package drives. It starts nothing itself:
-// `scripts/service.sh` provisions, `tests/setupService.ts` proves readiness, and
-// the project stays out of `npm test` because a real service answers it.
+// The caller prepares the live external services before this project.
+// `tests/setupService.ts` verifies readiness, and the project stays out of `npm test`
+// because a real service answers it.
 export const service = (): UserConfig => ({
 	resolve,
 	test: {

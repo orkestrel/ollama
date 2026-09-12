@@ -69,8 +69,7 @@
 		"test:distribution": "vitest run --config vite.config.ts --no-cache --reporter=dot --project distribution",
 		"test:probe": "vitest run --config vite.config.ts --no-cache --reporter=verbose --project probe",
 		"test:bench": "vitest bench --config vite.config.ts --no-cache --project probe",
-		"prepack": "npm run build",
-		"docs": "node --experimental-strip-types scripts/docs.ts"
+		"prepack": "npm run build"
 	},
 	"dependencies": {
 		"@orkestrel/agent": "^0.0.21",

@@ -1,17 +1,20 @@
 // The Node-resource half of `tests/setupServer.ts`: the loopback recording proxy, the
-// capture wait, the provider-stream driver, and the shared wire tables. The narrowing
-// guards, the tool fixtures, and the environment readers that module also exports are
-// asserted by `tests/setup.test.ts`, so this proof does not re-assert them.
+// relay server, the capture wait, the provider-stream driver, the transport fixtures,
+// and the shared wire tables. The narrowing guards, the tool fixtures, and the
+// environment readers that module also exports are asserted by `tests/setup.test.ts`,
+// so this proof does not re-assert them.
 //
-// Every case here runs against real sockets on 127.0.0.1 ephemeral ports. No Ollama
-// daemon takes part: a pass-through case forwards to a fixture upstream this file
-// starts, and `createRecordingProxy`'s own default upstream is deliberately unreachable.
+// The proxy and relay-server cases run against real sockets on 127.0.0.1 ephemeral
+// ports: a pass-through case forwards to a fixture upstream this file starts, and
+// `createRecordingProxy`'s own default upstream is deliberately unreachable. The
+// transport fixtures drive in-memory responses instead. No Ollama daemon takes part
+// in any of these cases.
 
 import type { ProviderDelta, ProviderResult } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
-import { createRecorder, waitForAbort } from '@orkestrel/test'
+import { waitForAbort } from '@orkestrel/test'
 import { createOllama } from '@src/core'
 import { createNDJSONParser } from '@orkestrel/ndjson'
 import { describe, expect, it } from 'vitest'
@@ -19,7 +22,6 @@ import {
 	createRecordingProxy,
 	createRecordingTransport,
 	createRelayServer,
-	createCapturedTransport,
 	createOpenTransport,
 	createStreamingTransport,
 	OBFUSCATED,
@@ -32,7 +34,7 @@ import {
 
 describe('createRelayServer', () => {
 	it('records accepted and refused request fields and mounts the authenticated inference route', async () => {
-		const daemon = createCapturedTransport(
+		const daemon = createRecordingTransport(
 			createStreamingTransport(['{"message":{"content":"answer"}}\n']),
 		)
 		const server = await createRelayServer(
@@ -81,9 +83,9 @@ describe('createRelayServer', () => {
 	})
 })
 
-describe('createCapturedTransport', () => {
+describe('createRecordingTransport', () => {
 	it('records request fields and cancellation while preserving streamed response bytes and headers', async () => {
-		const transport = createCapturedTransport(createStreamingTransport(['{"word":"caf', 'é"}\n']))
+		const transport = createRecordingTransport(createStreamingTransport(['{"word":"caf', 'é"}\n']))
 		const abort = new AbortController()
 		const response = await transport.fetch('http://127.0.0.1/api/chat', {
 			method: 'POST',
@@ -108,13 +110,29 @@ describe('createCapturedTransport', () => {
 	})
 
 	it('preserves a bodyless refusal response', async () => {
-		const transport = createCapturedTransport(() =>
+		const transport = createRecordingTransport(() =>
 			Promise.resolve(new Response(null, { status: 401 })),
 		)
 		const response = await transport.fetch('http://127.0.0.1/inference')
 		expect(response.status).toBe(401)
 		expect(response.body).toBeNull()
 		expect(transport.chunks).toEqual([])
+	})
+
+	it('defaults to the global fetch, forwarding a real request to a live server', async () => {
+		const proxy = await createRecordingProxy()
+		try {
+			const transport = createRecordingTransport()
+			const url = `${proxy.url}/api/chat`
+			await transport.fetch(url, { method: 'POST', body: '{}' }).catch(() => {})
+
+			await waitForRequest(proxy)
+
+			expect(transport.requests[0]?.path).toBe('/api/chat')
+			expect(proxy.requests[0]?.path).toBe('/api/chat')
+		} finally {
+			await proxy.stop()
+		}
 	})
 })
 
@@ -303,25 +321,6 @@ describe('createRecordingProxy', () => {
 		await proxy.stop()
 
 		await expect(fetch(url, { method: 'POST', body: '{}' })).rejects.toThrow(Error)
-	})
-})
-
-describe('createRecordingTransport', () => {
-	it("records the request's URL and then forwards it to the global fetch", async () => {
-		const calls = createRecorder<readonly [string]>()
-		const proxy = await createRecordingProxy()
-		try {
-			const transport = createRecordingTransport(calls)
-			const url = `${proxy.url}/api/chat`
-			await transport(url, { method: 'POST', body: '{}' }).catch(() => {})
-
-			await waitForRequest(proxy)
-
-			expect(calls.count).toBe(1)
-			expect(calls.calls[0]).toEqual([url])
-		} finally {
-			await proxy.stop()
-		}
 	})
 })
 

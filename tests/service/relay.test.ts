@@ -2,16 +2,18 @@ import { createRelayProvider, isProviderAbortError } from '@orkestrel/agent'
 import { createNDJSONParser } from '@orkestrel/ndjson'
 import { createOllama } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createRelayServer, drive, OBFUSCATED } from '../setupServer.js'
+import { createRecordingTransport, createRelayServer, drive, OBFUSCATED } from '../setupServer.js'
 import { FAST_OPTIONS, OLLAMA_CONFIG, STREAM_OPTIONS } from '../setupService.js'
 
 describe('RelayProvider through a real server and the live daemon', () => {
 	it('generate returns a live answer through the authenticated relay', async () => {
+		const daemon = createRecordingTransport()
 		const server = await createRelayServer(
 			createOllama({
 				model: OLLAMA_CONFIG.model,
 				url: OLLAMA_CONFIG.host,
 				options: FAST_OPTIONS,
+				fetch: daemon.fetch,
 			}),
 		)
 		try {
@@ -31,17 +33,21 @@ describe('RelayProvider through a real server and the live daemon', () => {
 				path: '/inference',
 				headers: { authorization: OBFUSCATED, 'content-type': 'application/json' },
 			})
+			expect(daemon.requests[0]?.path).toBe('/api/chat')
+			expect(daemon.requests[0]?.body.messages).not.toEqual([])
 		} finally {
 			await server.stop()
 		}
 	})
 
 	it('streamed live deltas join to the settled relay content', async () => {
+		const daemon = createRecordingTransport()
 		const server = await createRelayServer(
 			createOllama({
 				model: OLLAMA_CONFIG.model,
 				url: OLLAMA_CONFIG.host,
 				options: STREAM_OPTIONS,
+				fetch: daemon.fetch,
 			}),
 		)
 		try {
@@ -60,17 +66,21 @@ describe('RelayProvider through a real server and the live daemon', () => {
 			expect(deltas.join('')).toBe(result.content)
 			expect(result.content.length).toBeGreaterThan(0)
 			expect(server.requests[0]?.headers.authorization).toBe(OBFUSCATED)
+			expect(daemon.requests[0]?.path).toBe('/api/chat')
+			expect(daemon.requests[0]?.body.messages).not.toEqual([])
 		} finally {
 			await server.stop()
 		}
 	})
 
 	it('aborting after a live delta throws with the relay partial', async () => {
+		const daemon = createRecordingTransport()
 		const server = await createRelayServer(
 			createOllama({
 				model: OLLAMA_CONFIG.model,
 				url: OLLAMA_CONFIG.host,
 				options: STREAM_OPTIONS,
+				fetch: daemon.fetch,
 			}),
 		)
 		const abort = new AbortController()
@@ -94,6 +104,8 @@ describe('RelayProvider through a real server and the live daemon', () => {
 			expect(isProviderAbortError(error)).toBe(true)
 			expect(error).toMatchObject({ partial: { content: first.value.text } })
 			expect(server.requests[0]?.headers.authorization).toBe(OBFUSCATED)
+			expect(daemon.requests[0]?.path).toBe('/api/chat')
+			expect(daemon.requests[0]?.body.messages).not.toEqual([])
 		} finally {
 			abort.abort()
 			await server.stop()

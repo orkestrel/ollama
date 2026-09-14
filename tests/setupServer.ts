@@ -35,8 +35,8 @@ export interface TransportRequest extends RecordedRequest {
 	readonly signal: AbortSignal
 }
 
-/** Exposes captured requests and response bytes around a real or canned transport. */
-export interface CapturedTransportInterface {
+/** Exposes recorded requests and response bytes around a real or canned transport. */
+export interface RecordingTransportInterface {
 	readonly requests: readonly TransportRequest[]
 	readonly chunks: readonly string[]
 	readonly fetch: typeof globalThis.fetch
@@ -48,9 +48,9 @@ export interface CapturedTransportInterface {
  * @param transport - The real fetch or canned daemon transport to drive
  * @returns The transport and its request and response observations
  */
-export function createCapturedTransport(
+export function createRecordingTransport(
 	transport: typeof globalThis.fetch = globalThis.fetch.bind(globalThis),
-): CapturedTransportInterface {
+): RecordingTransportInterface {
 	const requests: TransportRequest[] = []
 	const chunks: string[] = []
 	return {
@@ -91,6 +91,7 @@ export function createCapturedTransport(
 /** Exposes an open daemon response and its explicit failure and cancellation controls. */
 export interface OpenTransportInterface {
 	readonly fetch: typeof globalThis.fetch
+	/** Resolves when the open response body is cancelled; mirrors the `ReadableStream` `cancel` callback. */
 	readonly cancelled: Promise<void>
 	fail(error: Error): void
 }
@@ -137,7 +138,7 @@ export function createOpenTransport(chunk: string): OpenTransportInterface {
  */
 export async function createRelayServer(
 	provider: ProviderInterface,
-): Promise<RecordingProxyInterface> {
+): Promise<RecordingServerInterface> {
 	const requests: RecordedRequest[] = []
 	const relay = createRelay({
 		provider,
@@ -191,8 +192,8 @@ export interface RecordedRequest {
 	readonly text: string
 }
 
-/** Represents a running recording proxy. */
-export interface RecordingProxyInterface {
+/** Represents a running recording server. */
+export interface RecordingServerInterface {
 	readonly url: string
 	readonly requests: readonly RecordedRequest[]
 	stop(): Promise<void>
@@ -326,23 +327,6 @@ export function createStreamingTransport(chunks: readonly string[]): typeof glob
 }
 
 /**
- * Builds a transport that records each request's URL and delegates to the supplied transport.
- *
- * @param calls - The recorder that captures each request's URL, in call order
- * @param transport - The delegate; defaults to the bound global fetch
- * @returns The transport to inject as a provider's `fetch` option
- */
-export function createRecordingTransport(
-	calls: RecorderInterface<readonly [string]>,
-	transport: typeof globalThis.fetch = globalThis.fetch.bind(globalThis),
-): typeof globalThis.fetch {
-	return (input, init) => {
-		calls.handler(String(input))
-		return transport(input, init)
-	}
-}
-
-/**
  * Starts a pass-through recording server.
  *
  * The default upstream is deliberately unreachable so request-shape tests remain
@@ -350,7 +334,7 @@ export function createRecordingTransport(
  */
 export async function createRecordingProxy(
 	upstream = 'http://127.0.0.1:1',
-): Promise<RecordingProxyInterface> {
+): Promise<RecordingServerInterface> {
 	const requests: RecordedRequest[] = []
 	const upstreamAbort = new AbortController()
 	const dispatcher = createDispatcher<Record<string, never>>()
@@ -398,15 +382,15 @@ export async function createRecordingProxy(
 	}
 }
 
-/** Waits until a recording proxy has captured the requested number of calls. */
+/** Waits until a recording server has captured the requested number of calls. */
 export async function waitForRequest(
-	proxy: RecordingProxyInterface,
+	server: RecordingServerInterface,
 	count = 1,
 	timeoutMs = 10_000,
 ): Promise<void> {
 	await waitForCondition(
 		`the recording proxy to capture ${count} request(s)`,
-		() => proxy.requests.length >= count,
+		() => server.requests.length >= count,
 		{ budget: timeoutMs },
 	)
 }

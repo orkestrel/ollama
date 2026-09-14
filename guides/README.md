@@ -30,9 +30,10 @@ and whose `ProviderInterface` a consumer codes against; `@orkestrel/ndjson`
 `@orkestrel/contract` ([`contract.md`](contract.md)), whose guards narrow every
 wire `unknown`; `@orkestrel/tool` ([`tool.md`](tool.md)), which owns the tool-call
 shapes; `@orkestrel/budget` ([`budget.md`](budget.md)), which owns the usage
-shape; and `@orkestrel/timeout` ([`timeout.md`](timeout.md)), which the manifest
-still declares although no module under `src/` imports it after the rebuild — the
-base arms every deadline.
+shape. No module under `src/` imports `@orkestrel/timeout` after the rebuild — the
+base arms every deadline — so the manifest declares it as a development dependency
+([`timeout.md`](timeout.md)) for the guide's bounding pattern, which imports it as a
+consumer would.
 
 The development dependencies carry mirrors for the same reason:
 [`guide.md`](guide.md) for `@orkestrel/guide`, which powers this repo's

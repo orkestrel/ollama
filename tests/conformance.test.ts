@@ -2,7 +2,7 @@
 // they are written against. The subject is this package, not the daemon — nothing here
 // starts a service or opens a socket, so this project stays in the default `npm test`.
 // The live daemon proofs are the `service` project; the hermetic provider proofs are
-// `tests/src/server/`.
+// `tests/src/core/`.
 //
 // A red here means the Ollama wire contract moved — do NOT loosen these assertions
 // to make it pass. The failing gate is `npm run check` (root tsc); the vitest

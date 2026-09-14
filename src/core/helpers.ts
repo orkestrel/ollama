@@ -47,7 +47,7 @@ export function mapMessages(messages: readonly Message[]): WireChatRequest['mess
 /**
  * Extracts the assistant text of one wire record.
  *
- * @param record - One parsed `/api/chat` record — a non-stream body or an NDJSON line
+ * @param record - One parsed `/api/chat` NDJSON record
  * @returns The record's `message.content` when it is a string, else `''`
  *
  * @example
@@ -69,7 +69,7 @@ export function extractContent(record: Readonly<Record<string, unknown>>): strin
  * `message.thinking` is the `think: true` wire shape. It is read whatever the configured
  * flag says, because a daemon may separate reasoning on its own.
  *
- * @param record - One parsed `/api/chat` record — a non-stream body or an NDJSON line
+ * @param record - One parsed `/api/chat` NDJSON record
  * @returns The record's `message.thinking` when it is a string, else `''`
  *
  * @example
@@ -88,10 +88,10 @@ export function extractThinking(record: Readonly<Record<string, unknown>>): stri
  * Extracts the token usage of one wire record.
  *
  * @remarks
- * Both counts must be numbers, which is true of the non-stream body and the stream's
- * `done: true` line. A delta line carries neither, so it yields `undefined`.
+ * Both counts must be numbers, which is true of the stream's `done: true` line. A
+ * delta line carries neither, so it yields `undefined`.
  *
- * @param record - One parsed `/api/chat` record — a non-stream body or an NDJSON line
+ * @param record - One parsed `/api/chat` NDJSON record
  * @returns The `TokenUsage` shape, or `undefined` when either count is absent
  *
  * @example
@@ -115,7 +115,7 @@ export function extractUsage(record: Readonly<Record<string, unknown>>): TokenUs
  * records and `name` a string, else the entry is dropped. An id is minted when the wire
  * omits one.
  *
- * @param record - One parsed `/api/chat` record — a non-stream body or an NDJSON line
+ * @param record - One parsed `/api/chat` NDJSON record
  * @returns The narrowed tool calls, empty when the record carries none
  *
  * @example

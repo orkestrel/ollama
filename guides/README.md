@@ -15,23 +15,33 @@ directory.
 | ---------- | ------------------------ |
 | `src/core` | [`ollama.md`](ollama.md) |
 
-## Toolchain reference
+## Mirrored dependency guides
 
-[`guide.md`](guide.md) is a byte-identical mirror of the guide for
-`@orkestrel/guide` — the devDependency powering this repo's guides-parity test
-suite (`tests/guides.test.ts`). It documents **that package's**
-surface (`Guide` / `Source`, the manifest and comparison helpers), not anything
-sourced in this repo; it is kept here so a reader of the parity suite can see
-the primitives it is built from without leaving this guide set.
+[`ollama.md`](ollama.md) is the only guide sourced here. Every other file in this
+directory is a byte-identical mirror of a dependency's own guide, documenting
+**that package's** surface rather than anything sourced in this repo, and kept
+here so a reader can follow a boundary this package crosses without leaving the
+guide set.
 
-[`scaffold.md`](scaffold.md) is a byte-identical mirror of the guide for
-`@orkestrel/scaffold` — the devDependency supplying this repo's shared file set,
-configuration, and audit verbs. It documents **that package's own** surface, not
-anything sourced in this repo; it is kept here so a reader can see the toolchain
-this repository is generated and checked against.
+The runtime dependencies this package builds on are `@orkestrel/agent`
+([`agent.md`](agent.md)), whose `AgentProvider` engine `OllamaProvider` extends
+and whose `ProviderInterface` a consumer codes against; `@orkestrel/ndjson`
+([`ndjson.md`](ndjson.md)), whose parser frames each call's response;
+`@orkestrel/contract` ([`contract.md`](contract.md)), whose guards narrow every
+wire `unknown`; `@orkestrel/tool` ([`tool.md`](tool.md)), which owns the tool-call
+shapes; `@orkestrel/budget` ([`budget.md`](budget.md)), which owns the usage
+shape; and `@orkestrel/timeout` ([`timeout.md`](timeout.md)), which the manifest
+still declares although no module under `src/` imports it after the rebuild — the
+base arms every deadline.
 
-The runtime dependencies — `@orkestrel/agent`, `@orkestrel/budget`,
-`@orkestrel/contract`, `@orkestrel/ndjson`, `@orkestrel/timeout`, and
-`@orkestrel/tool` — carry their own guides in their own repositories. This guide
-set mirrors only the toolchain earlier, so a dependency's surface is read where it
-is published rather than from a copy that drifts.
+The development dependencies carry mirrors for the same reason:
+[`guide.md`](guide.md) for `@orkestrel/guide`, which powers this repo's
+guides-parity suite (`tests/guides.test.ts`); [`scaffold.md`](scaffold.md) for
+`@orkestrel/scaffold`, which supplies the shared file set, configuration, and
+audit verbs; and [`abort.md`](abort.md), [`probe.md`](probe.md),
+[`router.md`](router.md), [`server.md`](server.md), [`test.md`](test.md), and
+[`workspace.md`](workspace.md) for the packages this repository's examples and
+test infrastructure drive.
+
+Refresh a mirror from its own repository rather than editing it here: a rewritten
+copy is a translation, and no comparison against the fetched bytes can check it.

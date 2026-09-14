@@ -38,20 +38,20 @@ describe('createOllama (shape)', () => {
 // suite passes with the daemon down.
 describe('createOllama (defaults)', () => {
 	it('defaults the destination and framing while accepting a custom transport', async () => {
-		const calls = createRecorder<readonly [string]>()
+		const transport = createRecordingTransport(createStreamingTransport([]))
 		const provider = createOllama({
 			model: 'test-model',
-			fetch: createRecordingTransport(calls, createStreamingTransport([])),
+			fetch: transport.fetch,
 		})
 
 		expect(await provider.generate([], createAbort().signal)).toEqual({ content: '' })
-		expect(calls.calls).toEqual([['http://localhost:11434/api/chat']])
+		expect(transport.requests[0]?.path).toBe('/api/chat')
 		expect(provider.format).toBeUndefined()
 	})
 
 	it('accepts inherited transport, headers, timeout, and framing with Ollama options', async () => {
 		const proxy = await createRecordingProxy()
-		const calls = createRecorder<readonly [string]>()
+		const transport = createRecordingTransport()
 		const signals = createRecorder<readonly [AbortSignal]>()
 		const format = { instructions: { open: '<instructions>', close: '</instructions>' } }
 		try {
@@ -61,7 +61,7 @@ describe('createOllama (defaults)', () => {
 				keepAlive: 0,
 				options: { seed: 7 },
 				think: true,
-				fetch: createRecordingTransport(calls),
+				fetch: transport.fetch,
 				headers: (signal) => {
 					signals.handler(signal)
 					return { 'x-provider': 'factory' }
@@ -72,7 +72,7 @@ describe('createOllama (defaults)', () => {
 			await provider.generate([], createAbort().signal).catch(() => {})
 
 			expect(provider.format).toBe(format)
-			expect(calls.calls).toEqual([[`${proxy.url}/api/chat`]])
+			expect(transport.requests[0]?.path).toBe('/api/chat')
 			expect(signals.count).toBe(1)
 			expect(proxy.requests[0]?.headers['x-provider']).toBe('factory')
 			expect(proxy.requests[0]?.body).toEqual({

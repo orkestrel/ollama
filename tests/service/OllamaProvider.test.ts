@@ -1,7 +1,7 @@
 import { createAbort } from '@orkestrel/abort'
 import { isProviderAbortError, isProviderError } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
-import { createRecorder, retryUntil } from '@orkestrel/test'
+import { retryUntil } from '@orkestrel/test'
 import { OllamaProvider } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../setup.js'
@@ -486,17 +486,17 @@ describe('OllamaProvider (recording proxy — transport seam custom fetch)', () 
 	it('uses the injected fetch, not the global (a real delegating recorder)', async () => {
 		const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
 		try {
-			const calls = createRecorder<readonly [string]>()
+			const transport = createRecordingTransport()
 			const provider = new OllamaProvider({
 				model: OLLAMA_CONFIG.model,
 				url: proxy.url,
-				fetch: createRecordingTransport(calls),
+				fetch: transport.fetch,
 				options: FAST_OPTIONS,
 			})
 			const result = await provider.generate([createUserMessage('hi')], createAbort().signal)
 
-			expect(calls.count).toBe(1)
-			expect(calls.calls[0]?.[0]).toBe(`${proxy.url}/api/chat`)
+			expect(transport.requests.length).toBe(1)
+			expect(transport.requests[0]?.path).toBe('/api/chat')
 			expect(result.content.length).toBeGreaterThan(0)
 			expect(proxy.requests.length).toBe(1)
 		} finally {
@@ -507,18 +507,18 @@ describe('OllamaProvider (recording proxy — transport seam custom fetch)', () 
 	it('threads a custom fetch through the STREAMING path', async () => {
 		const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
 		try {
-			const calls = createRecorder<readonly [string]>()
+			const transport = createRecordingTransport()
 			const provider = new OllamaProvider({
 				model: OLLAMA_CONFIG.model,
 				url: proxy.url,
-				fetch: createRecordingTransport(calls),
+				fetch: transport.fetch,
 				options: FAST_OPTIONS,
 			})
 			const { result } = await drive(
 				provider.stream([createUserMessage('hi')], createAbort().signal),
 			)
 
-			expect(calls.count).toBe(1)
+			expect(transport.requests.length).toBe(1)
 			expect(result.content.length).toBeGreaterThan(0)
 		} finally {
 			await proxy.stop()

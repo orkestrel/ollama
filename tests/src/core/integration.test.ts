@@ -32,7 +32,7 @@ import {
 	createInsatiableTool,
 	createLookupTool,
 	createRecordingProxy,
-	createCapturedTransport,
+	createRecordingTransport,
 	createOpenTransport,
 	createRelayServer,
 	createStreamingTransport,
@@ -52,7 +52,7 @@ const TIMEOUT = 60_000
 
 describe('RelayProvider through a real server and OllamaProvider', () => {
 	it('relays ordered content and thinking, tools, and usage while separating hop credentials', async () => {
-		const daemon = createCapturedTransport(createStreamingTransport(RELAY_DAEMON_CHUNKS))
+		const daemon = createRecordingTransport(createStreamingTransport(RELAY_DAEMON_CHUNKS))
 		const server = await createRelayServer(
 			createOllama({
 				model: 'fixture-model',
@@ -96,12 +96,12 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 			expect(daemon.requests).toHaveLength(2)
 			for (const request of server.requests) {
 				expect(request.headers.authorization).toBe(OBFUSCATED)
-				expect(Object.values(request.headers)).not.toContain(UPSTREAM_KEY)
+				expect(JSON.stringify(request.headers)).not.toContain(UPSTREAM_KEY)
 			}
 			for (const request of daemon.requests) {
 				expect(request.path).toBe('/api/chat')
 				expect(request.headers.authorization).toBe(UPSTREAM_KEY)
-				expect(Object.values(request.headers)).not.toContain(OBFUSCATED)
+				expect(JSON.stringify(request.headers)).not.toContain(OBFUSCATED)
 			}
 		} finally {
 			await server.stop()
@@ -109,7 +109,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 	})
 
 	it('refuses a wrong bearer with an empty HTTP 401 and never enters the daemon transport', async () => {
-		const daemon = createCapturedTransport(createStreamingTransport(RELAY_DAEMON_CHUNKS))
+		const daemon = createRecordingTransport(createStreamingTransport(RELAY_DAEMON_CHUNKS))
 		const server = await createRelayServer(
 			createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
 		)
@@ -133,7 +133,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 
 	it('browser cancellation aborts the daemon request, preserves partial content, and releases the stream', async () => {
 		const open = createOpenTransport('{"message":{"content":"first"}}\n')
-		const daemon = createCapturedTransport(open.fetch)
+		const daemon = createRecordingTransport(open.fetch)
 		const server = await createRelayServer(
 			createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
 		)
@@ -167,8 +167,8 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 
 	it('a server deadline crosses as an abort frame with its partial while the browser signal stays active', async () => {
 		const open = createOpenTransport('{"message":{"content":"first"}}\n')
-		const daemon = createCapturedTransport(open.fetch)
-		const wire = createCapturedTransport()
+		const daemon = createRecordingTransport(open.fetch)
+		const wire = createRecordingTransport()
 		const server = await createRelayServer(
 			createOllama({ model: 'fixture-model', fetch: daemon.fetch, timeout: 50 }),
 		)
@@ -203,7 +203,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 
 	it('a daemon stream failure crosses only as the fixed public error frame', async () => {
 		const open = createOpenTransport('{"message":{"content":"first"}}\n')
-		const wire = createCapturedTransport()
+		const wire = createRecordingTransport()
 		const server = await createRelayServer(
 			createOllama({ model: 'fixture-model', fetch: open.fetch }),
 		)
@@ -237,7 +237,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 	}, 3000)
 
 	it('advertises a function tool and replays returned calls in a following tool message', async () => {
-		const daemon = createCapturedTransport(createStreamingTransport(RELAY_DAEMON_CHUNKS))
+		const daemon = createRecordingTransport(createStreamingTransport(RELAY_DAEMON_CHUNKS))
 		const server = await createRelayServer(
 			createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
 		)
@@ -254,11 +254,14 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 			if (call === undefined) throw new Error('relay returned no tool call')
 			expect(typeof call.id).toBe('string')
 			expect(call).toEqual({ id: 'weather-call', name: 'get_weather', arguments: { city: 'Oslo' } })
+			const replayed = { ...call, caller: { session: 'fixture-session' } }
 			const messages: readonly Message[] = [
-				{ id: 'weather-result', role: 'tool', content: 'Sunny', calls: [call] },
+				{ id: 'weather-result', role: 'tool', content: 'Sunny', calls: [replayed] },
 			]
 			await browser.generate(messages, signal)
-			expect(server.requests[1]?.body.messages).toEqual(messages)
+			expect(server.requests[1]?.body.messages).toEqual([
+				{ id: 'weather-result', role: 'tool', content: 'Sunny', calls: [call] },
+			])
 			expect(daemon.requests[1]?.body.messages).toEqual([
 				{
 					role: 'tool',

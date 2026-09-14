@@ -33,7 +33,7 @@ print. Limits states what that leaves unproven and what covers it instead.
 npm install --save-dev @orkestrel/scaffold
 ```
 
-The executable needs Node 22.12 or later. Run it through `npx` without installing:
+The executable needs Node 22.18.0 or later. Run it through `npx` without installing:
 
 ```sh
 npx @orkestrel/scaffold --help
@@ -149,6 +149,7 @@ Exported from `@orkestrel/scaffold`, and reachable from
 | `MAX_TOTAL_ARTIFACT_BYTES`        | const | Caps the bytes retained across one whole plan or audit.                                                |
 | `MAX_TOTAL_REGISTRY_BYTES`        | const | Caps the decoded bytes accepted across one registry-reading call.                                      |
 | `MINIMUM_NODE_VERSION`            | const | Names the oldest Node version the generated toolchain supports.                                        |
+| `MINIMUM_NPM_VERSION`             | const | Names the oldest npm version the generated toolchain supports.                                         |
 | `NAME_PATTERN`                    | const | Matches the bare workspace name syntax: lowercase alphanumeric with hyphens, letter first.             |
 | `ORCHESTRATION_PATH_NAMES`        | const | Lists the exact root paths that wire an agent bench or own an orchestration directory, frozen.         |
 | `ORCHESTRATION_PATH_PREFIXES`     | const | Lists the path prefixes whose contents instruct or wire an agent, frozen.                              |
@@ -164,6 +165,7 @@ Exported from `@orkestrel/scaffold`, and reachable from
 | `SRC_MATRIX`                      | const | Holds the build and export settings each published `src` environment contributes, frozen.              |
 | `TAB_WIDTH`                       | const | Sets the columns one tab occupies when the formatter measures a line, matching `tabWidth`.             |
 | `VERSION_PATTERN`                 | const | Matches the exact `major.minor.patch` version syntax a blueprint declares.                             |
+| `WORKSPACE_DEV_ENGINES`           | const | Holds the `devEngines` record every generated manifest carries.                                        |
 | `WORKSPACE_OWNED_PATHS`           | const | Lists the vendored paths whose present bytes belong to each workspace, frozen.                         |
 
 #### Guards
@@ -775,7 +777,7 @@ const blueprint = createBlueprint('router', {
 })
 
 blueprint.version // '0.0.1'
-blueprint.engines // '>=22.12.0'
+blueprint.engines // '>=22.18.0'
 ```
 
 `src` selects published library environments and `app` selects private application environments.
@@ -903,7 +905,7 @@ one that answers it. So `new` refuses on any question, blocking or not, before i
 `audit` and `repair` carry the same questions through, because a target that already has that shape
 still has to be described and restored.
 
-A library caller creating a fresh workspace applies `new`'s rule itself:
+A library caller creating a fresh workspace itself applies the rule the `new` command follows:
 
 ```ts
 import { Compiler, createBlueprint } from '@orkestrel/scaffold'
@@ -1445,6 +1447,23 @@ except the manifest.
   moves every target's copy at its next `repair`.
 - One host artifact per vendored path the workspace selects. A vendored directory is one planned
   path that expands into the files the data root stores beneath it.
+
+Every generated manifest declares the toolchain it is gated on. The `engines.node` field carries
+the blueprint's `engines` value, which defaults to the `>=22.18.0` range. The
+`devEngines.packageManager` record names npm at the `>=11.6.0` range with its `onFail` key set to
+the `error` value, and no blueprint field varies that record. An npm at 10.9.0 or later reads that
+record. Such an npm earlier than 11.6.0 refuses the `npm install` command in a generated workspace
+with the `EBADDEVENGINES` code, before resolving the dependency graph.
+npm 10.9.7 refuses an `npm run` command in such a workspace with the same code. The releases
+measured earlier than 10.9.0, npm 10.5.0 and npm 10.8.3, ignore the record and fail inside
+dependency resolution instead. Every Node release at 22.18.0 or later bundles an npm at 10.9.0 or
+later. A generated workspace on Node 22.18.0 or later therefore meets an npm that ignores the record
+only under an npm other than the bundled one. Run a generated workspace on npm 11.6.0 or later:
+every release from 10.9.0 up to 11.6.0 refuses it, and 11.6.0 installs it. Read the ambient
+version with the `npm --version` command. Raise it with the `npm install --global npm@11.6.0`
+command before the first install; that command installs an npm that reports
+11.6.0. The npm readings come from a Linux host on Node 22.22.2, on 2026-09-13, and the bundled
+versions come from the Node release index read that day.
 
 A workspace publishing a `src` environment rolls each published face's declarations up from that
 face's own Vite config. The seeded config calls `declarationRollup` from the vendored

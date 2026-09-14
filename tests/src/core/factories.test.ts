@@ -1,5 +1,5 @@
 import { createAbort } from '@orkestrel/abort'
-import { createOllama } from '@src/server'
+import { createOllama } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../../setup.js'
 import { createRecordingProxy, waitForRequest } from '../../setupServer.js'

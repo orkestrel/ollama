@@ -2,7 +2,7 @@ import type { UserConfig } from 'vite'
 import { defineConfig } from 'vitest/config'
 import manifest from './package.json' with { type: 'json' }
 import tsconfig from './tsconfig.json' with { type: 'json' }
-import { enforceBuildLog, environmentBoundary, outputBoundary } from './configs/helpers.js'
+import { enforceBuildLog } from './configs/helpers.js'
 import { fileURLToPath, URL } from 'node:url'
 
 export function resolveWorkspacePath(relativePath: string): string {
@@ -29,35 +29,19 @@ const resolve = {
 	}, {}),
 }
 
-export const srcServer = (): UserConfig => ({
+export const srcCore = (): UserConfig => ({
 	resolve,
 	publicDir: false,
-	plugins: [outputBoundary('dist/src/server'), environmentBoundary('src/server')],
 	build: {
 		emptyOutDir: true,
 		sourcemap: true,
 		minify: false,
-		lib: {
-			entry: resolveWorkspacePath('src/server/index.ts'),
-			formats: ['es', 'cjs'],
-			fileName: (format: string) => (format === 'es' ? 'index.js' : 'index.cjs'),
-		},
-		outDir: 'dist/src/server',
-		target: 'node22',
-		rolldownOptions: {
-			onLog: enforceBuildLog,
-			platform: 'node',
-			external: (id: string) =>
-				id.startsWith('node:') ||
-				id.startsWith('@orkestrel/') ||
-				peers.some((peer) => id === peer || id.startsWith(peer + '/')),
-			output: {},
-		},
+		rolldownOptions: { onLog: enforceBuildLog },
 	},
 	test: {
-		name: { label: 'src:server', color: 'red' },
-		include: ['tests/src/server/**/*.test.ts'],
-		setupFiles: ['./tests/setup.ts', './tests/setupServer.ts'],
+		name: { label: 'src:core', color: 'magenta' },
+		include: ['tests/src/core/**/*.test.ts'],
+		setupFiles: ['./tests/setup.ts'],
 		environment: 'node',
 		browser: { enabled: false },
 	},
@@ -177,6 +161,6 @@ export const probe = (): UserConfig => ({
 export default defineConfig({
 	resolve,
 	test: {
-		projects: [srcServer, policy, config, setup, guides, conformance, service, distribution, probe],
+		projects: [srcCore, policy, config, setup, guides, conformance, service, distribution, probe],
 	},
 })

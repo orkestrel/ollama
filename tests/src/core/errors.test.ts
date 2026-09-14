@@ -1,5 +1,5 @@
-import type { OllamaHTTPErrorOptions } from '@src/server'
-import { isOllamaHTTPError, OllamaHTTPError } from '@src/server'
+import type { OllamaHTTPErrorOptions } from '@src/core'
+import { isOllamaHTTPError, OllamaHTTPError } from '@src/core'
 import { describe, expect, it } from 'vitest'
 
 describe('OllamaHTTPError', () => {

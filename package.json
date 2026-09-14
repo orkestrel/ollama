@@ -23,18 +23,18 @@
 	],
 	"type": "module",
 	"sideEffects": false,
-	"main": "./dist/src/server/index.cjs",
-	"module": "./dist/src/server/index.js",
-	"types": "./dist/src/server/index.d.ts",
+	"main": "./dist/src/core/index.cjs",
+	"module": "./dist/src/core/index.js",
+	"types": "./dist/src/core/index.d.ts",
 	"exports": {
 		".": {
 			"import": {
-				"types": "./dist/src/server/index.d.ts",
-				"default": "./dist/src/server/index.js"
+				"types": "./dist/src/core/index.d.ts",
+				"default": "./dist/src/core/index.js"
 			},
 			"require": {
-				"types": "./dist/src/server/index.d.cts",
-				"default": "./dist/src/server/index.cjs"
+				"types": "./dist/src/core/index.d.cts",
+				"default": "./dist/src/core/index.cjs"
 			}
 		},
 		"./package.json": "./package.json"
@@ -48,14 +48,14 @@
 		"scaffold": "scaffold",
 		"lint": "oxlint --config .oxlintrc.json --fix .",
 		"check": "tsc --noEmit --project tsconfig.json && npm run check:src",
-		"check:src": "npm run check:src:server",
-		"check:src:server": "tsc --noEmit -p configs/src/tsconfig.server.json",
+		"check:src": "npm run check:src:core",
+		"check:src:core": "tsc --noEmit -p configs/src/tsconfig.core.json",
 		"format": "oxfmt --config .oxfmtrc.json --write .",
 		"format:check": "oxfmt --config .oxfmtrc.json --check .",
 		"lint:check": "oxlint --config .oxlintrc.json --deny-warnings .",
 		"test": "npm run test:src && npm run test:setup && npm run test:policy && npm run test:config && npm run test:guides && npm run test:conformance",
-		"test:src": "vitest run --config vite.config.ts --no-cache --reporter=dot --project src:server",
-		"test:src:server": "vitest run --config vite.config.ts --no-cache --reporter=dot --project src:server",
+		"test:src": "vitest run --config vite.config.ts --no-cache --reporter=dot --project src:core",
+		"test:src:core": "vitest run --config vite.config.ts --no-cache --reporter=dot --project src:core",
 		"test:conformance": "vitest run --config vite.config.ts --no-cache --reporter=dot --project conformance",
 		"test:service": "vitest run --config vite.config.ts --no-cache --reporter=dot --project service",
 		"test:setup": "vitest run --config vite.config.ts --no-cache --reporter=dot --project setup",
@@ -63,8 +63,8 @@
 		"test:config": "vitest run --config vite.config.ts --no-cache --reporter=dot --project config",
 		"test:guides": "node --experimental-strip-types tests/guides.test.ts",
 		"build": "npm run clean && npm run build:src",
-		"build:src": "npm run build:src:server",
-		"build:src:server": "vite build --config configs/src/vite.server.config.ts && npm run copy dist/src/server/index.d.ts dist/src/server/index.d.cts",
+		"build:src": "npm run build:src:core",
+		"build:src:core": "vite build --config configs/src/vite.core.config.ts && npm run copy dist/src/core/index.d.ts dist/src/core/index.d.cts",
 		"prepublishOnly": "npm run format:check && npm run lint:check && npm run check && npm run build && npm test && npm run test:distribution -- --mode release && npm run test:service",
 		"test:distribution": "vitest run --config vite.config.ts --no-cache --reporter=dot --project distribution",
 		"test:probe": "vitest run --config vite.config.ts --no-cache --reporter=verbose --project probe",

@@ -5,7 +5,7 @@ import {
 	createScope,
 } from '@orkestrel/agent'
 import { retryUntil } from '@orkestrel/test'
-import { createOllama } from '@src/server'
+import { createOllama } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createRecordingProxy, systemText } from '../setupServer.js'
 import { OLLAMA_CONFIG, RETRY_BUDGET, TOOL_OPTIONS } from '../setupService.js'

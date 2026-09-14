@@ -9,7 +9,7 @@ import {
 	extractUsage,
 	joinThinking,
 	mapMessages,
-} from '@src/server'
+} from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../../setup.js'
 

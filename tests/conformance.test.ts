@@ -9,7 +9,7 @@
 // runtime pass is incidental — `expectTypeOf` is a no-op at runtime.
 
 import type { ChatRequest, ChatResponse, Message, Tool, ToolCall } from 'ollama'
-import type { WireChatRequest } from '@src/server'
+import type { WireChatRequest } from '@src/core'
 import { describe, expectTypeOf, it } from 'vitest'
 
 describe('official ollama type parity (compile-time gate)', () => {

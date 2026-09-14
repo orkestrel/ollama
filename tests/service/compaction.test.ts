@@ -9,7 +9,7 @@ import {
 import { createBudget } from '@orkestrel/budget'
 import { collect, retryUntil } from '@orkestrel/test'
 import { createTool, createToolManager } from '@orkestrel/tool'
-import { createOllama } from '@src/server'
+import { createOllama } from '@src/core'
 import { buildTurns, createUserMessage } from '../setup.js'
 import { createRecordingProxy, driveAgent, wireMessages } from '../setupServer.js'
 import {

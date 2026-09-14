@@ -1,7 +1,7 @@
 import { createAgent, createAuthority } from '@orkestrel/agent'
 import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
-import { createOllama } from '@src/server'
+import { createOllama } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import {
 	createInsatiableTool,

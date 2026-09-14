@@ -16,7 +16,7 @@ const GUIDE_SPEC = 'guides/ollama.md'
 /** The package identity that binds its manifest, module map, and README pitch. */
 const PACKAGE_NAME = '@orkestrel/ollama'
 /** Each import specifier this package's own guides may resolve against. */
-const MODULES = Object.freeze({ [PACKAGE_NAME]: 'src/server', '@src/server': 'src/server' })
+const MODULES = Object.freeze({ [PACKAGE_NAME]: 'src/core', '@src/core': 'src/core' })
 /**
  * Declarations deliberately kept out of the barrel, as `computeSymbolKey` strings.
  *
@@ -39,7 +39,7 @@ await new GuideCommand({
 	const { isRecord, parseJSON } = await import('@orkestrel/contract')
 	const { computeSymbolKey, findMissingSymbols } = await import('@orkestrel/guide')
 	const { requireValue } = await import('@orkestrel/test')
-	const barrel = await import('@src/server')
+	const barrel = await import('@src/core')
 	const { createOllama } = barrel
 	const { describe, expect, it } = await import('vitest')
 	const manifest = parseJSON(requireValue(files['package.json'], 'Missing inventory: package.json'))

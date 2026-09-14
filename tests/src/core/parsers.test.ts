@@ -1,4 +1,4 @@
-import { parseBody } from '@src/server'
+import { parseBody } from '@src/core'
 import { describe, expect, it } from 'vitest'
 
 describe('parseBody', () => {

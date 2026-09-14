@@ -1,6 +1,6 @@
 import type { ContextFormat, ConversationInterface, Message } from '@orkestrel/agent'
 import { isRecord, isString } from '@orkestrel/contract'
-import { createOllama, OllamaProvider } from '@src/server'
+import { createOllama, OllamaProvider } from '@src/core'
 import { env, withScheme } from './setupServer.js'
 
 /** Names the live daemon and model selected for the service axis. */

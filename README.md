@@ -22,7 +22,7 @@ npm install @orkestrel/ollama
 - Node.js >= 22
 - A running Ollama daemon (default `http://localhost:11434`) with a pulled
   model — required at runtime by any consumer, and by this repository's live
-  `service` test project; the `src:server` project is hermetic and passes with
+  `service` test project; the `src:core` project is hermetic and passes with
   the daemon down
 - ESM + CJS (dual-format build)
 
@@ -67,7 +67,7 @@ and the context-framing default — see
 
 Published as a single server surface per the `exports` field in
 `package.json` — one `.` entry backed by a dual ESM + CommonJS build of
-`src/server`.
+`src/core`.
 
 ## License
 

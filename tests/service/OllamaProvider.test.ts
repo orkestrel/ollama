@@ -2,7 +2,7 @@ import { createAbort } from '@orkestrel/abort'
 import { isProviderAbortError } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
 import { createRecorder, retryUntil } from '@orkestrel/test'
-import { isOllamaHTTPError, OllamaProvider } from '@src/server'
+import { isOllamaHTTPError, OllamaProvider } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../setup.js'
 import {

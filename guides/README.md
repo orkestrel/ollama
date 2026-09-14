@@ -5,15 +5,15 @@ directory.
 
 ## By concept
 
-| Concept | Spec                     | Source                        | Tests                                                                                                  |
-| ------- | ------------------------ | ----------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Ollama  | [`ollama.md`](ollama.md) | [`src/server`](../src/server) | Hermetic: [`tests/src/server`](../tests/src/server); live service: [`tests/service`](../tests/service) |
+| Concept | Spec                     | Source                    | Tests                                                                                              |
+| ------- | ------------------------ | ------------------------- | -------------------------------------------------------------------------------------------------- |
+| Ollama  | [`ollama.md`](ollama.md) | [`src/core`](../src/core) | Hermetic: [`tests/src/core`](../tests/src/core); live service: [`tests/service`](../tests/service) |
 
 ## By directory
 
-| Directory    | Guide                    |
-| ------------ | ------------------------ |
-| `src/server` | [`ollama.md`](ollama.md) |
+| Directory  | Guide                    |
+| ---------- | ------------------------ |
+| `src/core` | [`ollama.md`](ollama.md) |
 
 ## Toolchain reference
 

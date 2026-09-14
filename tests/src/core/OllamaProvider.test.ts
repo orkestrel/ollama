@@ -2,7 +2,7 @@ import type { ContextFormat, Message } from '@orkestrel/agent'
 import { createAbort } from '@orkestrel/abort'
 import { isProviderAbortError } from '@orkestrel/agent'
 import { waitForDelay } from '@orkestrel/test'
-import { OllamaProvider } from '@src/server'
+import { OllamaProvider } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../../setup.js'
 import {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createAgent } from '@orkestrel/agent'
-import { createOllama } from '@src/server'
+import { createOllama } from '@src/core'
 import { createRecordingProxy } from '../setupServer.js'
 import { FAST_OPTIONS, OLLAMA_CONFIG, STREAM_OPTIONS } from '../setupService.js'
 

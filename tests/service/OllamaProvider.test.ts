@@ -1,8 +1,8 @@
 import { createAbort } from '@orkestrel/abort'
-import { isProviderAbortError } from '@orkestrel/agent'
+import { isProviderAbortError, isProviderError } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
 import { createRecorder, retryUntil } from '@orkestrel/test'
-import { isOllamaHTTPError, OllamaProvider } from '@src/core'
+import { OllamaProvider } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../setup.js'
 import {
@@ -528,7 +528,7 @@ describe('OllamaProvider (recording proxy — transport seam custom fetch)', () 
 
 describe('OllamaProvider (live error status)', () => {
 	// Recipe: model 'does-not-exist:zzz' — a genuine 404 from the real daemon.
-	// Assertion: structural — a typed OllamaHTTPError with status 404, message
+	// Assertion: structural — a typed ProviderError with status 404, message
 	// still mentioning the status.
 	it('throws with the status and body text on a non-OK response (live 404 bad model)', async () => {
 		const provider = new OllamaProvider({ model: 'does-not-exist:zzz', url: OLLAMA_CONFIG.host })
@@ -541,14 +541,15 @@ describe('OllamaProvider (live error status)', () => {
 			caught = error
 		}
 
-		expect(isOllamaHTTPError(caught)).toBe(true)
-		if (!isOllamaHTTPError(caught)) throw new Error('expected OllamaHTTPError')
+		expect(isProviderError(caught)).toBe(true)
+		if (!isProviderError(caught) || caught.code !== 'HTTP')
+			throw new Error('expected HTTP ProviderError')
 		expect(caught.status).toBe(404)
-		expect(caught.message).toMatch(/Ollama API error: 404/)
+		expect(caught.message).toMatch(/provider error: 404/)
 	})
 
 	// Recipe: an empty model string — a genuine 400 "model is required" from the real
-	// daemon. Assertion: structural — a typed OllamaHTTPError with status 400.
+	// daemon. Assertion: structural — a typed ProviderError with status 400.
 	it('throws with the status on a non-OK response (live 400 missing model)', async () => {
 		const provider = new OllamaProvider({ model: '', url: OLLAMA_CONFIG.host })
 		const abort = createAbort()
@@ -560,14 +561,15 @@ describe('OllamaProvider (live error status)', () => {
 			caught = error
 		}
 
-		expect(isOllamaHTTPError(caught)).toBe(true)
-		if (!isOllamaHTTPError(caught)) throw new Error('expected OllamaHTTPError')
+		expect(isProviderError(caught)).toBe(true)
+		if (!isProviderError(caught) || caught.code !== 'HTTP')
+			throw new Error('expected HTTP ProviderError')
 		expect(caught.status).toBe(400)
-		expect(caught.message).toMatch(/Ollama API error: 400/)
+		expect(caught.message).toMatch(/provider error: 400/)
 	})
 
 	// Recipe: model 'does-not-exist:zzz' — streaming path, a genuine 404 before any
-	// delta. Assertion: structural — a typed OllamaHTTPError with status 404.
+	// delta. Assertion: structural — a typed ProviderError with status 404.
 	it('surfaces a non-OK status on the streaming path too (live 404 bad model, before any delta)', async () => {
 		const provider = new OllamaProvider({ model: 'does-not-exist:zzz', url: OLLAMA_CONFIG.host })
 		const abort = createAbort()
@@ -580,10 +582,11 @@ describe('OllamaProvider (live error status)', () => {
 			caught = error
 		}
 
-		expect(isOllamaHTTPError(caught)).toBe(true)
-		if (!isOllamaHTTPError(caught)) throw new Error('expected OllamaHTTPError')
+		expect(isProviderError(caught)).toBe(true)
+		if (!isProviderError(caught) || caught.code !== 'HTTP')
+			throw new Error('expected HTTP ProviderError')
 		expect(caught.status).toBe(404)
-		expect(caught.message).toMatch(/Ollama API error: 404/)
+		expect(caught.message).toMatch(/provider error: 404/)
 	})
 
 	// Recipe: 'Count slowly from 1 to 40, one number per line.' / num_predict:64

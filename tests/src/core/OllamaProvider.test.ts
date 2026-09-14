@@ -1,7 +1,7 @@
 import type { ContextFormat, Message } from '@orkestrel/agent'
 import { createAbort } from '@orkestrel/abort'
-import { isProviderAbortError } from '@orkestrel/agent'
-import { waitForDelay } from '@orkestrel/test'
+import { AgentProvider, isProviderAbortError, isProviderError } from '@orkestrel/agent'
+import { createRecorder, waitForDelay } from '@orkestrel/test'
 import { OllamaProvider } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../../setup.js'
@@ -75,6 +75,67 @@ describe('OllamaProvider (context-framing format — no network)', () => {
 	})
 })
 
+describe('OllamaProvider (wire seams)', () => {
+	it('inherits the shared engine and creates independent framing state', () => {
+		const provider = new OllamaProvider({ model: 'test-model' })
+		const first = provider.frame()
+		const second = provider.frame()
+
+		expect(provider).toBeInstanceOf(AgentProvider)
+		expect(first.parse('{"message":{"content":"first"}}')).toEqual([])
+		expect(provider.finish(second)).toEqual([])
+		expect(provider.finish(first)).toEqual([{ message: { content: 'first' } }])
+		expect(provider.finish(first)).toEqual([])
+	})
+
+	it('omits the usage key unless done is true and the counts are present', () => {
+		const provider = new OllamaProvider({ model: 'test-model' })
+
+		expect(provider.read({ done: false, prompt_eval_count: 99, eval_count: 99 })).toEqual({
+			content: '',
+			thinking: '',
+			tools: [],
+		})
+		expect(provider.read({ prompt_eval_count: 99, eval_count: 99 })).not.toHaveProperty('usage')
+		expect(provider.read({ done: true, prompt_eval_count: 3 })).not.toHaveProperty('usage')
+		expect(provider.read({ done: true, prompt_eval_count: 3, eval_count: 4 }).usage).toEqual({
+			prompt: 3,
+			completion: 4,
+			total: 7,
+		})
+	})
+
+	it('projects a schema and minimal tool without adding absent tool fields', () => {
+		const provider = new OllamaProvider({ model: 'test-model' })
+		const schema = { type: 'object', properties: { answer: { type: 'string' } } }
+		const body = provider.body({
+			messages: [],
+			tools: [{ name: 'weather' }],
+			options: { schema },
+		})
+
+		expect(body.format).toBe(schema)
+		expect(body.tools).toEqual([{ type: 'function', function: { name: 'weather' } }])
+	})
+})
+
+describe('OllamaProvider (HTTP errors)', () => {
+	it('reports a non-OK response through the shared HTTP error taxonomy', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: () => Promise.resolve(new Response('model missing', { status: 404 })),
+		})
+		let caught: unknown
+		try {
+			await provider.generate([], createAbort().signal)
+		} catch (error) {
+			caught = error
+		}
+
+		expect(isProviderError(caught) && caught.code === 'HTTP' && caught.status === 404).toBe(true)
+	})
+})
+
 // ── Hermetic recording-proxy request-shape tests ─────────────────────────────────
 //
 // Standard pattern: create a proxy, point a provider at it, generate or stream through
@@ -106,7 +167,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 			expect(request.path).toBe('/api/chat')
 			const body = request.body
 			expect(body.model).toBe('test-model')
-			expect(body.stream).toBe(false)
+			expect(body.stream).toBe(true)
 			expect(body.keep_alive).toBe('9m')
 			expect(body.think).toBe(false)
 			expect(body.options).toEqual({ num_predict: 7, temperature: 0.5 })
@@ -121,6 +182,9 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 					},
 				},
 			])
+			expect(request.text).toBe(
+				'{"model":"test-model","messages":[{"role":"user","content":"hello"}],"stream":true,"keep_alive":"9m","think":false,"options":{"num_predict":7,"temperature":0.5},"tools":[{"type":"function","function":{"name":"get_weather","description":"Get the current weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string","description":"The city name"}},"required":["city"]}}}]}',
+			)
 		} finally {
 			await proxy.stop()
 		}
@@ -559,8 +623,7 @@ describe('OllamaProvider (transport seam — orthogonal to the deadline)', () =>
 	// Recipe: a headers hook set, one pre-aborted call and one live-signal call, both
 	// refused by the transport. Assertion: provider-behavior — the hook changes neither
 	// outcome, and the deadline armed around the refused call is cleared. A pre-aborted
-	// call rides an already-aborted signal, so the live-signal call is what reads the
-	// deadline; the pre-aborted call proves the rejection stays clean with a hook set.
+	// call never reaches the transport, so the live-signal call reads the deadline.
 	it('rejects a pre-aborted call carrying a headers hook, and clears the deadline of a refused one', async () => {
 		const transport = createRefusingTransport()
 		const provider = new OllamaProvider({
@@ -581,8 +644,8 @@ describe('OllamaProvider (transport seam — orthogonal to the deadline)', () =>
 		).rejects.toThrow(Error)
 		await waitForDelay(SETTLE_MS)
 
-		expect(transport.signals.length).toBe(2)
-		expect(transport.signals[1]?.aborted).toBe(false)
+		expect(transport.signals.length).toBe(1)
+		expect(transport.signals[0]?.aborted).toBe(false)
 	})
 
 	// Recipe: the hook rejects before the request is built, so no network is reached.
@@ -638,22 +701,24 @@ describe('OllamaProvider (unreachable)', () => {
 	})
 })
 
-// Always runs (no Ollama needed): the deadline `#fetch` arms must NOT outlive a failed
-// call — a regression guard for a leak where `#fetch` cleared the deadline only on the
+// Always runs (no Ollama needed): the base's deadline must NOT outlive a failed
+// call — a regression guard for a leak where the deadline was cleared only on the
 // success / non-OK path. The signal each request rode is the deadline's observable
 // outlet: an uncleared deadline aborts it on expiry, a cleared one never does. The
 // transport refuses in-process, so reading the signal never races a connection attempt.
 describe('OllamaProvider (deadline cleanup)', () => {
 	// The control for the two guards below: a slow headers hook holds the call past the
-	// deadline, so the recorded signal aborts. It proves an unaborted recorded signal is
+	// deadline, so the signal received by the hook aborts. It proves an unaborted signal is
 	// a result rather than the only value those assertions can produce.
 	it('aborts the request the deadline was armed around when that deadline expires', async () => {
 		const transport = createRefusingTransport()
+		const signals = createRecorder<readonly [AbortSignal]>()
 		const provider = new OllamaProvider({
 			model: 'test-model',
 			url: 'http://127.0.0.1:1',
 			timeout: DEADLINE_MS,
-			headers: async () => {
+			headers: async (signal) => {
+				signals.handler(signal)
 				await waitForDelay(SETTLE_MS)
 				return { authorization: 'Bearer slow' }
 			},
@@ -664,8 +729,9 @@ describe('OllamaProvider (deadline cleanup)', () => {
 			provider.generate([createUserMessage('hi')], createAbort().signal),
 		).rejects.toThrow(Error)
 
-		expect(transport.signals.length).toBe(1)
-		expect(transport.signals[0]?.aborted).toBe(true)
+		expect(signals.count).toBe(1)
+		expect(signals.calls[0]?.[0].aborted).toBe(true)
+		expect(transport.signals).toEqual([])
 	})
 
 	it('clears the deadline when a pre-aborted call rejects', async () => {
@@ -682,15 +748,15 @@ describe('OllamaProvider (deadline cleanup)', () => {
 		await expect(
 			provider.generate([createUserMessage('Say hello.')], aborted.signal),
 		).rejects.toThrow(Error)
-		// The pre-aborted call's own signal is aborted before the deadline can touch it,
-		// so a live-signal call through the same provider carries the readable deadline.
+		// The pre-aborted call never reaches the transport. A live-signal call through
+		// the same provider carries the readable deadline.
 		await expect(
 			provider.generate([createUserMessage('Say hello.')], createAbort().signal),
 		).rejects.toThrow(Error)
 		await waitForDelay(SETTLE_MS)
 
-		expect(transport.signals.length).toBe(2)
-		expect(transport.signals[1]?.aborted).toBe(false)
+		expect(transport.signals.length).toBe(1)
+		expect(transport.signals[0]?.aborted).toBe(false)
 	})
 
 	it('clears the deadline when the transport refuses the connection', async () => {
@@ -713,6 +779,28 @@ describe('OllamaProvider (deadline cleanup)', () => {
 })
 
 describe('OllamaProvider (streaming fold over a canned NDJSON daemon)', () => {
+	it('omits usage before done and folds the done record usage into generate', async () => {
+		const unfinished = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"answer"},"done":false,"prompt_eval_count":99,"eval_count":99}\n',
+			]),
+		})
+		const finished = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"answer"},"done":false,"prompt_eval_count":99,"eval_count":99}\n',
+				'{"done":true,"prompt_eval_count":3,"eval_count":4}\n',
+			]),
+		})
+
+		expect(await unfinished.generate([], createAbort().signal)).toEqual({ content: 'answer' })
+		expect(await finished.generate([], createAbort().signal)).toEqual({
+			content: 'answer',
+			usage: { prompt: 3, completion: 4, total: 7 },
+		})
+	})
+
 	it('yields each channel-tagged delta and returns the folded result', async () => {
 		const provider = new OllamaProvider({
 			model: 'test-model',

@@ -1,25 +1,4 @@
-// The Ollama surface's public types. Imports from Orkestrel packages — agent for the
-// provider contract, timeout for the per-call deadline interface.
-
-import type { ContextFormat } from '@orkestrel/agent'
-import type { TimeoutInterface } from '@orkestrel/timeout'
-
-/**
- * Represents an open `POST /api/chat` response together with the deadline and the
- * combined signal that bound the request.
- *
- * @remarks
- * The `response` is the open `POST /api/chat` `Response`; `timeout` is the armed
- * {@link TimeoutInterface} the consuming call clears once it finishes reading the body
- * (or that the provider clears on a failed or aborted request); `combined` is the
- * `AbortSignal.any([timeout.signal, callerSignal])` the request was issued under, which
- * the streaming path checks to tell a mid-stream cancel apart from any other error.
- */
-export interface OllamaResponse {
-	readonly response: Response
-	readonly timeout: TimeoutInterface
-	readonly combined: AbortSignal
-}
+import type { ProviderOptions } from '@orkestrel/agent'
 
 /**
  * Represents the exact `POST /api/chat` request body `OllamaProvider` sends — the internal typed
@@ -85,7 +64,7 @@ export interface WireChatRequest {
  * holds a real API key — the real key lives only on the developer's server; the
  * `headers` hook supplies whatever short-lived/obfuscated token that server expects.
  */
-export interface OllamaOptions {
+export interface OllamaOptions extends ProviderOptions {
 	readonly model: string
 	/** Sets the daemon base URL; defaults to `'http://localhost:11434'`. */
 	readonly url?: string
@@ -95,8 +74,6 @@ export interface OllamaOptions {
 	 * {@link WireChatRequest.keep_alive}.
 	 */
 	readonly keepAlive?: string | number
-	/** Sets the per-call deadline in milliseconds; defaults to `120_000`. */
-	readonly timeout?: number
 	/**
 	 * Carries passthrough sampling parameters (`temperature`, `seed`, and `num_predict`).
 	 * Mirrors the Ollama `/api/chat` `options` field, whose value this key carries verbatim
@@ -113,48 +90,4 @@ export interface OllamaOptions {
 	 * way. Set it `true` for a thinking model whose reasoning you intend to display separately.
 	 */
 	readonly think?: boolean
-	/**
-	 * Sets a custom `fetch` implementation for every request; defaults to
-	 * `globalThis.fetch`. Lets a runtime inject its own transport (a browser fetch
-	 * pointed at the developer's server, an instrumented wrapper) without changing
-	 * the wire protocol. Omitted ⇒ the global `fetch`.
-	 */
-	readonly fetch?: typeof globalThis.fetch
-	/**
-	 * Sets a dynamic, possibly-async header injector called once per request; its returned
-	 * headers are merged into the request on top of the base `Content-Type`. Use it to
-	 * attach an authorization header — for example an obfuscated/generated bearer token the
-	 * developer's server validates before relaying to the real LLM — so a browser
-	 * runtime can authenticate without your app ever handling a real API key. Async so a
-	 * token can be refreshed/fetched per call. A returned `Content-Type` overrides the
-	 * default; other headers add to it. Omitted ⇒ only `Content-Type: application/json`.
-	 */
-	readonly headers?: () =>
-		| Readonly<Record<string, string>>
-		| Promise<Readonly<Record<string, string>>>
-	/**
-	 * Sets the provider's optional context-framing default — the provider-default level of
-	 * `AgentContext`'s format cascade (beaten by a manager-options or per-item override,
-	 * beating the managers' built-in framing). Declares how this provider's models prefer
-	 * context sections framed (for example XML group wrappers vs. Markdown headers). Omitted ⇒
-	 * the provider is framing-agnostic and core's built-in defaults apply unchanged. This
-	 * is the prompt-context framing consumed by `AgentContext.build()` — it is not
-	 * Ollama's `/api/chat` `format` wire parameter (structured-output / JSON schema),
-	 * which this provider sends only when a call supplies a `schema`; the two are unrelated
-	 * despite the shared word.
-	 */
-	readonly format?: ContextFormat
-}
-
-/**
- * Represents the options a thrown {@link OllamaHTTPError} accepts beside its message and status —
- * the standard error `cause` link, named so a consumer can reference the shape.
- *
- * @remarks
- * `cause` is the underlying value that produced the HTTP failure: the transport or
- * body-read rejection the provider caught before rethrowing. It is `unknown` because a
- * thrown value is unconstrained. Omitted ⇒ the error carries no cause.
- */
-export interface OllamaHTTPErrorOptions {
-	readonly cause?: unknown
 }

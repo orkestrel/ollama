@@ -17,20 +17,5 @@ export const DEFAULT_OLLAMA_URL = 'http://localhost:11434'
  */
 export const DEFAULT_KEEP_ALIVE = '5m'
 
-/**
- * Names the per-call deadline in milliseconds, `120_000`, when `OllamaOptions.timeout` is
- * omitted — generous enough that a cold model load does not trip it.
- */
-export const DEFAULT_PROVIDER_TIMEOUT = 120_000
-
-/**
- * Names the character cap, `2048`, on how much of a non-OK response body is
- * incorporated into a thrown {@link OllamaHTTPError}'s message.
- *
- * @remarks
- * Bounds the excerpt so a defensive proxy or a misbehaving daemon handing
- * back an unbounded response body cannot inflate the thrown error's message
- * without limit, while the cap stays generous enough to carry a useful
- * diagnostic snippet.
- */
-export const MAX_ERROR_BODY_LENGTH = 2048
+/** Names the Ollama chat endpoint appended to the configured base URL. */
+export const OLLAMA_CHAT_PATH = '/api/chat'

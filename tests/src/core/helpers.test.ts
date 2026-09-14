@@ -1,13 +1,10 @@
 import type { Message } from '@orkestrel/agent'
-import { createThinkSplitter } from '@orkestrel/agent'
 import {
-	buildResult,
 	extractArguments,
 	extractContent,
 	extractThinking,
 	extractTools,
 	extractUsage,
-	joinThinking,
 	mapMessages,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
@@ -63,28 +60,6 @@ describe('mapMessages', () => {
 	})
 })
 
-describe('buildResult', () => {
-	it('carries content alone when nothing else is present', () => {
-		expect(buildResult('ok', '', [], undefined)).toEqual({ content: 'ok' })
-	})
-
-	it('adds every populated optional', () => {
-		const calls = [{ id: 'call-1', name: 'weather', arguments: {} }]
-		const usage = { prompt: 3, completion: 4, total: 7 }
-
-		expect(buildResult('ok', 'weighing it', calls, usage)).toEqual({
-			content: 'ok',
-			thinking: 'weighing it',
-			tools: calls,
-			usage,
-		})
-	})
-
-	it('omits an empty thinking string and an empty tools array', () => {
-		expect(Object.keys(buildResult('', '', [], undefined))).toEqual(['content'])
-	})
-})
-
 describe('extractContent', () => {
 	it('reads a string message.content', () => {
 		expect(extractContent({ message: { content: 'ok' } })).toBe('ok')
@@ -114,28 +89,6 @@ describe('extractThinking', () => {
 
 	it('degrades to an empty string for a non-record message', () => {
 		expect(extractThinking({ message: null })).toBe('')
-	})
-})
-
-describe('joinThinking', () => {
-	it('returns the wire text alone when the splitter separated nothing', () => {
-		expect(joinThinking(createThinkSplitter(), 'from the wire')).toBe('from the wire')
-	})
-
-	it('returns the splitter text alone when no wire thinking arrived', () => {
-		const splitter = createThinkSplitter()
-		splitter.split('<think>in content</think>ok')
-		splitter.flush()
-
-		expect(joinThinking(splitter, '')).toBe('in content')
-	})
-
-	it('separates the two carriers with a blank line when both exist', () => {
-		const splitter = createThinkSplitter()
-		splitter.split('<think>in content</think>ok')
-		splitter.flush()
-
-		expect(joinThinking(splitter, 'from the wire')).toBe('in content\n\nfrom the wire')
 	})
 })
 

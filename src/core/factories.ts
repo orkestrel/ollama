@@ -4,8 +4,7 @@ import { OllamaProvider } from './OllamaProvider.js'
 
 /**
  * Creates a local Ollama inference provider — a {@link ProviderInterface} over the
- * daemon's `POST /api/chat`, supporting non-streaming `generate` and streaming
- * `stream`.
+ * daemon's `POST /api/chat`, assembling `generate` from the same NDJSON engine as `stream`.
  *
  * @remarks
  * Only `model` is required; `url` defaults to the local daemon, `keepAlive` to `'5m'`,

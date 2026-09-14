@@ -31,6 +31,8 @@ export interface RecordedRequest {
 	readonly path: string
 	readonly headers: Readonly<Record<string, string>>
 	readonly body: Record<string, unknown>
+	/** Holds the original JSON text when captured from a request. */
+	readonly text?: string
 }
 
 /** Represents a running recording proxy. */
@@ -168,17 +170,19 @@ export function createStreamingTransport(chunks: readonly string[]): typeof glob
 }
 
 /**
- * Builds a transport that records each request's URL and then delegates to the global fetch.
+ * Builds a transport that records each request's URL and delegates to the supplied transport.
  *
  * @param calls - The recorder that captures each request's URL, in call order
+ * @param transport - The delegate; defaults to the bound global fetch
  * @returns The transport to inject as a provider's `fetch` option
  */
 export function createRecordingTransport(
 	calls: RecorderInterface<readonly [string]>,
+	transport: typeof globalThis.fetch = globalThis.fetch.bind(globalThis),
 ): typeof globalThis.fetch {
 	return (input, init) => {
 		calls.handler(String(input))
-		return globalThis.fetch(input, init)
+		return transport(input, init)
 	}
 }
 
@@ -204,6 +208,7 @@ export async function createRecordingProxy(
 				path: new URL(request.url).pathname,
 				headers: flattenHeaders(request.headers),
 				body: parseRequestBody(text) ?? {},
+				text,
 			})
 			let upstreamResponse: Response
 			try {

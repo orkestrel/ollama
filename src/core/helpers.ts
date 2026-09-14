@@ -3,7 +3,7 @@
 // or malformed wire field degrades to a sensible default (empty content, no usage, `{}`
 // arguments), never a throw, and no value is reached through `as`.
 
-import type { Message, ProviderResult, ThinkSplitterInterface } from '@orkestrel/agent'
+import type { Message } from '@orkestrel/agent'
 import type { TokenUsage } from '@orkestrel/budget'
 import type { ToolCall } from '@orkestrel/tool'
 import type { WireChatRequest } from './types.js'
@@ -45,42 +45,6 @@ export function mapMessages(messages: readonly Message[]): WireChatRequest['mess
 }
 
 /**
- * Builds a `ProviderResult` from a turn's content, reasoning, tool calls, and usage.
- *
- * @remarks
- * Only the present optionals are set: no empty `thinking`, no empty `tools`, and no
- * `usage` unless the wire reported one.
- *
- * @param content - The clean assistant content the splitter accumulated
- * @param thinking - The joined reasoning, empty when the turn produced none
- * @param tools - The tool calls collected across the turn
- * @param usage - The token usage, or `undefined` when the wire reported none
- * @returns The result carrying only its populated fields
- *
- * @example
- * ```ts
- * buildResult('ok', '', [], undefined) // { content: 'ok' }
- * ```
- */
-export function buildResult(
-	content: string,
-	thinking: string,
-	tools: readonly ToolCall[],
-	usage: TokenUsage | undefined,
-): ProviderResult {
-	const result: {
-		content: string
-		thinking?: string
-		tools?: readonly ToolCall[]
-		usage?: TokenUsage
-	} = { content }
-	if (thinking.length > 0) result.thinking = thinking
-	if (tools.length > 0) result.tools = tools
-	if (usage !== undefined) result.usage = usage
-	return result
-}
-
-/**
  * Extracts the assistant text of one wire record.
  *
  * @param record - One parsed `/api/chat` record — a non-stream body or an NDJSON line
@@ -118,25 +82,6 @@ export function extractThinking(record: Readonly<Record<string, unknown>>): stri
 	if (!isRecord(message)) return ''
 	const thinking = Reflect.get(message, 'thinking')
 	return isString(thinking) ? thinking : ''
-}
-
-/**
- * Joins a call's reasoning carriers — the splitter's separated in-content spans and the
- * accumulated wire-side `message.thinking` — into the result's `thinking`.
- *
- * @param splitter - The per-call splitter holding the separated in-content spans
- * @param wired - The accumulated wire-side `message.thinking` text
- * @returns The carriers separated by a blank line, or whichever one is non-empty
- *
- * @example
- * ```ts
- * joinThinking(createThinkSplitter(), 'from the wire') // 'from the wire'
- * ```
- */
-export function joinThinking(splitter: ThinkSplitterInterface, wired: string): string {
-	if (splitter.thinking.length === 0) return wired
-	if (wired.length === 0) return splitter.thinking
-	return `${splitter.thinking}\n\n${wired}`
 }
 
 /**

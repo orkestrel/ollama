@@ -621,16 +621,20 @@ describe('OllamaProvider (recording proxy — transport seam headers)', () => {
 
 describe('OllamaProvider (transport seam — orthogonal to the deadline)', () => {
 	// Recipe: a headers hook set, one pre-aborted call and one live-signal call, both
-	// refused by the transport. Assertion: provider-behavior — the hook changes neither
-	// outcome, and the deadline armed around the refused call is cleared. A pre-aborted
-	// call never reaches the transport, so the live-signal call reads the deadline.
-	it('rejects a pre-aborted call carrying a headers hook, and clears the deadline of a refused one', async () => {
+	// refused by the transport. Assertion: provider-behavior — a pre-aborted call reaches
+	// neither the headers hook nor the transport, and the deadline armed around the
+	// refused live call is cleared.
+	it('a pre-aborted call reaches neither the headers hook nor the transport, and clears the deadline of a refused one', async () => {
 		const transport = createRefusingTransport()
+		const signals = createRecorder<readonly [AbortSignal]>()
 		const provider = new OllamaProvider({
 			model: 'test-model',
 			url: 'http://127.0.0.1:1',
 			timeout: DEADLINE_MS,
-			headers: () => ({ authorization: 'Bearer x' }),
+			headers: (signal) => {
+				signals.handler(signal)
+				return { authorization: 'Bearer x' }
+			},
 			fetch: transport.fetch,
 		})
 		const aborted = createAbort()
@@ -639,6 +643,8 @@ describe('OllamaProvider (transport seam — orthogonal to the deadline)', () =>
 		await expect(provider.generate([createUserMessage('hi')], aborted.signal)).rejects.toThrow(
 			Error,
 		)
+		expect(signals.count).toBe(0)
+
 		await expect(
 			provider.generate([createUserMessage('hi')], createAbort().signal),
 		).rejects.toThrow(Error)
@@ -707,9 +713,11 @@ describe('OllamaProvider (unreachable)', () => {
 // outlet: an uncleared deadline aborts it on expiry, a cleared one never does. The
 // transport refuses in-process, so reading the signal never races a connection attempt.
 describe('OllamaProvider (deadline cleanup)', () => {
-	// The control for the two guards below: a slow headers hook holds the call past the
+	// The control for the guard below: a slow headers hook holds the call past the
 	// deadline, so the signal received by the hook aborts. It proves an unaborted signal is
-	// a result rather than the only value those assertions can produce.
+	// a result rather than the only value that assertion can produce. The base passes one
+	// combined signal to the header hook and to the transport, which is why the hook's
+	// signal stands in for the transport's in this control.
 	it('aborts the request the deadline was armed around when that deadline expires', async () => {
 		const transport = createRefusingTransport()
 		const signals = createRecorder<readonly [AbortSignal]>()
@@ -732,31 +740,6 @@ describe('OllamaProvider (deadline cleanup)', () => {
 		expect(signals.count).toBe(1)
 		expect(signals.calls[0]?.[0].aborted).toBe(true)
 		expect(transport.signals).toEqual([])
-	})
-
-	it('clears the deadline when a pre-aborted call rejects', async () => {
-		const transport = createRefusingTransport()
-		const provider = new OllamaProvider({
-			model: 'test-model',
-			url: 'http://127.0.0.1:1',
-			timeout: DEADLINE_MS,
-			fetch: transport.fetch,
-		})
-		const aborted = createAbort()
-		aborted.abort()
-
-		await expect(
-			provider.generate([createUserMessage('Say hello.')], aborted.signal),
-		).rejects.toThrow(Error)
-		// The pre-aborted call never reaches the transport. A live-signal call through
-		// the same provider carries the readable deadline.
-		await expect(
-			provider.generate([createUserMessage('Say hello.')], createAbort().signal),
-		).rejects.toThrow(Error)
-		await waitForDelay(SETTLE_MS)
-
-		expect(transport.signals.length).toBe(1)
-		expect(transport.signals[0]?.aborted).toBe(false)
 	})
 
 	it('clears the deadline when the transport refuses the connection', async () => {

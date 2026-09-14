@@ -187,8 +187,8 @@ export interface RecordedRequest {
 	readonly path: string
 	readonly headers: Readonly<Record<string, string>>
 	readonly body: Record<string, unknown>
-	/** Holds the original JSON text when captured from a request. */
-	readonly text?: string
+	/** Holds the original JSON text captured from the request. */
+	readonly text: string
 }
 
 /** Represents a running recording proxy. */

@@ -15,6 +15,7 @@
 // sits at the tests root in its own `setup` project.
 
 import type { AgentResult, Message } from '@orkestrel/agent'
+import type { RecordedRequest } from './setupServer.js'
 import type { ToolResult } from '@orkestrel/tool'
 import { createRecorder } from '@orkestrel/test'
 import { createWorkspace } from '@orkestrel/workspace'
@@ -51,16 +52,11 @@ import {
 	withScheme,
 } from './setupServer.js'
 
-// Build a minimal RecordedRequest-shaped value for the wire-narrowing helper tests
-// below — method/path/headers are irrelevant to wireMessages/wireText/systemText, so
-// only `body` varies per case.
-function requestWithBody(body: Record<string, unknown>): {
-	readonly method: string
-	readonly path: string
-	readonly headers: Readonly<Record<string, string>>
-	readonly body: Record<string, unknown>
-} {
-	return { method: 'POST', path: '/api/chat', headers: {}, body }
+// Build a minimal RecordedRequest for the wire-narrowing helper tests below —
+// method/path/headers/text are irrelevant to wireMessages/wireText/systemText, so only
+// `body` varies per case.
+function requestWithBody(body: Record<string, unknown>): RecordedRequest {
+	return { method: 'POST', path: '/api/chat', headers: {}, body, text: JSON.stringify(body) }
 }
 
 describe('parseRequestBody', () => {

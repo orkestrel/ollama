@@ -3,6 +3,7 @@ import type {
 	AgentResult,
 	AgentStreamInterface,
 	ProviderDelta,
+	ProviderInterface,
 	ProviderResult,
 } from '@orkestrel/agent'
 import type { ToolCall, ToolDefinition, ToolInterface, ToolResult } from '@orkestrel/tool'
@@ -13,6 +14,161 @@ import { arrayOf, isRecord, isString, parseJSONAs } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
 import { createTool } from '@orkestrel/tool'
+import { createRelay } from '@orkestrel/agent'
+
+/** Names the fictional browser credential accepted by the relay fixture. */
+export const OBFUSCATED = 'Bearer obfuscated-7f3a-token'
+
+/** Names the fictional credential supplied only by the daemon-facing provider. */
+export const UPSTREAM_KEY = 'Bearer fixture-upstream-key'
+
+/** Defines the daemon response shared by relay composition proofs. */
+export const RELAY_DAEMON_CHUNKS: readonly string[] = Object.freeze([
+	'{"message":{"content":"Hello "}}\n',
+	'{"message":{"thinking":"checking"}}\n',
+	'{"message":{"content":"world","tool_calls":[{"id":"weather-call","function":{"name":"get_weather","arguments":{"city":"Oslo"}}}]}}\n',
+	'{"done":true,"prompt_eval_count":3,"eval_count":4}\n',
+])
+
+/** Represents a captured transport request with its cancellation signal. */
+export interface TransportRequest extends RecordedRequest {
+	readonly signal: AbortSignal
+}
+
+/** Exposes captured requests and response bytes around a real or canned transport. */
+export interface CapturedTransportInterface {
+	readonly requests: readonly TransportRequest[]
+	readonly chunks: readonly string[]
+	readonly fetch: typeof globalThis.fetch
+}
+
+/**
+ * Records request fields and response bytes without replacing transport behavior.
+ *
+ * @param transport - The real fetch or canned daemon transport to drive
+ * @returns The transport and its request and response observations
+ */
+export function createCapturedTransport(
+	transport: typeof globalThis.fetch = globalThis.fetch.bind(globalThis),
+): CapturedTransportInterface {
+	const requests: TransportRequest[] = []
+	const chunks: string[] = []
+	return {
+		requests,
+		chunks,
+		async fetch(input, init) {
+			const request = new Request(input, init)
+			const text = await request.clone().text()
+			requests.push({
+				method: request.method,
+				path: new URL(request.url).pathname,
+				headers: flattenHeaders(request.headers),
+				body: parseRequestBody(text) ?? {},
+				text,
+				signal: request.signal,
+			})
+			const response = await transport(input, init)
+			if (response.body === null) return response
+			const decoder = new TextDecoder()
+			return new Response(
+				response.body.pipeThrough(
+					new TransformStream<Uint8Array, Uint8Array>({
+						transform(chunk, controller) {
+							chunks.push(decoder.decode(chunk, { stream: true }))
+							controller.enqueue(chunk)
+						},
+						flush() {
+							chunks.push(decoder.decode())
+						},
+					}),
+				),
+				{ status: response.status, headers: response.headers },
+			)
+		},
+	}
+}
+
+/** Exposes an open daemon response and its explicit failure and cancellation controls. */
+export interface OpenTransportInterface {
+	readonly fetch: typeof globalThis.fetch
+	readonly cancelled: Promise<void>
+	fail(error: Error): void
+}
+
+/**
+ * Creates a single-use daemon stream that stays open after the supplied NDJSON chunk.
+ *
+ * @param chunk - The bytes to deliver before waiting for cancellation or failure
+ * @returns The transport, explicit failure control, and observed cancellation
+ */
+export function createOpenTransport(chunk: string): OpenTransportInterface {
+	const cancelled = Promise.withResolvers<void>()
+	let controller: ReadableStreamDefaultController<Uint8Array> | undefined
+	return {
+		cancelled: cancelled.promise,
+		fetch() {
+			return Promise.resolve(
+				new Response(
+					new ReadableStream<Uint8Array>({
+						start(stream) {
+							controller = stream
+							stream.enqueue(new TextEncoder().encode(chunk))
+						},
+						cancel() {
+							cancelled.resolve()
+						},
+					}),
+					{ headers: { 'content-type': 'application/x-ndjson' } },
+				),
+			)
+		},
+		fail(error) {
+			if (controller === undefined) throw new Error('daemon transport has not been called')
+			controller.error(error)
+		},
+	}
+}
+
+/**
+ * Starts an authenticated provider relay and records its inbound requests.
+ *
+ * @param provider - The real server-side provider mounted at POST /inference
+ * @returns The ephemeral loopback server, recorded requests, and shutdown operation
+ */
+export async function createRelayServer(
+	provider: ProviderInterface,
+): Promise<RecordingProxyInterface> {
+	const requests: RecordedRequest[] = []
+	const relay = createRelay({
+		provider,
+		authorize: (request) => request.headers.get('authorization') === OBFUSCATED,
+	})
+	const dispatcher = createDispatcher<Record<string, never>>()
+	dispatcher.add({
+		method: 'POST',
+		path: '/inference',
+		async handler(request) {
+			const text = await request.clone().text()
+			requests.push({
+				method: request.method,
+				path: new URL(request.url).pathname,
+				headers: flattenHeaders(request.headers),
+				body: parseRequestBody(text) ?? {},
+				text,
+			})
+			return relay(request)
+		},
+	})
+	const server = createServer({ dispatcher, state: () => ({}), host: '127.0.0.1' })
+	const port = await server.start()
+	return {
+		url: `http://127.0.0.1:${port}`,
+		requests,
+		stop() {
+			return server.stop()
+		},
+	}
+}
 
 /** Defines the weather function shared by provider wire and live tool-call tests. */
 export const WEATHER_TOOL: ToolDefinition = Object.freeze({

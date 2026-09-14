@@ -12,16 +12,149 @@ import { isRecord } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
 import { createRecorder, waitForAbort } from '@orkestrel/test'
+import { createOllama } from '@src/core'
+import { createNDJSONParser } from '@orkestrel/ndjson'
 import { describe, expect, it } from 'vitest'
 import {
 	createRecordingProxy,
 	createRecordingTransport,
+	createRelayServer,
+	createCapturedTransport,
+	createOpenTransport,
+	createStreamingTransport,
+	OBFUSCATED,
 	drive,
 	INSATIABLE_TOOL_CHUNKS,
 	insatiableResult,
 	waitForRequest,
 	WEATHER_TOOL,
 } from './setupServer.js'
+
+describe('createRelayServer', () => {
+	it('records accepted and refused request fields and mounts the authenticated inference route', async () => {
+		const daemon = createCapturedTransport(
+			createStreamingTransport(['{"message":{"content":"answer"}}\n']),
+		)
+		const server = await createRelayServer(
+			createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
+		)
+		try {
+			const body = { messages: [{ id: 'question', role: 'user', content: 'Hello' }] }
+			const accepted = await fetch(`${server.url}/inference`, {
+				method: 'POST',
+				headers: { authorization: OBFUSCATED, 'x-trace': 'relay-fixture' },
+				body: JSON.stringify(body),
+			})
+			expect(accepted.status).toBe(200)
+			expect(createNDJSONParser().parse(await accepted.text())).toEqual([
+				{ channel: 'content', text: 'answer' },
+				{ channel: 'result', result: { content: 'answer' } },
+			])
+			const refused = await fetch(`${server.url}/inference`, {
+				method: 'POST',
+				headers: { authorization: `${OBFUSCATED}-wrong` },
+				body: JSON.stringify(body),
+			})
+			expect(refused.status).toBe(401)
+			expect(await refused.text()).toBe('')
+			expect(daemon.requests).toHaveLength(1)
+			expect(server.requests).toHaveLength(2)
+			expect(server.requests[0]).toMatchObject({
+				method: 'POST',
+				path: '/inference',
+				body,
+				headers: { authorization: OBFUSCATED, 'x-trace': 'relay-fixture' },
+				text: JSON.stringify(body),
+			})
+			expect(server.requests[1]).toMatchObject({
+				method: 'POST',
+				path: '/inference',
+				body,
+				headers: { authorization: `${OBFUSCATED}-wrong` },
+			})
+		} finally {
+			await server.stop()
+		}
+		await expect(fetch(`${server.url}/inference`, { method: 'POST', body: '{}' })).rejects.toThrow(
+			'fetch failed',
+		)
+	})
+})
+
+describe('createCapturedTransport', () => {
+	it('records request fields and cancellation while preserving streamed response bytes and headers', async () => {
+		const transport = createCapturedTransport(createStreamingTransport(['{"word":"caf', 'é"}\n']))
+		const abort = new AbortController()
+		const response = await transport.fetch('http://127.0.0.1/api/chat', {
+			method: 'POST',
+			headers: { authorization: 'Bearer fixture' },
+			body: '{"model":"fixture"}',
+			signal: abort.signal,
+		})
+		expect(response.status).toBe(200)
+		expect(response.headers.get('content-type')).toBe('application/x-ndjson')
+		expect(await response.text()).toBe('{"word":"café"}\n')
+		expect(transport.chunks.join('')).toBe('{"word":"café"}\n')
+		expect(transport.requests[0]).toMatchObject({
+			method: 'POST',
+			path: '/api/chat',
+			headers: { authorization: 'Bearer fixture' },
+			body: { model: 'fixture' },
+			text: '{"model":"fixture"}',
+		})
+		expect(transport.requests[0]?.signal.aborted).toBe(false)
+		abort.abort()
+		expect(transport.requests[0]?.signal.aborted).toBe(true)
+	})
+
+	it('preserves a bodyless refusal response', async () => {
+		const transport = createCapturedTransport(() =>
+			Promise.resolve(new Response(null, { status: 401 })),
+		)
+		const response = await transport.fetch('http://127.0.0.1/inference')
+		expect(response.status).toBe(401)
+		expect(response.body).toBeNull()
+		expect(transport.chunks).toEqual([])
+	})
+})
+
+describe('createOpenTransport', () => {
+	it('delivers the supplied bytes and reports cancellation of its open body', async () => {
+		const transport = createOpenTransport('first\n')
+		const response = await transport.fetch('http://127.0.0.1/api/chat')
+		const reader = response.body?.getReader()
+		if (reader === undefined) throw new Error('open transport returned no body')
+		try {
+			expect(await reader.read()).toEqual({
+				done: false,
+				value: new TextEncoder().encode('first\n'),
+			})
+			await reader.cancel()
+			await transport.cancelled
+		} finally {
+			await reader.cancel()
+			reader.releaseLock()
+		}
+	})
+
+	it('errors a pending read after its supplied bytes and rejects failure before a call', async () => {
+		const transport = createOpenTransport('first\n')
+		const error = new Error('fixture failure')
+		expect(() => transport.fail(error)).toThrow('daemon transport has not been called')
+		const response = await transport.fetch('http://127.0.0.1/api/chat')
+		const reader = response.body?.getReader()
+		if (reader === undefined) throw new Error('open transport returned no body')
+		try {
+			expect((await reader.read()).done).toBe(false)
+			const pending = reader.read()
+			transport.fail(error)
+			await expect(pending).rejects.toBe(error)
+		} finally {
+			await reader.cancel().catch(() => {})
+			reader.releaseLock()
+		}
+	})
+})
 
 /** A fixture upstream a recording proxy forwards to. */
 interface UpstreamInterface {

@@ -1,11 +1,6 @@
-// The src/server integration scope: the published provider driven from outside by the
-// real `@orkestrel/agent` consumer. Every runtime proof here is hermetic — a recording
-// proxy captures the exact `/api/chat` request body before a deliberately unreachable
-// forward fails — so the whole file passes with the daemon down. The module tests for the
-// provider and its factory stay in `OllamaProvider.test.ts` and `factories.test.ts`, and
-// the compile-time contract this package shares with the official `ollama` client is the
-// `conformance` project in `tests/conformance.test.ts`; this file proves what a real
-// consumer's context assembly puts on the wire.
+// Hermetic core compositions drive the published provider through the real agent and
+// relay consumers. Local recording servers capture the requests; canned or unreachable
+// daemon transports keep these proofs independent of a running Ollama service.
 
 import type { ContextFormat, Message } from '@orkestrel/agent'
 import {
@@ -15,9 +10,13 @@ import {
 	createConversationManager,
 	createInstructionManager,
 	createScope,
+	createRelayProvider,
 	isConversationError,
+	isProviderAbortError,
+	isProviderError,
 } from '@orkestrel/agent'
-import { createRecorder } from '@orkestrel/test'
+import { createRecorder, waitForAbort } from '@orkestrel/test'
+import { createNDJSONParser } from '@orkestrel/ndjson'
 import { createToolManager } from '@orkestrel/tool'
 import { createBinaryContent, createFile } from '@orkestrel/workspace'
 import { createOllama } from '@src/core'
@@ -33,6 +32,15 @@ import {
 	createInsatiableTool,
 	createLookupTool,
 	createRecordingProxy,
+	createCapturedTransport,
+	createOpenTransport,
+	createRelayServer,
+	createStreamingTransport,
+	drive,
+	OBFUSCATED,
+	UPSTREAM_KEY,
+	RELAY_DAEMON_CHUNKS,
+	WEATHER_TOOL,
 	systemText,
 	waitForRequest,
 	wireMessages,
@@ -41,6 +49,228 @@ import {
 } from '../../setupServer.js'
 
 const TIMEOUT = 60_000
+
+describe('RelayProvider through a real server and OllamaProvider', () => {
+	it('relays ordered content and thinking, tools, and usage while separating hop credentials', async () => {
+		const daemon = createCapturedTransport(createStreamingTransport(RELAY_DAEMON_CHUNKS))
+		const server = await createRelayServer(
+			createOllama({
+				model: 'fixture-model',
+				headers: () => ({ authorization: UPSTREAM_KEY }),
+				fetch: daemon.fetch,
+			}),
+		)
+		try {
+			const browser = createRelayProvider({
+				url: `${server.url}/inference`,
+				parser: createNDJSONParser,
+				headers: () => ({ authorization: OBFUSCATED }),
+			})
+			const messages: readonly Message[] = [{ id: 'question', role: 'user', content: 'Hello' }]
+			const signal = AbortSignal.timeout(2000)
+			const stream = browser.stream(messages, signal)
+			expect(await stream.next()).toEqual({
+				done: false,
+				value: { channel: 'content', text: 'Hello ' },
+			})
+			expect(await stream.next()).toEqual({
+				done: false,
+				value: { channel: 'thinking', text: 'checking' },
+			})
+			expect(await stream.next()).toEqual({
+				done: false,
+				value: { channel: 'content', text: 'world' },
+			})
+			const settled = await stream.next()
+			expect(settled).toEqual({
+				done: true,
+				value: {
+					content: 'Hello world',
+					thinking: 'checking',
+					tools: [{ id: 'weather-call', name: 'get_weather', arguments: { city: 'Oslo' } }],
+					usage: { prompt: 3, completion: 4, total: 7 },
+				},
+			})
+			expect(await browser.generate(messages, signal)).toEqual(settled.value)
+			expect(server.requests).toHaveLength(2)
+			expect(daemon.requests).toHaveLength(2)
+			for (const request of server.requests) {
+				expect(request.headers.authorization).toBe(OBFUSCATED)
+				expect(Object.values(request.headers)).not.toContain(UPSTREAM_KEY)
+			}
+			for (const request of daemon.requests) {
+				expect(request.path).toBe('/api/chat')
+				expect(request.headers.authorization).toBe(UPSTREAM_KEY)
+				expect(Object.values(request.headers)).not.toContain(OBFUSCATED)
+			}
+		} finally {
+			await server.stop()
+		}
+	})
+
+	it('refuses a wrong bearer with an empty HTTP 401 and never enters the daemon transport', async () => {
+		const daemon = createCapturedTransport(createStreamingTransport(RELAY_DAEMON_CHUNKS))
+		const server = await createRelayServer(
+			createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
+		)
+		try {
+			const browser = createRelayProvider({
+				url: `${server.url}/inference`,
+				parser: createNDJSONParser,
+				headers: () => ({ authorization: 'Bearer wrong-token' }),
+			})
+			const error = await browser
+				.generate([], AbortSignal.timeout(2000))
+				.catch((failure: unknown) => failure)
+			expect(isProviderError(error)).toBe(true)
+			expect(error).toMatchObject({ code: 'HTTP', status: 401, message: 'provider error: 401' })
+			expect(server.requests[0]?.headers.authorization).toBe('Bearer wrong-token')
+			expect(daemon.requests).toEqual([])
+		} finally {
+			await server.stop()
+		}
+	})
+
+	it('browser cancellation aborts the daemon request, preserves partial content, and releases the stream', async () => {
+		const open = createOpenTransport('{"message":{"content":"first"}}\n')
+		const daemon = createCapturedTransport(open.fetch)
+		const server = await createRelayServer(
+			createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
+		)
+		const abort = new AbortController()
+		try {
+			const browser = createRelayProvider({
+				url: `${server.url}/inference`,
+				parser: createNDJSONParser,
+				headers: () => ({ authorization: OBFUSCATED }),
+			})
+			const stream = browser.stream([], abort.signal)
+			expect(await stream.next()).toEqual({
+				done: false,
+				value: { channel: 'content', text: 'first' },
+			})
+			const request = daemon.requests[0]
+			if (request === undefined) throw new Error('daemon request was not recorded')
+			expect(request.signal.aborted).toBe(false)
+			abort.abort()
+			const error = await stream.next().catch((failure: unknown) => failure)
+			expect(isProviderAbortError(error)).toBe(true)
+			expect(error).toMatchObject({ partial: { content: 'first' } })
+			await waitForAbort(request.signal)
+			expect(request.signal.aborted).toBe(true)
+			await open.cancelled
+		} finally {
+			abort.abort()
+			await server.stop()
+		}
+	}, 3000)
+
+	it('a server deadline crosses as an abort frame with its partial while the browser signal stays active', async () => {
+		const open = createOpenTransport('{"message":{"content":"first"}}\n')
+		const daemon = createCapturedTransport(open.fetch)
+		const wire = createCapturedTransport()
+		const server = await createRelayServer(
+			createOllama({ model: 'fixture-model', fetch: daemon.fetch, timeout: 50 }),
+		)
+		const abort = new AbortController()
+		try {
+			const browser = createRelayProvider({
+				url: `${server.url}/inference`,
+				parser: createNDJSONParser,
+				headers: () => ({ authorization: OBFUSCATED }),
+				fetch: wire.fetch,
+			})
+			const stream = browser.stream([], abort.signal)
+			expect(await stream.next()).toEqual({
+				done: false,
+				value: { channel: 'content', text: 'first' },
+			})
+			const error = await stream.next().catch((failure: unknown) => failure)
+			expect(isProviderAbortError(error)).toBe(true)
+			expect(error).toMatchObject({ code: 'ABORT', partial: { content: 'first' } })
+			expect(abort.signal.aborted).toBe(false)
+			expect(daemon.requests[0]?.signal.aborted).toBe(true)
+			expect(createNDJSONParser().parse(wire.chunks.join(''))).toEqual([
+				{ channel: 'content', text: 'first' },
+				{ channel: 'abort', partial: { content: 'first' } },
+			])
+			await open.cancelled
+		} finally {
+			abort.abort()
+			await server.stop()
+		}
+	}, 3000)
+
+	it('a daemon stream failure crosses only as the fixed public error frame', async () => {
+		const open = createOpenTransport('{"message":{"content":"first"}}\n')
+		const wire = createCapturedTransport()
+		const server = await createRelayServer(
+			createOllama({ model: 'fixture-model', fetch: open.fetch }),
+		)
+		const abort = new AbortController()
+		try {
+			const browser = createRelayProvider({
+				url: `${server.url}/inference`,
+				parser: createNDJSONParser,
+				headers: () => ({ authorization: OBFUSCATED }),
+				fetch: wire.fetch,
+			})
+			const stream = browser.stream([], abort.signal)
+			expect(await stream.next()).toEqual({
+				done: false,
+				value: { channel: 'content', text: 'first' },
+			})
+			open.fail(new Error('fixture-daemon-private-text'))
+			const error = await stream.next().catch((failure: unknown) => failure)
+			expect(isProviderError(error)).toBe(true)
+			expect(isProviderAbortError(error)).toBe(false)
+			expect(error).toMatchObject({ code: 'PROVIDER', message: 'relay provider failed' })
+			expect(String(error)).not.toContain('fixture-daemon-private-text')
+			expect(createNDJSONParser().parse(wire.chunks.join(''))).toEqual([
+				{ channel: 'content', text: 'first' },
+				{ channel: 'error', message: 'relay provider failed' },
+			])
+		} finally {
+			abort.abort()
+			await server.stop()
+		}
+	}, 3000)
+
+	it('advertises a function tool and replays returned calls in a following tool message', async () => {
+		const daemon = createCapturedTransport(createStreamingTransport(RELAY_DAEMON_CHUNKS))
+		const server = await createRelayServer(
+			createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
+		)
+		try {
+			const browser = createRelayProvider({
+				url: `${server.url}/inference`,
+				parser: createNDJSONParser,
+				headers: () => ({ authorization: OBFUSCATED }),
+			})
+			const signal = AbortSignal.timeout(2000)
+			const { result } = await drive(browser.stream([], signal, [WEATHER_TOOL]))
+			expect(daemon.requests[0]?.body.tools).toEqual([{ type: 'function', function: WEATHER_TOOL }])
+			const call = result.tools?.[0]
+			if (call === undefined) throw new Error('relay returned no tool call')
+			expect(typeof call.id).toBe('string')
+			expect(call).toEqual({ id: 'weather-call', name: 'get_weather', arguments: { city: 'Oslo' } })
+			const messages: readonly Message[] = [
+				{ id: 'weather-result', role: 'tool', content: 'Sunny', calls: [call] },
+			]
+			await browser.generate(messages, signal)
+			expect(server.requests[1]?.body.messages).toEqual(messages)
+			expect(daemon.requests[1]?.body.messages).toEqual([
+				{
+					role: 'tool',
+					content: 'Sunny',
+					tool_calls: [{ function: { name: 'get_weather', arguments: { city: 'Oslo' } } }],
+				},
+			])
+		} finally {
+			await server.stop()
+		}
+	})
+})
 
 // A tiny 1x1 transparent PNG, base64-encoded — a hardcoded binary fixture: a small
 // deterministic binary payload inline rather than a generated one.

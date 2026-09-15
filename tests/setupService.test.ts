@@ -18,6 +18,8 @@
 
 import type { ContextFormat } from '@orkestrel/agent'
 import { createConversation } from '@orkestrel/agent'
+import { createScratch } from '@orkestrel/test/server'
+import { join } from 'node:path'
 import { arrayOf, isRecord } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
@@ -54,10 +56,14 @@ interface DaemonInterface {
 	readonly calls: readonly string[]
 	/** Every `/api/chat` body the fixture received, in call order. */
 	readonly chats: readonly ChatBody[]
+	/** Every origin the fixture was asked to preflight `/api/chat` for, in call order. */
+	readonly preflights: readonly string[]
 	/** Replace the `/api/tags` answer. */
 	tags(answer: TagsAnswer): void
 	/** Replace the `/api/chat` answer. */
 	chat(answer: ChatAnswer): void
+	/** Replace the origins the fixture permits on an `/api/chat` preflight. */
+	origins(allowed: readonly string[]): void
 	stop(): Promise<void>
 }
 
@@ -87,9 +93,11 @@ const FRAMING: ContextFormat = {
 async function createDaemon(): Promise<DaemonInterface> {
 	const calls: string[] = []
 	const chats: ChatBody[] = []
+	const preflights: string[] = []
 	const park = new AbortController()
 	let tagsAnswer = READY_TAGS
 	let chatAnswer = READY_CHAT
+	let allowedOrigins: readonly string[] = []
 	let running = true
 	const dispatcher = createDispatcher<Record<string, never>>()
 	dispatcher.add({
@@ -121,6 +129,23 @@ async function createDaemon(): Promise<DaemonInterface> {
 			)
 		},
 	})
+	dispatcher.add({
+		method: 'OPTIONS',
+		path: '/api/chat',
+		handler(request) {
+			const origin = request.headers.get('origin') ?? ''
+			preflights.push(origin)
+			if (!allowedOrigins.includes(origin)) return new Response(undefined, { status: 403 })
+			return new Response(undefined, {
+				status: 204,
+				headers: {
+					'access-control-allow-origin': origin,
+					'access-control-allow-methods': 'POST,OPTIONS',
+					'access-control-allow-headers': 'Content-Type',
+				},
+			})
+		},
+	})
 	const server = createServer({ dispatcher, state: () => ({}), host: '127.0.0.1' })
 	const port = await server.start()
 	return {
@@ -131,11 +156,17 @@ async function createDaemon(): Promise<DaemonInterface> {
 		get chats() {
 			return chats
 		},
+		get preflights() {
+			return preflights
+		},
 		tags(answer) {
 			tagsAnswer = answer
 		},
 		chat(answer) {
 			chatAnswer = answer
+		},
+		origins(allowed) {
+			allowedOrigins = allowed
 		},
 		async stop() {
 			if (!running) return
@@ -158,6 +189,11 @@ process.env.OLLAMA_MODEL = FIXTURE_MODEL
 const {
 	ABORT_OPTIONS,
 	createLiveOllama,
+	PAGE_BROWSER_ARGS,
+	PAGE_OPTIONS,
+	requireBuild,
+	requireDaemonOrigin,
+	requirePageBrowser,
 	createLiveSummarizer,
 	FAST_OPTIONS,
 	isOllamaReady,
@@ -183,6 +219,7 @@ const TABLES: readonly NamedTable[] = [
 	['SEED_OPTIONS', SEED_OPTIONS],
 	['THINK_OPTIONS', THINK_OPTIONS],
 	['TOOL_LOOP_OPTIONS', TOOL_LOOP_OPTIONS],
+	['PAGE_OPTIONS', PAGE_OPTIONS],
 ]
 
 /** Read the newest recorded chat body, failing when the fixture recorded none. */
@@ -380,6 +417,65 @@ describe('the sampling tables', () => {
 		if (!isRecord(declared)) throw new Error('the service project declares no test configuration')
 
 		expect(RETRY_BUDGET).toBe(declared.testTimeout)
+	})
+})
+
+// The live page proof's gates. Each resolves on call, so the hermetic half asserted here
+// is each gate's refusal and the reading it returns against a fixture; the live half — a
+// real browser, a real build, and the real daemon's answer — is the `service` project's.
+
+describe('PAGE_BROWSER_ARGS', () => {
+	it('freezes the container-safe launch flags every page session takes', () => {
+		expect(Object.isFrozen(PAGE_BROWSER_ARGS)).toBe(true)
+		expect([...PAGE_BROWSER_ARGS]).toEqual([
+			'--no-sandbox',
+			'--disable-dev-shm-usage',
+			'--disable-gpu',
+		])
+	})
+})
+
+describe('requirePageBrowser', () => {
+	it('throws naming what to install when no candidate source resolves a browser', () => {
+		// Every candidate source is emptied, so this reads the refusal on any host rather
+		// than the host's own browser, and `npm test` never needs one.
+		expect(() => requirePageBrowser({ env: {}, paths: [], names: [], stores: [] })).toThrow(
+			/requires a Chromium-family browser on this host and found none/,
+		)
+		expect(() => requirePageBrowser({ env: {}, paths: [], names: [], stores: [] })).toThrow(
+			/PLAYWRIGHT_EXECUTABLE_PATH or CHROME_PATH/,
+		)
+	})
+})
+
+describe('requireBuild', () => {
+	it('resolves the built core entry, and throws naming the build when it is absent', () => {
+		const built = createScratch({ files: { 'dist/src/core/index.js': 'export const x = 1\n' } })
+		const bare = createScratch()
+		try {
+			expect(requireBuild(built.path)).toBe(join(built.path, 'dist', 'src', 'core', 'index.js'))
+			expect(() => requireBuild(bare.path)).toThrow(/run npm run build/)
+		} finally {
+			built.destroy()
+			bare.destroy()
+		}
+	})
+})
+
+describe('requireDaemonOrigin', () => {
+	it('accepts an origin the daemon permits and throws naming OLLAMA_ORIGINS for one it refuses', async () => {
+		const permitted = 'http://127.0.0.1:54321'
+		const refused = 'http://refused.example.com'
+		daemon.origins([permitted])
+		const seen = daemon.preflights.length
+
+		await expect(requireDaemonOrigin(permitted)).resolves.toBeUndefined()
+		await expect(requireDaemonOrigin(refused)).rejects.toThrow(`refuses the page origin ${refused}`)
+		await expect(requireDaemonOrigin(refused)).rejects.toThrow(
+			'set OLLAMA_ORIGINS to include that origin',
+		)
+
+		expect(daemon.preflights.slice(seen)).toEqual([permitted, refused, refused])
 	})
 })
 

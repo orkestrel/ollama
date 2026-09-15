@@ -1,5 +1,6 @@
 import type { Message } from '@orkestrel/agent'
 import type { RecorderInterface } from '@orkestrel/test'
+import type { ToolDefinition } from '@orkestrel/tool'
 import type { WorkspaceInterface } from '@orkestrel/workspace'
 
 // ── Agent data-stub factory (real shape, not a mock) ─────────────────────────
@@ -150,3 +151,28 @@ export function fillWorkspace(workspace: WorkspaceInterface, options?: FillWorks
 		workspace.write(options.sentinelPath, options.sentinelText)
 	}
 }
+
+// ── Page tool definition ──────────────────────────────────────────────────────
+//
+// The tool the live page proof registers with its in-page agent, declared here so
+// the served page script, the model's advertised tool, and the test's wire
+// assertions all read one definition across the string boundary.
+
+/**
+ * Defines the note-writing tool the page proof's in-page agent advertises.
+ *
+ * @remarks
+ * The definition carries no handler: the page builds the executing tool from these
+ * fields, and its handler mints a receipt and writes it into a real DOM element. The
+ * receipt is minted during execution, so it cannot appear in the prompt and a model
+ * answer that carries it can only have come from the page's own execution.
+ */
+export const PAGE_TOOL: ToolDefinition = Object.freeze({
+	name: 'record',
+	description: 'Write a note into the page and return the receipt the page minted for it.',
+	parameters: {
+		type: 'object',
+		properties: { note: { type: 'string', description: 'The note to write into the page' } },
+		required: ['note'],
+	},
+})

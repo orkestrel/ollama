@@ -1,13 +1,13 @@
 // The shared test infrastructure's own proof, over two subjects: the conversation
-// padding, the throwing summarizer, and the workspace seeder exported from
-// `tests/setup.ts`, and the host-independent half of `tests/setupServer.ts` — its
-// request-narrowing guards, its refusing transport, its tool fixtures, its agent-stream
-// driver, and its environment readers. Each is real code the module, integration, and
-// live-service suites rely on, so it is proved here rather than trusted.
+// padding, the throwing summarizer, the workspace seeder, and the page tool definition
+// exported from `tests/setup.ts`, and the host-independent half of `tests/setupServer.ts`
+// — its request-narrowing guards, its refusing transport, its tool fixtures, its
+// agent-stream driver, and its environment readers. Each is real code the module,
+// integration, and live-service suites rely on, so it is proved here rather than trusted.
 //
 // The rest of that surface is proved beside this file. `tests/setupServer.test.ts` owns
 // the Node-resource half of `tests/setupServer.ts`: the recording proxy, the capture
-// wait, the provider-stream driver, and the shared wire tables.
+// wait, the provider-stream driver, and the wire tables that module declares.
 // `tests/setupService.test.ts` owns the hermetic half of `tests/setupService.ts`, whose
 // live half the `service` project proves against a real daemon.
 //
@@ -17,6 +17,7 @@
 import type { AgentResult, Message } from '@orkestrel/agent'
 import type { RecordedRequest } from './setupServer.js'
 import type { ToolContext, ToolResult } from '@orkestrel/tool'
+import { isRecord } from '@orkestrel/contract'
 import { createRecorder } from '@orkestrel/test'
 import { createWorkspace } from '@orkestrel/workspace'
 import { describe, expect, it } from 'vitest'
@@ -26,6 +27,7 @@ import {
 	createThrowingSummarizer,
 	fillWorkspace,
 	FILLER_SENTENCE,
+	PAGE_TOOL,
 	RECORDING_SUMMARIZER_DIGEST,
 	THROWING_SUMMARIZER_MESSAGE,
 } from './setup.js'
@@ -429,6 +431,20 @@ describe('fillWorkspace', () => {
 		expect(workspace.files().map((file) => file.path)).toContain('find-me.md')
 		const content = workspace.file('find-me.md')?.content
 		expect(content !== undefined && 'text' in content ? content.text : undefined).toBe('needle')
+	})
+})
+
+describe('PAGE_TOOL', () => {
+	it('is frozen and declares note as its only required parameter', () => {
+		expect(Object.isFrozen(PAGE_TOOL)).toBe(true)
+		expect(PAGE_TOOL.name).toBe('record')
+		const parameters: unknown = PAGE_TOOL.parameters
+		if (!isRecord(parameters)) throw new Error('PAGE_TOOL declares no parameter schema')
+		expect(parameters.type).toBe('object')
+		expect(parameters.required).toEqual(['note'])
+		const properties: unknown = parameters.properties
+		if (!isRecord(properties)) throw new Error('PAGE_TOOL declares no parameter properties')
+		expect(Object.keys(properties)).toEqual(['note'])
 	})
 })
 

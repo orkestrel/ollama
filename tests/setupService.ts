@@ -1,7 +1,11 @@
 import type { ContextFormat, ConversationInterface, Message } from '@orkestrel/agent'
+import type { SystemBrowser, SystemBrowserOptions } from '@orkestrel/browser/server'
+import { findSystemBrowser } from '@orkestrel/browser/server'
 import { isRecord, isString } from '@orkestrel/contract'
-import { createOllama, OllamaProvider } from '@src/core'
-import { env, withScheme } from './setupServer.js'
+import { createOllama, OLLAMA_CHAT_PATH, OllamaProvider } from '@src/core'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { env, rootToPath, withScheme, WORKSPACE_ROOT } from './setupServer.js'
 
 /** Names the live daemon and model selected for the service axis. */
 export const OLLAMA_CONFIG = Object.freeze({
@@ -183,6 +187,116 @@ export const RETRY_BUDGET = 120_000
 
 /** Names the request options for the two-turn tool-loop recipe. */
 export const TOOL_LOOP_OPTIONS = Object.freeze({ num_predict: 64, temperature: 0 })
+
+/**
+ * Names the request options for the live page proof's direct daemon turn.
+ *
+ * @remarks The cap is above `FAST_OPTIONS` because that case asserts the daemon answered the
+ * prompt it was given rather than that it answered at all, and a model that opens with a
+ * reasoning prefix spends the first few tokens before the answer begins.
+ */
+export const PAGE_OPTIONS = Object.freeze({ num_predict: 32, temperature: 0 })
+
+// ── Live page proof gates ─────────────────────────────────────────────────────
+//
+// Every precondition the live page proof needs beyond the daemon, each a hard throw
+// naming its own fix. Each resolves on call and none at module load, so this module
+// stays importable by its own proof in the `setup` project, which `npm test` runs on
+// a host with no browser and no build.
+
+/**
+ * Lists the container-safe launch flags the live page proof's browser takes.
+ *
+ * @remarks
+ * Headless Chromium running as root — the common case in a sandboxed container — needs
+ * sandboxing off because it requires a non-root user, needs `/dev/shm` bypassed because it
+ * is usually too small, and needs the GPU off because none is reachable. Each flag is inert
+ * on a developer workstation, so the proof carries one launch recipe rather than a host
+ * branch.
+ */
+export const PAGE_BROWSER_ARGS: readonly string[] = Object.freeze([
+	'--no-sandbox',
+	'--disable-dev-shm-usage',
+	'--disable-gpu',
+])
+
+/**
+ * Resolves the Chromium-family browser the page proof drives, or throws naming what to install.
+ *
+ * @param options - Candidate-source overrides; omitted ⇒ full default discovery
+ * @returns The discovered browser executable and its classified engine
+ * @throws Thrown when no candidate source resolves a browser executable.
+ */
+export function requirePageBrowser(options?: SystemBrowserOptions): SystemBrowser {
+	const found = findSystemBrowser(options)
+	if (found === undefined) {
+		throw new Error(
+			'The page proof requires a Chromium-family browser on this host and found none. ' +
+				'Install Chrome or Edge, or point PLAYWRIGHT_EXECUTABLE_PATH or CHROME_PATH at an executable.',
+		)
+	}
+	return found
+}
+
+/**
+ * Resolves this workspace's built core entry, or throws naming the build that produces it.
+ *
+ * @param root - The workspace root holding `dist`; defaults to {@link WORKSPACE_ROOT}
+ * @returns The absolute path of the built core entry the page's import map serves
+ * @throws Thrown when the built core entry is absent.
+ * @remarks The page's direct-daemon case imports `@orkestrel/ollama` from this workspace's
+ * own build rather than from an installed copy, so an unbuilt tree would fail as a module
+ * that does not resolve rather than as the missing build it is.
+ */
+export function requireBuild(root: URL | string = WORKSPACE_ROOT): string {
+	const path = join(rootToPath(root), 'dist', 'src', 'core', 'index.js')
+	if (!existsSync(path)) {
+		throw new Error(
+			`The page proof serves this workspace's built core entry and found none at ${path}; run npm run build`,
+		)
+	}
+	return path
+}
+
+/**
+ * Checks that the daemon answers a cross-origin preflight for the page's own origin.
+ *
+ * @param origin - The page origin the daemon must permit, such as `http://127.0.0.1:54321`
+ * @throws Thrown when the preflight cannot be made, is refused, or permits another origin.
+ * @remarks The relay case never needs this, because the page and the relay share one origin.
+ * The direct case does: the page dials the daemon from an ephemeral loopback origin, so the
+ * browser sends an `OPTIONS` preflight first and the daemon decides it. A host where that
+ * preflight fails is a host where the guide's direct-daemon claim is false, so the failure is
+ * a throw naming `OLLAMA_ORIGINS` rather than a skip.
+ */
+export async function requireDaemonOrigin(origin: string): Promise<void> {
+	const url = `${OLLAMA_CONFIG.host}${OLLAMA_CHAT_PATH}`
+	let response: Response
+	try {
+		response = await fetch(url, {
+			method: 'OPTIONS',
+			headers: {
+				origin,
+				'access-control-request-method': 'POST',
+				'access-control-request-headers': 'content-type',
+			},
+			signal: AbortSignal.timeout(10_000),
+		})
+	} catch (error) {
+		throw new Error(
+			`The page proof could not preflight ${url} for origin ${origin} (${String(error)}); start the daemon`,
+			{ cause: error },
+		)
+	}
+	const allowed = response.headers.get('access-control-allow-origin')
+	if (!response.ok || (allowed !== origin && allowed !== '*')) {
+		throw new Error(
+			`The Ollama daemon at ${OLLAMA_CONFIG.host} refuses the page origin ${origin} ` +
+				`(status ${String(response.status)}, access-control-allow-origin ${String(allowed)}); ` +
+				'set OLLAMA_ORIGINS to include that origin and restart the daemon',
+		)
+	}
+}
 
 if (!(await isOllamaReady())) {
 	throw new Error(

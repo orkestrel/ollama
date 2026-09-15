@@ -21,8 +21,8 @@ The agent-owned surface: the inference boundary and the HTTP engine behind it, t
 A provider turns a conversation (plus optional tools) into a turn: `generate` resolves the assembled `ProviderResult` (content + any tool calls + any usage); `stream` yields channel-tagged `ProviderDelta`s as they arrive (`content` for answer text, `thinking` for live reasoning) and returns the same assembled result when the stream completes, so a caller can render tokens / reasoning live and still get the full outcome. Both bound the call with an `AbortSignal`:
 
 ```ts
-import { createAbort } from '@orkestrel/abort'
 import type { ProviderInterface } from '@orkestrel/agent'
+import { createAbort } from '@orkestrel/abort'
 
 declare const provider: ProviderInterface // any concrete implementation supplied by the host app
 const abort = createAbort()
@@ -72,8 +72,8 @@ Contained failure is the registry's contract, not a limitation of it: in-process
 Collect a turn's conversation in an `AgentContext`. Add turns through `context.messages` — the active conversation's live tail, always present, satisfying `MessageManagerInterface` by minting each `id` on `add` and keeping stored messages immutable and in insertion order — then `build()` the provider input: `[systemMessage?, ...messages]`. `context.tools` sits beside them, but it is a different kind of thing: the other managers assemble prompt text, while the tool registry exists so the loop can advertise definitions and dispatch calls. Its contents reach the model as the `tools` argument, never as a message:
 
 ```ts
-import { createAgentContext } from '@orkestrel/agent'
 import type { ProviderInterface } from '@orkestrel/agent'
+import { createAgentContext } from '@orkestrel/agent'
 import { createAbort } from '@orkestrel/abort'
 import { createToolManager } from '@orkestrel/tool'
 
@@ -95,8 +95,8 @@ const result = await provider.generate(input, abort.signal, definitions)
 Drive the whole turn with an `Agent` (`createAgent`) — it composes the provider, its `AgentContext`, and the tool registry into the bounded context → provider → tools → repeat loop. Seed the conversation through `agent.context.messages`, then either `generate()` for a one-shot `AgentResult` or `stream()` for a live `AgentChunk` stream (`token` answer deltas, `think` reasoning deltas, `tool` dispatches, `usage`) whose `result` resolves the same `AgentResult`. `generate` drains that same stream, so they can't diverge:
 
 ```ts
-import { createAgent } from '@orkestrel/agent'
 import type { ProviderInterface } from '@orkestrel/agent'
+import { createAgent } from '@orkestrel/agent'
 import { createTokenBudget } from '@orkestrel/budget'
 import { createTool, createToolManager } from '@orkestrel/tool'
 
@@ -216,8 +216,8 @@ const input = context.build()
 Above the flat `MessageManagerInterface` sits the `Conversation` (`createConversation` / a `ConversationManager`) — it owns its messages directly and compacts older ones into summarized `sections` so a long history fits a turn's context window without discarding the originals. Append turns through the conversation's own `add` (the live uncompacted tail; `message` / `messages` / `remove` / `clear` / `count` round it out); `compact()` folds the older live messages into a summarized `Section` (retaining their originals), regenerates the conversation rollup `summary`, and shrinks `view()` — the model input, where each section becomes one summary message followed by the live tail. Compaction is driven by a provider-agnostic `ConversationSummaryHandler` seam (`(messages) => Promise<string>`) the agent runtime supplies, so a `compact()` without one throws a `ConversationError`. `keep` retains a recent tail (default `DEFAULT_CONVERSATION_KEEP` = `0`, fold all); `rehydrate(id)` / `search(query)` read the retained originals:
 
 ```ts
-import { createConversation } from '@orkestrel/agent'
 import type { ProviderInterface } from '@orkestrel/agent'
+import { createConversation } from '@orkestrel/agent'
 
 declare const provider: ProviderInterface // any concrete implementation supplied by the host app
 // The summarizer seam — built from the provider by the runtime; core stays provider-agnostic.
@@ -507,7 +507,7 @@ A `Shape` cell holds the constant's declared type.
 | `DEFAULT_RELAY_LIMIT`       | const | `number` | Holds the default relay request limit in bytes — `1_048_576`, the byte budget a relay applies to an inbound body when `RelayOptions.limit` is omitted, refusing a body that reaches it.                                                                                                                                                                                                                                                                                                                                       |
 | `RELAY_CONTENT_TYPE`        | const | `string` | Names the relay's newline-delimited JSON content type — `'application/x-ndjson; charset=utf-8'`, the header a relay response carries beside `cache-control: no-store`.                                                                                                                                                                                                                                                                                                                                                        |
 | `RELAY_PROVIDER_MESSAGE`    | const | `string` | Names the public message for an unexpected upstream relay failure — `'relay provider failed'`, the fixed text every `error` frame carries, so an upstream failure's own message never reaches the browser.                                                                                                                                                                                                                                                                                                                    |
-| `UNAUTHORIZED_RELAY_STATUS` | const | `number` | Names the status a relay answers when `authorize` returns anything but `true` or throws — `401`, carried with no body and reaching the browser as a `ProviderError` with the `HTTP` code.                                                                                                                                                                                                                                                                                                                                     |
+| `UNAUTHORIZED_RELAY_STATUS` | const | `number` | Names the status a relay answers when the `authorize` callback returns anything but `true` or throws — `401`, carried with no body and reaching the browser as a `ProviderError` with the `HTTP` code.                                                                                                                                                                                                                                                                                                                        |
 | `INVALID_RELAY_STATUS`      | const | `number` | Names the status a relay answers for a body that is missing, unreadable, or rejected by `providerRequestContract` — `400`, carried with no body and reaching the browser as a `ProviderError` with the `HTTP` code.                                                                                                                                                                                                                                                                                                           |
 | `OVERSIZED_RELAY_STATUS`    | const | `number` | Names the status a relay answers for a request body at or above its byte budget — `413`, carried with no body and answered for an aborted inbound read as well.                                                                                                                                                                                                                                                                                                                                                               |
 | `UPSTREAM_RELAY_STATUS`     | const | `number` | Names the status a relay answers when the upstream provider call cannot be constructed — `502`, carried with no body after `provider.stream` was entered and threw before returning its iterator.                                                                                                                                                                                                                                                                                                                             |
@@ -531,8 +531,8 @@ The JSON wire projections the relay validates against, and the contracts compile
 A contract's `is` narrows an unknown record to its wire shape, and its `parse` projects one — returning the value stripped to that shape, or `undefined` when the value is invalid — so the same declaration guards an inbound body and shapes a frame written back out:
 
 ```ts
-import { providerRequestContract, relayFrameContract } from '@orkestrel/agent'
 import type { ProviderInterface } from '@orkestrel/agent'
+import { providerRequestContract, relayFrameContract } from '@orkestrel/agent'
 
 declare const upstream: ProviderInterface
 declare const body: unknown
@@ -584,8 +584,8 @@ relayFrameContract.parse({ channel: 'error', message: 'oops', code: 'X' }) // { 
 Project an agent result at its originating package before carrying it through a JSON boundary:
 
 ```ts
-import { agentResultToJSON } from '@orkestrel/agent'
 import type { AgentResult } from '@orkestrel/agent'
+import { agentResultToJSON } from '@orkestrel/agent'
 
 declare const result: AgentResult
 const portable = agentResultToJSON(result)
@@ -596,8 +596,8 @@ JSON.stringify(portable)
 The queue and runner factories bind their named handlers to a registry and partial policy; callers composing the lower-level substrates can do the same:
 
 ```ts
-import { handleAgentQueueJob, handleAgentRunnerJob, sanitizeToken } from '@orkestrel/agent'
 import type { AgentRegistryInterface } from '@orkestrel/agent'
+import { handleAgentQueueJob, handleAgentRunnerJob, sanitizeToken } from '@orkestrel/agent'
 
 declare const registry: AgentRegistryInterface
 
@@ -1011,7 +1011,7 @@ These invariants hold across `src/core` ↔ `agent.md`:
 
 33. **`agentResultToJSON` — the canonical portable AgentResult projection.** The helper accepts `unknown` and never throws, including for throwing getters, hostile nested usage, and revoked proxies. It captures `content`, `thinking`, `usage`, and `partial` exactly once through Contract's sanctioned `attempt` boundary, so conforming accessors and inherited structural properties are supported without a second read. `content` must be a string and `partial` a boolean; absent/`undefined` `thinking` and `usage` are omitted, while present `thinking` must be a string and present `usage` an object whose `prompt` / `completion` / `total` fields are finite numbers. Finite negative and fractional counts are preserved rather than normalized through `sanitizeUsage`, because the authoritative `TokenUsage` contract is numeric. Extra input fields are dropped. The helper rebuilds a fresh exact plain `{ content, thinking?, usage?: { prompt, completion, total }, partial }` object, deep-gates it through Contract's `parseJSONValue`, and returns Contract's imported `JSONValue`; invalid input returns `undefined`.
 
-34. **The provider engine and its seams (`AgentProvider`).** The instance owns a minted `id` (`crypto.randomUUID()`), taken in the constructor and returned by every call it serves, and `format` exposed exactly as supplied. The base owns, for each call: the deadline folded with the caller's signal (the bounding clause); `AgentProviderInput.fetch`, or the global transport bound to its global receiver; an awaited `headers` hook merged over a `Content-Type: application/json` default and raced against that combined bound, so an unresolved hook cannot outlive the call and its abort listener is released on every exit; one `POST` of `JSON.stringify(body(request))` to `url + (path ?? '')`; the response body decoded through `readChunks`; one `frame()` parser armed for that call; every framed record through `read`; the `finish(parser)` tail fed through `read` as well; the splitter flushed as a final content delta; and the outcome assembled by `buildProviderResult`. A subclass owns `name`, `frame`, `body`, `read`, and `finish`, and nothing else — an implementation that needs a second transport, a second deadline, or a second error taxonomy has left the seam rather than extended it. `split` (default `true`) arms one `ThinkSplitter` for the call; `strict` (default `false`) decides how a stream may end — with `strict: true` a stream that reaches end of input carrying no `ProviderIncrement.result` throws `ProviderError('PROTOCOL', 'provider error: missing settled result')`, and with `strict: false` the engine assembles the result from its accumulation instead. A record whose `read` returns a `result` is authoritative: the engine returns it at once without folding that record's other fields, leaves any later record undecoded, and cancels the body. **The bounded error read.** A non-OK response's body is decoded through `readText` to at most `MAX_ERROR_BODY_LENGTH` bytes and its remainder is cancelled, so a stalled error body is refused inside the deadline rather than after it. The bound counts bytes handed to the decoder. A source may deliver one chunk larger than the remaining budget; the read admits that chunk's leading bytes up to the budget and cancels the remainder, so the decoded excerpt never exceeds `MAX_ERROR_BODY_LENGTH` bytes while the read may have pulled one whole source chunk from the network. **Reader-owned cancellation.** `readText` and `readChunks` each own their reader: each registers its abort listener on its own controller, cancels the source when the bound fires, and releases the lock in a `finally`, so a cancellation that itself fails never escapes and a body is never left locked. The parser clear and the deadline clear sit in nested `finally` blocks, so one failing cleanup never skips the other.
+34. **The provider engine and its seams (`AgentProvider`).** The instance owns a minted `id` (`crypto.randomUUID()`), taken in the constructor and returned by every call it serves, and `format` exposed exactly as supplied. The base owns, for each call: the deadline folded with the caller's signal (the bounding clause); `AgentProviderInput.fetch`, or the global transport bound to its global receiver; an awaited `headers` hook merged over a `Content-Type: application/json` default and raced against that combined bound, so an unresolved hook cannot outlive the call and its abort listener is released on every exit; one `POST` of `JSON.stringify(body(request))` to `url + (path ?? '')`; the response body decoded through `readChunks`; one `frame()` parser armed for that call; every framed record through `read`; the `finish(parser)` tail fed through `read` as well; the splitter flushed as a final content delta; and the outcome assembled by `buildProviderResult`. A subclass owns `name`, `frame`, `body`, `read`, and `finish`, and nothing else — an implementation that needs a second transport, a second deadline, or a second error taxonomy has left the seam rather than extended it. `split` (default `true`) arms one `ThinkSplitter` for the call; `strict` (default `false`) decides how a stream may end — with `strict: true` a stream that reaches end of input carrying no `ProviderIncrement.result` throws `ProviderError('PROTOCOL', 'provider error: missing settled result')`, and with `strict: false` the engine assembles the result from its accumulation instead. A record whose `read` returns a `result` is authoritative: the engine returns it at once without folding that record's other fields, leaves any later record undecoded, and cancels the body. **The bounded error read.** A non-OK response's body is decoded through `readText` to at most `MAX_ERROR_BODY_LENGTH` bytes and its remainder is cancelled, so a stalled error body is refused inside the deadline rather than after it. The bound counts bytes handed to the decoder. A source may deliver one chunk larger than the remaining budget; the read admits that chunk's leading bytes up to the budget and cancels the remainder, so the excerpt is decoded from at most `MAX_ERROR_BODY_LENGTH` source bytes and the read may have pulled one whole source chunk from the network. A multibyte character cut at that bound decodes to a replacement character, so the excerpt's own encoded length can exceed the bound by that character. **Reader-owned cancellation.** `readText` and `readChunks` each own their reader: each registers its abort listener on its own controller, cancels the source when the bound fires, and releases the lock in a `finally`, so a cancellation that itself fails never escapes and a body is never left locked. The parser clear and the deadline clear sit in nested `finally` blocks, so one failing cleanup never skips the other.
 
 35. **The wire shapes and the compiled contracts.** `toolCallShape`, `messageShape`, `providerRequestShape`, `providerResultShape`, and `relayFrameShape` declare each domain type's JSON projection, and `messageContract`, `providerRequestContract`, `providerResultContract`, and `relayFrameContract` compile them into guards and parsers. Every projection is strictly narrower than the domain type it mirrors, and the narrowing is the point: `ToolCall.arguments` is `Record<string, unknown>` in the domain and a JSON record on the wire, so a function-valued argument is refused rather than dropped silently, and a tool's `parameters` and a call's `schema` are refused the same way. `ToolCall.caller` is local context and appears in no shape — the guard refuses a record carrying it and the parser drops it, so it cannot cross a hop. `relayFrameShape` is a channel-discriminated union that admits no member outside the arm it matched, so a decorative field on an `error` frame is a refusal rather than a tolerated extra. The round trip is closed in both directions: the request `RelayProvider.body` projects parses back to the value the relay hands upstream, and the frame `RelayStream` writes parses back to the delta or the result the browser decodes. **The wire body is an owned snapshot.** `body` clones the projection through Contract's `cloneJSONValue` and validates that clone, so the bytes `JSON.stringify` produces are exactly what the guard saw. The clone reads property descriptors rather than accessors, so a serializer reachable only through a `get` trap or a prototype is never consulted; an own function-valued property on a call's `arguments`, a tool's `parameters`, or the options `schema` — such as a `toJSON` method — is a value outside JSON and is refused before fetching, with the clone's own failure as the refusal's `cause` — the snapshot is the sole mechanism, and the refusal that remains also covers a hostile read and a snapshot the contract rejects. A caller mutating its own objects after the call cannot change what was sent.
 
@@ -1032,6 +1032,7 @@ import { createTimeout } from '@orkestrel/timeout'
 import { createTokenBudget } from '@orkestrel/budget'
 
 declare const provider: ProviderInterface // any concrete implementation supplied by the host app
+const messages = [{ id: '1', role: 'user', content: 'Say hello.' }] as const
 const abort = createAbort() // external cancel
 const timeout = createTimeout({ ms: 30_000 }) // wall-clock deadline
 const budget = createTokenBudget({ max: 50_000, scope: 'total' }) // cost ceiling
@@ -1093,7 +1094,7 @@ That provider drives the whole runtime unchanged — `createAgent`, the tool loo
 
 A browser must never hold a model credential. Mount `createRelay` on your own server, where the credential already lives, and give the browser `createRelayProvider` pointed at that route: the browser drives a `ProviderInterface` like any other, and the credential never leaves the server. The handler is a plain `(request: Request) => Promise<Response>`, so any fetch-standard router mounts it — this composition mounts it on an `@orkestrel/router` dispatcher. Each half that follows runs in its own process: copy the server half into your server and the browser half into your browser bundle.
 
-`@orkestrel/agent` declares no dependency on a newline-delimited JSON parser and none on a router, so the browser application supplies the parser — `createNDJSONParser` from `@orkestrel/ndjson` here — and the server application supplies the router. The executed transcription of these fences in [`tests/guides.test.ts`](../tests/guides.test.ts) substitutes on each side: it frames the relay response with a parser from this repository's own test infrastructure, which throws on a malformed line where the published parser skips it, and it calls the handler directly instead of routing through the dispatcher, asserting the method and the path the route declares against the request the handler receives.
+`@orkestrel/agent` declares no dependency on a newline-delimited JSON parser and none on a router, so the browser application supplies the parser — `createNDJSONParser` from `@orkestrel/ndjson` here — and the server application supplies the router. The executed transcription of these fences in [`tests/guides.test.ts`](../tests/guides.test.ts) substitutes on each side: it frames the relay response with a parser from this repository's own test infrastructure, which throws on a malformed line where the published parser skips it, and it calls the handler directly instead of routing through the dispatcher, asserting the method and the path the route declares against the request the handler receives. It never executes the `createServer` start-up that follows the dispatcher, so that half is proven by the installed `@orkestrel/server` declaration the fence matches rather than by an executed run here.
 
 #### Mounting the relay on your server
 
@@ -1101,6 +1102,7 @@ A browser must never hold a model credential. Mount `createRelay` on your own se
 import type { ProviderInterface } from '@orkestrel/agent'
 import { createRelay } from '@orkestrel/agent'
 import { createDispatcher } from '@orkestrel/router'
+import { createServer } from '@orkestrel/server'
 
 declare const upstream: ProviderInterface // the server-side provider holding the credential
 declare const bearer: string
@@ -1116,9 +1118,13 @@ const dispatcher = createDispatcher({
 export function serve(request: Request): Promise<Response> {
 	return dispatcher.handle(request, undefined)
 }
+
+const server = createServer({ dispatcher, state: () => undefined })
+await server.start()
+process.on('SIGTERM', () => server.stop()) // stop draining new requests on shutdown
 ```
 
-`serve` is the entry a server runtime's adapter calls, and the adapter owns what the relay deliberately does not: turning the runtime's inbound request into a `Request`, handing the returned `Response` back to the runtime, and aborting that request's signal when the client disconnects, so a reader that goes away cancels the upstream turn instead of leaving it running. `@orkestrel/server` supplies that adapter; a runtime whose own handler is already `(request: Request) => Promise<Response>` needs none.
+The `serve` function is the entry a server runtime's adapter calls, and the adapter owns what the relay deliberately does not: turning the runtime's inbound request into a `Request`, handing the returned `Response` back to the runtime, and aborting that request's signal when the client disconnects, so a reader that goes away cancels the upstream turn instead of leaving it running. `@orkestrel/server` supplies that adapter — `createServer` binds the same `dispatcher` and starts listening, as the fence shows — and a runtime whose own handler is already `(request: Request) => Promise<Response>` needs none.
 
 #### Reaching the relay from the browser
 
@@ -1167,8 +1173,8 @@ if (turn.tools) {
 The preceding patterns are what an `Agent` does for you turn after turn — bounding the call, dispatching the model's tools, feeding the results back, and repeating until the model stops (or `limit` is hit). Reach for `createAgent` rather than hand-rolling the loop; bound and pace it through `AgentOptions`, and recover a cancel's partial from `result` (which resolves, never rejects, on a cancel).
 
 ```ts
-import { createAgent } from '@orkestrel/agent'
 import type { ProviderInterface } from '@orkestrel/agent'
+import { createAgent } from '@orkestrel/agent'
 
 declare const provider: ProviderInterface
 const agent = createAgent(provider, { timeout: 30_000, limit: 6 })
@@ -1205,8 +1211,8 @@ const result = await agent.generate() // partial: true if the story ran the budg
 An `Agent` exposes a pull and a push observation surface. Pull — the `AgentChunk` stream (`stream().events`) — is for a live consumer rendering per-token answer deltas and per-think reasoning deltas as they arrive. Push — the `emitter` (`AgentEventMap`) — is for fire-and-forget observers (logging, metrics, tracing) that want the loop's lifecycle moments without draining the stream: `start` (a run begins), `turn` (each iteration), `tool` (a dispatched call + its result), `usage` (a turn's token usage), `deny` (an authority denial — which never reaches the chunk stream), `finish` (the settled result), `error` (a genuine failure), `abort` (a cancel), and `exhaust` (the limit was reached while the model still held unresolved tool intent — fires instead of `abort`, still followed by `finish`). Per-token / per-thinking deltas stay the stream's job exclusively — there is deliberately no `token` or `think` event on the emitter; reach for the stream when you need live output, the emitter when you need lifecycle.
 
 ```ts
-import { createAgent } from '@orkestrel/agent'
 import type { ProviderInterface } from '@orkestrel/agent'
+import { createAgent } from '@orkestrel/agent'
 
 declare const provider: ProviderInterface
 // Wire fire-and-forget observers at construction through the reserved `on` option …
@@ -1233,8 +1239,8 @@ One agent serves many conversations by switching the active conversation between
 The flow is **summary → search / rehydrate → reference → write-to-workspace** — and cherry-pick, never dump:
 
 ```ts
-import { createAgent, createConversationManager } from '@orkestrel/agent'
 import type { ProviderInterface } from '@orkestrel/agent'
+import { createAgent, createConversationManager } from '@orkestrel/agent'
 
 declare const provider: ProviderInterface
 const conversations = createConversationManager({
@@ -1295,8 +1301,8 @@ for (const store of stores) {
 When you need many agents — bounded, retried, surviving a crash — describe each as a serializable `AgentJobInput` (names for the live pieces, data for the rest), register the live pieces once, and run them through a `createAgentQueue` (durable, bounded) or a `createAgentRunner` (one-shot, ordered, fail-fast, with sub-agent fan-out). The layer composes the `@orkestrel/queue` `Queue` and the `@orkestrel/workflow` `Runner` — it adds only rehydration and the partial policy, no new engine.
 
 ```ts
-import { createAgentQueue, createAgentRegistry } from '@orkestrel/agent'
 import type { AgentJobInput } from '@orkestrel/agent'
+import { createAgentQueue, createAgentRegistry } from '@orkestrel/agent'
 import { createMemoryQueueStore } from '@orkestrel/queue'
 
 declare const store: ReturnType<typeof createMemoryQueueStore> // or a server JSON / SQLite store
@@ -1334,8 +1340,8 @@ const results = await runner.execute([parent]) // [parent result, …then spawne
 A workspace reaches the model through `context.workspaces`, and this is the only channel documents have. `build()` renders the active workspace by carrier on every turn — active-only and scope-filtered — so the workspace the agent is working in is always what the prompt reflects, with nothing to re-mount after an edit. Register one (the first `add` auto-activates it) and its text files fold into the `## Workspace` system section as fenced reference blocks, while its image files' base64 rides the last user message.
 
 ```ts
-import { createAgent } from '@orkestrel/agent'
 import type { ProviderInterface } from '@orkestrel/agent'
+import { createAgent } from '@orkestrel/agent'
 import { createToolManager } from '@orkestrel/tool'
 
 declare const provider: ProviderInterface
@@ -1354,8 +1360,8 @@ Reading is one half. To let the model edit what it reads, register the `createWo
 Only the active workspace renders; the other registered workspaces never reach the model at all. `switch` changes which one the model sees between runs:
 
 ```ts
-import { createAgent, createScope } from '@orkestrel/agent'
 import type { ProviderInterface } from '@orkestrel/agent'
+import { createAgent, createScope } from '@orkestrel/agent'
 
 declare const provider: ProviderInterface
 const agent = createAgent(provider)
@@ -1381,6 +1387,7 @@ Because the editing tool drives the same registry, a switch moves both surfaces 
 Agent-owned registries expose their less-common removal, clearing, persistence, and lookup methods here. Tool and workspace registry operations are documented in their dependency guides.
 
 ```ts
+import type { ProviderInterface } from '@orkestrel/agent'
 import {
 	createAgent,
 	createAgentContext,
@@ -1391,7 +1398,6 @@ import {
 	createScopeManager,
 	createThinkSplitter,
 } from '@orkestrel/agent'
-import type { ProviderInterface } from '@orkestrel/agent'
 
 declare const provider: ProviderInterface
 

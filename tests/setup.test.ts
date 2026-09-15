@@ -42,7 +42,7 @@ import {
 	env,
 	forwardHeaders,
 	insatiableResult,
-	isAbortError,
+	isFetchAbort,
 	LOOKUP_DATUM,
 	parseRequestBody,
 	REFUSED_TRANSPORT_MESSAGE,
@@ -127,10 +127,10 @@ describe('forwardHeaders', () => {
 	})
 })
 
-describe('isAbortError', () => {
+describe('isFetchAbort', () => {
 	it('returns true for the real AbortSignal.abort() reason', () => {
 		const reason: unknown = AbortSignal.abort().reason
-		expect(isAbortError(reason)).toBe(true)
+		expect(isFetchAbort(reason)).toBe(true)
 	})
 
 	it('returns true for an Error named AbortError, narrowing to Error', () => {
@@ -138,25 +138,25 @@ describe('isAbortError', () => {
 		error.name = 'AbortError'
 		const value: unknown = error
 
-		expect(isAbortError(value)).toBe(true)
-		if (!isAbortError(value)) throw new Error('unreachable: isAbortError narrowed true earlier')
+		expect(isFetchAbort(value)).toBe(true)
+		if (!isFetchAbort(value)) throw new Error('unreachable: isFetchAbort narrowed true earlier')
 		expect(value.message).toBe('aborted')
 	})
 
 	it('returns false for a plain Error', () => {
-		expect(isAbortError(new Error('boom'))).toBe(false)
+		expect(isFetchAbort(new Error('boom'))).toBe(false)
 	})
 
 	it('returns false for a string', () => {
-		expect(isAbortError('AbortError')).toBe(false)
+		expect(isFetchAbort('AbortError')).toBe(false)
 	})
 
 	it('returns false for undefined', () => {
-		expect(isAbortError(undefined)).toBe(false)
+		expect(isFetchAbort(undefined)).toBe(false)
 	})
 
 	it('returns false for a plain object with a matching name field', () => {
-		expect(isAbortError({ name: 'AbortError' })).toBe(false)
+		expect(isFetchAbort({ name: 'AbortError' })).toBe(false)
 	})
 })
 

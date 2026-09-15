@@ -314,7 +314,7 @@ export function forwardHeaders(headers: Headers): Headers {
 }
 
 /** Narrows a fetch rejection to an abort error. */
-export function isAbortError(error: unknown): error is Error {
+export function isFetchAbort(error: unknown): error is Error {
 	return error instanceof Error && error.name === 'AbortError'
 }
 
@@ -405,7 +405,7 @@ export async function createRecordingProxy(
 					signal: AbortSignal.any([request.signal, upstreamAbort.signal]),
 				})
 			} catch (error) {
-				if (isAbortError(error)) return new Response(undefined, { status: 499 })
+				if (isFetchAbort(error)) return new Response(undefined, { status: 499 })
 				throw error
 			}
 			return new Response(upstreamResponse.body, {

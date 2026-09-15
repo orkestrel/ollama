@@ -16,7 +16,7 @@
 
 import type { AgentResult, Message } from '@orkestrel/agent'
 import type { RecordedRequest } from './setupServer.js'
-import type { ToolResult } from '@orkestrel/tool'
+import type { ToolContext, ToolResult } from '@orkestrel/tool'
 import { createRecorder } from '@orkestrel/test'
 import { createWorkspace } from '@orkestrel/workspace'
 import { describe, expect, it } from 'vitest'
@@ -58,6 +58,10 @@ import {
 function requestWithBody(body: Record<string, unknown>): RecordedRequest {
 	return { method: 'POST', path: '/api/chat', headers: {}, body, text: JSON.stringify(body) }
 }
+
+// A non-aborted context for the tool `execute` calls below — none of these fixtures
+// read `context.caller`, so a signal alone satisfies `ToolContext`.
+const CONTEXT: ToolContext = { signal: new AbortController().signal }
 
 describe('parseRequestBody', () => {
 	it('returns the record for valid JSON object text', () => {
@@ -431,7 +435,7 @@ describe('fillWorkspace', () => {
 describe('createLookupTool', () => {
 	it('always returns the fixed LOOKUP_DATUM', async () => {
 		const tool = createLookupTool()
-		const value = await tool.execute({ query: 'anything' })
+		const value = await tool.execute({ query: 'anything' }, CONTEXT)
 		expect(value).toBe(LOOKUP_DATUM)
 	})
 
@@ -439,8 +443,8 @@ describe('createLookupTool', () => {
 		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
 		const tool = createLookupTool(recorder)
 
-		await tool.execute({ query: 'weather' })
-		await tool.execute({ query: 'time' })
+		await tool.execute({ query: 'weather' }, CONTEXT)
+		await tool.execute({ query: 'time' }, CONTEXT)
 
 		expect(recorder.count).toBe(2)
 		expect(recorder.calls[0]).toEqual([{ query: 'weather' }])
@@ -449,7 +453,7 @@ describe('createLookupTool', () => {
 
 	it('works with no recorder passed', async () => {
 		const tool = createLookupTool()
-		const value = await tool.execute({ query: 'x' })
+		const value = await tool.execute({ query: 'x' }, CONTEXT)
 		expect(value).toBe(LOOKUP_DATUM)
 	})
 })
@@ -457,14 +461,14 @@ describe('createLookupTool', () => {
 describe('createThrowingTool', () => {
 	it('always throws THROWING_TOOL_MESSAGE', () => {
 		const tool = createThrowingTool()
-		expect(() => tool.execute({})).toThrow(THROWING_TOOL_MESSAGE)
+		expect(() => tool.execute({}, CONTEXT)).toThrow(THROWING_TOOL_MESSAGE)
 	})
 
 	it('records the call before throwing, via an optional recorder', () => {
 		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
 		const tool = createThrowingTool(recorder)
 
-		expect(() => tool.execute({ x: 1 })).toThrow(THROWING_TOOL_MESSAGE)
+		expect(() => tool.execute({ x: 1 }, CONTEXT)).toThrow(THROWING_TOOL_MESSAGE)
 
 		expect(recorder.count).toBe(1)
 		expect(recorder.calls[0]).toEqual([{ x: 1 }])
@@ -474,14 +478,14 @@ describe('createThrowingTool', () => {
 describe('createInsatiableTool', () => {
 	it('reports chunk 1 on the first call', async () => {
 		const tool = createInsatiableTool()
-		const value = await tool.execute({})
+		const value = await tool.execute({}, CONTEXT)
 		expect(value).toBe(insatiableResult(1))
 	})
 
 	it('reports chunk 2 on the second call', async () => {
 		const tool = createInsatiableTool()
-		await tool.execute({})
-		const value = await tool.execute({})
+		await tool.execute({}, CONTEXT)
+		const value = await tool.execute({}, CONTEXT)
 		expect(value).toBe(insatiableResult(2))
 	})
 
@@ -489,8 +493,8 @@ describe('createInsatiableTool', () => {
 		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
 		const tool = createInsatiableTool(recorder)
 
-		await tool.execute({ cursor: 'a' })
-		await tool.execute({ cursor: 'b' })
+		await tool.execute({ cursor: 'a' }, CONTEXT)
+		await tool.execute({ cursor: 'b' }, CONTEXT)
 
 		expect(recorder.count).toBe(2)
 		expect(recorder.calls[0]).toEqual([{ cursor: 'a' }])
@@ -499,7 +503,7 @@ describe('createInsatiableTool', () => {
 
 	it('works with no recorder passed', async () => {
 		const tool = createInsatiableTool()
-		const value = await tool.execute({})
+		const value = await tool.execute({}, CONTEXT)
 		expect(value).toBe(insatiableResult(1))
 	})
 
@@ -507,9 +511,9 @@ describe('createInsatiableTool', () => {
 		const toolA = createInsatiableTool()
 		const toolB = createInsatiableTool()
 
-		await toolA.execute({})
-		const first = await toolA.execute({})
-		const second = await toolB.execute({})
+		await toolA.execute({}, CONTEXT)
+		const first = await toolA.execute({}, CONTEXT)
+		const second = await toolB.execute({}, CONTEXT)
 
 		expect(first).toBe(insatiableResult(2))
 		expect(second).toBe(insatiableResult(1))

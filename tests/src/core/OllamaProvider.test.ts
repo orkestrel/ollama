@@ -117,6 +117,25 @@ describe('OllamaProvider (wire seams)', () => {
 		expect(body.format).toBe(schema)
 		expect(body.tools).toEqual([{ type: 'function', function: { name: 'weather' } }])
 	})
+
+	it('never sends a tool title or annotations on the wire', () => {
+		const provider = new OllamaProvider({ model: 'test-model' })
+		const body = provider.body({
+			messages: [],
+			tools: [
+				{
+					name: 'weather',
+					title: 'Weather lookup',
+					description: 'Get the current weather for a city.',
+					parameters: { type: 'object', properties: { city: { type: 'string' } } },
+					annotations: { pure: true },
+				},
+			],
+		})
+
+		const [tool] = body.tools ?? []
+		expect(Object.keys(tool?.function ?? {}).sort()).toEqual(['description', 'name', 'parameters'])
+	})
 })
 
 describe('OllamaProvider (HTTP errors)', () => {

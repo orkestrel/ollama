@@ -64,6 +64,10 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 	/**
 	 * Projects conversation turns and per-call options onto the Ollama request body.
 	 *
+	 * @remarks
+	 * A tool's `title` and `annotations` are never sent: the `/api/chat` tool function
+	 * object carries no field for either.
+	 *
 	 * @param request - The conversation, advertised tools, and per-call overrides
 	 * @returns The `/api/chat` body with streaming enabled
 	 */

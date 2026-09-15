@@ -13,6 +13,8 @@ const FENCE_LANGUAGES = Object.freeze(['ts'])
 const EXAMPLE_LANGUAGE = 'ts'
 /** The one guide this package sources, whose tagline the README pitch equals. */
 const GUIDE_SPEC = 'guides/ollama.md'
+/** The README, whose own sample fences the executed half guards beside the guide's. */
+const README_SPEC = 'README.md'
 /** The package identity that binds its manifest, module map, and README pitch. */
 const PACKAGE_NAME = '@orkestrel/ollama'
 /** Each import specifier this package's own guides may resolve against. */
@@ -44,7 +46,8 @@ await new GuideCommand({
 	const { requireValue } = await import('@orkestrel/test')
 	const barrel = await import('@src/core')
 	const { createOllama, OllamaProvider } = barrel
-	const { createStreamingTransport } = await import('./setupServer.js')
+	const { createRelayServer, createStreamingTransport, OBFUSCATED } =
+		await import('./setupServer.js')
 	const { describe, expect, it } = await import('vitest')
 	const manifest = parseJSON(requireValue(files['package.json'], 'Missing inventory: package.json'))
 	if (!isRecord(manifest)) throw new Error('Invalid package manifest: package.json')
@@ -152,12 +155,23 @@ await new GuideCommand({
 	// a live model's output is asserted in `tests/service/`.
 	describe('flagship fences', () => {
 		const guideText = requireValue(files[GUIDE_SPEC], `Missing file: ${GUIDE_SPEC}`)
+		const readmeText = requireValue(files[README_SPEC], `Missing file: ${README_SPEC}`)
 
-		// The daemon's side of a whole turn, as newline-delimited records: two content
-		// spans, one reasoning span, and the `done` line carrying the token counts.
+		// The daemon's side of a whole turn, as newline-delimited records: the `Hel` and
+		// `lo` content spans, the `weighing it` reasoning span, and the `done` line
+		// carrying the token counts.
 		const TURN = Object.freeze([
 			'{"message":{"content":"Hel"}}\n',
 			'{"message":{"thinking":"weighing it"}}\n{"message":{"content":"lo"}}\n',
+			'{"done":true,"prompt_eval_count":3,"eval_count":4}\n',
+		])
+
+		// The same turn from a daemon that opens its reasoning inline without a `<think>`
+		// marker: the reasoning streams as content, and the bare `</think>` that follows
+		// reclassifies the prefix the stream has already yielded.
+		const RECLASSIFIED = Object.freeze([
+			'{"message":{"content":"reasoning"}}\n',
+			'{"message":{"content":"</think>answer"}}\n',
 			'{"done":true,"prompt_eval_count":3,"eval_count":4}\n',
 		])
 
@@ -170,9 +184,9 @@ await new GuideCommand({
 			expect(typeof provider.stream).toBe('function')
 		})
 
-		// `guides/ollama.md` § Surface: the streaming fence separates the channels and claims
-		// the content deltas concatenate to the settled result.
-		it('joins the streamed content deltas to the settled result the stream fence reads', async () => {
+		// `guides/ollama.md` § Surface: the streaming fence separates the channels and reads
+		// the answer off the settled result.
+		it('settles the content the stream fence reads, with the plain turn joining to it', async () => {
 			const provider = createOllama({
 				model: 'qwen3.5:2b-q4_K_M',
 				fetch: createStreamingTransport(TURN),
@@ -201,10 +215,51 @@ await new GuideCommand({
 			})
 		})
 
-		it('carries the stream fence line the transcription copies', () => {
-			expect(guideText).toContain(
-				"answer.join('') === result.content // true — the content deltas concatenate to the result",
+		// `guides/ollama.md` § Surface, the paragraph under the streaming fence: a turn whose
+		// reasoning the daemon opened without a `<think>` marker settles content the yielded
+		// deltas no longer join to, which is why the fence reads the settled result.
+		it('settles the reclassified turn to content the joined deltas no longer match', async () => {
+			const provider = createOllama({
+				model: 'qwen3.5:2b-q4_K_M',
+				fetch: createStreamingTransport(RECLASSIFIED),
+			})
+			const answer: string[] = []
+			const reasoning: string[] = []
+
+			const generator = provider.stream(
+				[{ id: '1', role: 'user', content: 'Say hello.' }],
+				new AbortController().signal,
 			)
+			let step = await generator.next()
+			while (!step.done) {
+				if (step.value.channel === 'content') answer.push(step.value.text)
+				if (step.value.channel === 'thinking') reasoning.push(step.value.text)
+				step = await generator.next()
+			}
+
+			// The reasoning prefix streamed as content before the bare close revealed it,
+			// so the join carries it and the settled content does not.
+			expect(answer.join('')).toBe('reasoninganswer')
+			expect(reasoning).toEqual([])
+			expect(answer.join('')).not.toBe(step.value.content)
+			expect(step.value).toEqual({
+				content: 'answer',
+				thinking: 'reasoning',
+				usage: { prompt: 3, completion: 4, total: 7 },
+			})
+		})
+
+		it('carries the stream fence lines the transcription copies', () => {
+			expect(guideText).toContain(
+				'result.content // the answer — the settled content is the authoritative one',
+			)
+			expect(guideText).toContain(
+				"answer.join('') // what arrived on the content channel, which a reclassified <think> span leaves longer",
+			)
+			expect(readmeText).toContain(
+				'streamed.content // the answer — the settled content is the authoritative one',
+			)
+			expect(readmeText).toContain("answer.join('') // what arrived on the content channel")
 		})
 
 		// `guides/ollama.md` § Projecting the wire without a daemon: the seam members,
@@ -263,43 +318,47 @@ await new GuideCommand({
 			expect(provider.name).toBe('ollama')
 		})
 
-		// `guides/ollama.md` § Relaying through your own server: the server fence's route in
-		// front of a real OllamaProvider, driven by the browser fence's relay provider. The
-		// daemon is canned; every other part — the relay, the dispatcher, the provider, the
-		// NDJSON frames — is the real one.
-		it('round trips the relay fences through a dispatcher in front of the provider', async () => {
-			const handler = createRelay({
-				provider: createOllama({
-					model: 'qwen3.5:2b-q4_K_M',
-					fetch: createStreamingTransport(TURN),
-				}),
-				authorize: (request) => request.headers.get('authorization') === 'Bearer session-token',
-			})
-			const dispatcher = createDispatcher({
-				routes: [{ method: 'POST', path: '/inference', handler }],
-			})
-			const browser = createRelayProvider({
-				url: 'https://app.example.com/inference',
-				parser: createNDJSONParser,
-				headers: () => ({ authorization: 'Bearer session-token' }),
-				fetch: (input, init) => dispatcher.handle(new Request(input, init), undefined),
-			})
+		// `guides/ollama.md` § Relaying through your own server: both halves, each in the
+		// composition its fence shows. The server half runs through `createRelayServer`,
+		// which is that fence — `createRelay` over a real `OllamaProvider`, an
+		// `@orkestrel/router` dispatcher on `POST /inference`, and an `@orkestrel/server`
+		// listener started with `start` and stopped with `stop` — with the fixture's own
+		// bearer and an ephemeral loopback port in place of the fence's literals. The
+		// browser half is the fence's own call over the page's own `fetch`, dialling the
+		// url the server half bound with that same bearer. Only the daemon is canned.
+		it('round trips the relay fences over a real loopback server the browser half dials', async () => {
+			const server = await createRelayServer(
+				createOllama({ model: 'qwen3.5:2b-q4_K_M', fetch: createStreamingTransport(TURN) }),
+			)
+			try {
+				const browser = createRelayProvider({
+					url: `${server.url}/inference`,
+					parser: createNDJSONParser,
+					headers: () => ({ authorization: OBFUSCATED }),
+				})
 
-			// The browser drives `ProviderInterface` like a local provider, and the settled
-			// frame carries the reasoning and the usage across the hop.
-			expect(
-				await browser.generate(
-					[{ id: '1', role: 'user', content: 'Say hello.' }],
-					new AbortController().signal,
-				),
-			).toEqual({
-				content: 'Hello',
-				thinking: 'weighing it',
-				usage: { prompt: 3, completion: 4, total: 7 },
-			})
-			expect(browser.name).toBe('relay')
+				// The browser drives `ProviderInterface` like a local provider, and the settled
+				// frame carries the reasoning and the usage across the hop.
+				expect(
+					await browser.generate(
+						[{ id: '1', role: 'user', content: 'Say hello.' }],
+						new AbortController().signal,
+					),
+				).toEqual({
+					content: 'Hello',
+					thinking: 'weighing it',
+					usage: { prompt: 3, completion: 4, total: 7 },
+				})
+				expect(browser.name).toBe('relay')
+				expect(server.requests.map((request) => request.path)).toEqual(['/inference'])
+			} finally {
+				await server.stop()
+			}
 		})
 
+		// The refusal the prose under the fences states. The served composition is the case
+		// preceding; this one calls the dispatcher directly to count the daemon transport's
+		// calls, which is what proves the provider is never entered.
 		it('refuses the relay hop with an HTTP 401 when the credential does not match', async () => {
 			const daemon = createStreamingTransport(TURN)
 			const calls: string[] = []
@@ -339,6 +398,11 @@ await new GuideCommand({
 				"authorize: (request) => request.headers.get('authorization') === 'Bearer session-token',",
 			)
 			expect(guideText).toContain("routes: [{ method: 'POST', path: '/inference', handler }],")
+			expect(guideText).toContain(
+				"const server = createServer({ dispatcher, state: () => ({}), host: '127.0.0.1', port: 8787 })",
+			)
+			expect(guideText).toContain('const port = await server.start()')
+			expect(guideText).toContain('await server.stop()')
 			expect(guideText).toContain('const browser = createRelayProvider({')
 			expect(guideText).toContain('parser: createNDJSONParser,')
 		})

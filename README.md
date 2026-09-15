@@ -58,8 +58,14 @@ while (!step.done) {
 	step = await generator.next()
 }
 const streamed = step.value // the assembled ProviderResult
-answer.join('') === streamed.content // true
+streamed.content // the answer — the settled content is the authoritative one
+answer.join('') // what arrived on the content channel
 ```
+
+Read the answer from the settled `streamed.content`. The deltas are what arrived,
+and a turn whose reasoning the daemon opened without a `<think>` marker streams a
+prefix the base later moves to `streamed.thinking`, leaving the joined deltas
+longer than the settled content — see [`guides/ollama.md`](guides/ollama.md).
 
 ## Guide
 
@@ -71,10 +77,9 @@ context-framing default, and the browser relay — see
 
 ## Package
 
-Published as a single core surface per the `exports` field in
-`package.json` — one `.` entry backed by a dual ESM + CommonJS build of
-`src/core`, host-independent so the same build serves a server process and a
-browser page.
+The `exports` field in `package.json` publishes the `.` entry alone — a dual
+ESM + CommonJS build of `src/core`, host-independent so the same build serves a
+server process and a browser page.
 
 ## License
 

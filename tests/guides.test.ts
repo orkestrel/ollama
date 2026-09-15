@@ -40,13 +40,14 @@ await new GuideCommand({
 }).execute(async ({ files, report, rows }) => {
 	const { isRecord, parseJSON } = await import('@orkestrel/contract')
 	const { computeSymbolKey, findMissingSymbols } = await import('@orkestrel/guide')
-	const { createRelay, createRelayProvider, isProviderError } = await import('@orkestrel/agent')
+	const { createRelay, createRelayProvider, isProviderAbortError, isProviderError } =
+		await import('@orkestrel/agent')
 	const { createNDJSONParser } = await import('@orkestrel/ndjson')
 	const { createDispatcher } = await import('@orkestrel/router')
 	const { requireValue } = await import('@orkestrel/test')
 	const barrel = await import('@src/core')
 	const { createOllama, OllamaProvider } = barrel
-	const { createRelayServer, createStreamingTransport, OBFUSCATED } =
+	const { createOpenTransport, createRelayServer, createStreamingTransport, OBFUSCATED } =
 		await import('./setupServer.js')
 	const { describe, expect, it } = await import('vitest')
 	const manifest = parseJSON(requireValue(files['package.json'], 'Missing inventory: package.json'))
@@ -260,6 +261,45 @@ await new GuideCommand({
 				'streamed.content // the answer — the settled content is the authoritative one',
 			)
 			expect(readmeText).toContain("answer.join('') // what arrived on the content channel")
+		})
+
+		// `guides/ollama.md` § Surface: the streaming fence's `catch` arm — the daemon stays
+		// open after one delta, the caller cancels, and the recovered content is that one
+		// delta, read from `error.partial.content` on its own rather than appended onto the
+		// accumulated deltas, so it is not duplicated.
+		it('recovers the partial the catch arm reads, undoubled, when the stream is cancelled', async () => {
+			const open = createOpenTransport('{"message":{"content":"Hel"}}\n')
+			const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M', fetch: open.fetch })
+			const abort = new AbortController()
+			const answer: string[] = []
+			const reasoning: string[] = []
+			let recovered = ''
+
+			try {
+				const generator = provider.stream(
+					[{ id: '1', role: 'user', content: 'Say hello.' }],
+					abort.signal,
+				)
+				let step = await generator.next()
+				while (!step.done) {
+					if (step.value.channel === 'content') answer.push(step.value.text)
+					if (step.value.channel === 'thinking') reasoning.push(step.value.text)
+					abort.abort()
+					try {
+						step = await generator.next()
+					} catch (error) {
+						if (!isProviderAbortError(error)) throw error
+						recovered = error.partial.content // everything that streamed before the cancel
+						break
+					}
+				}
+			} finally {
+				await open.cancelled
+			}
+
+			expect(answer).toEqual(['Hel'])
+			expect(recovered).toBe('Hel')
+			expect(reasoning).toEqual([])
 		})
 
 		// `guides/ollama.md` § Projecting the wire without a daemon: the seam members,

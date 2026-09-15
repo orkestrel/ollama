@@ -9,7 +9,7 @@ This provider lets an Agent run against a real model on `localhost` — one smal
 
 The design is deliberately spare — an external boundary kept honest. Every `unknown` wire value is narrowed through the `@orkestrel/contract` guards (`isRecord`, `isString`, `isNumber`) rather than a type assertion, and a missing or malformed field degrades to a sensible default (empty content, no usage, `{}` arguments) rather than a throw. Every call streams: the request always carries `stream: true`, and `generate` drains the same NDJSON path `stream` exposes, so neither call can report content the other would not. The wire `think` flag is configurable through `OllamaOptions.think` (default `false`) and overrideable per call through `ProviderStreamOptions.think`; with `think: true` the daemon returns reasoning on the separate `message.thinking` channel, streamed live as `thinking` deltas. Either way the base's splitter separates any `<think>` span the daemon inlines anyway, so the assembled `content` is clean and the reasoning surfaces as `ProviderResult.thinking`, never in the conversation. A per-call `ProviderStreamOptions.schema` (a JSON schema object, from `@orkestrel/agent`) forwards verbatim as the wire's structured-output `format` field, and is omitted from the request when no schema is supplied. Token usage reuses the `TokenUsage` shape rather than minting its own.
 
-The dependency is strictly one-way: this surface imports the base, the contract types, and the error from `@orkestrel/agent`, the parser factory from `@orkestrel/ndjson`, tool-call shapes from `@orkestrel/tool`, the usage shape from `@orkestrel/budget`, and the guards from `@orkestrel/contract` — those packages never import from here. The published face is core, so `src/core` reaches no `node:*` module and no DOM global and the same build serves a server process and a browser page. It is tested live against `qwen3.5:2b-q4_K_M` in a dedicated `service` test project that requires the daemon and warms the model first, with no `skipIf`, while the `src:core` project stays hermetic on canned-transport and recording-proxy assertions that pass with the daemon down. Source: [`src/core`](../src/core). Surfaced through the `@orkestrel/ollama` barrel, aliased `@src/core` inside this repo.
+The dependency is strictly one-way: this surface imports the base and the contract types from `@orkestrel/agent` and reaches errors through that base, the parser factory from `@orkestrel/ndjson`, tool-call shapes from `@orkestrel/tool`, the usage shape from `@orkestrel/budget`, and the guards from `@orkestrel/contract` — those packages never import from here. The published face is core, so `src/core` reaches no `node:*` module and no DOM global and the same build serves a server process and a browser page. It is tested live against `qwen3.5:2b-q4_K_M` in a dedicated `service` test project that requires the daemon and warms the model first, with no `skipIf`, while the `src:core` project stays hermetic on canned-transport and recording-proxy assertions that pass with the daemon down. Source: [`src/core`](../src/core). Surfaced through the `@orkestrel/ollama` barrel, aliased `@src/core` inside this repo.
 
 ## Surface
 
@@ -53,9 +53,10 @@ try {
 	result.content // the answer — the settled content is the authoritative one
 	answer.join('') // what arrived on the content channel, which a reclassified <think> span leaves longer
 } catch (error) {
-	if (isProviderAbortError(error))
-		answer.push(error.partial.content) // recover what streamed
-	else throw error
+	if (isProviderAbortError(error)) {
+		const recovered = error.partial.content // everything that streamed before the cancel
+		answer.push(recovered)
+	} else throw error
 }
 ```
 
@@ -132,7 +133,10 @@ The dominant single-shot use: one prompt, one assembled result.
 
 ```ts
 import { createAbort } from '@orkestrel/abort'
+import type { TokenUsage } from '@orkestrel/budget'
 import { createOllama } from '@orkestrel/ollama'
+
+declare function charge(usage: TokenUsage): void // your billing integration
 
 const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M', options: { temperature: 0 } })
 const abort = createAbort()
@@ -255,7 +259,7 @@ const relayed = await browser.generate(messages, abort.signal)
 relayed.content // the daemon's answer, reassembled from the relay's frames
 ```
 
-A refusal never becomes a frame: a wrong credential reaches the browser as a `ProviderError` with code `'HTTP'` and status `401`, and the provider on the server is never entered. [`agent.md`](agent.md) states the frame vocabulary, the byte limit, and the rest of the refusal statuses.
+A refusal never becomes a frame: a wrong credential reaches the browser as a `ProviderError` with code `'HTTP'` and status `401`, and the provider on the server is never entered. [`agent.md`](agent.md) states the frame vocabulary, the byte limit, and the rest of the refusal statuses. A page calling the relay from another origin needs CORS permission headers the relay route does not send, so serve the page from the relay server's own origin (as the recorded Chrome 148 run did) or put an origin-checking, CORS-answering middleware in front of the route (see the server guide), naming the `OPTIONS` preflight the browser sends with `authorization` and `content-type` as the requested headers.
 
 ### Routing through your own server (obfuscated tokens)
 

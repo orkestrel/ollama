@@ -35,7 +35,10 @@ import { OllamaProvider } from './OllamaProvider.js'
  * @example createOllama + generate
  * ```ts
  * import { createAbort } from '@orkestrel/abort'
+ * import type { TokenUsage } from '@orkestrel/budget'
  * import { createOllama } from '@orkestrel/ollama'
+ *
+ * declare function charge(usage: TokenUsage): void // your billing integration
  *
  * const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M', options: { temperature: 0 } })
  * const abort = createAbort()

@@ -87,7 +87,7 @@
 		"@orkestrel/router": "^0.0.14",
 		"@orkestrel/scaffold": "^0.0.69",
 		"@orkestrel/server": "^0.0.19",
-		"@orkestrel/test": "^0.0.14",
+		"@orkestrel/test": "^0.0.15",
 		"@orkestrel/timeout": "^0.0.10",
 		"@orkestrel/workspace": "^0.0.8",
 		"@types/node": "^26.6.0",

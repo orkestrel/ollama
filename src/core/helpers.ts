@@ -7,7 +7,7 @@ import type { Message } from '@orkestrel/agent'
 import type { TokenUsage } from '@orkestrel/budget'
 import type { ToolCall } from '@orkestrel/tool'
 import type { WireChatRequest } from './types.js'
-import { isNumber, isRecord, isString, parseJSONAs } from '@orkestrel/contract'
+import { isArray, isNumber, isRecord, isString, parseJSONAs } from '@orkestrel/contract'
 
 /**
  * Maps conversation turns onto the `/api/chat` wire's minimal message shape.
@@ -128,7 +128,7 @@ export function extractTools(record: Readonly<Record<string, unknown>>): readonl
 	const message = Reflect.get(record, 'message')
 	if (!isRecord(message)) return []
 	const calls = Reflect.get(message, 'tool_calls')
-	if (!Array.isArray(calls)) return []
+	if (!isArray(calls)) return []
 	const out: ToolCall[] = []
 	for (const entry of calls) {
 		if (!isRecord(entry)) continue

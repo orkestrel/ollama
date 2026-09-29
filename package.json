@@ -85,7 +85,7 @@
 		"@orkestrel/guide": "^0.0.21",
 		"@orkestrel/probe": "^0.0.19",
 		"@orkestrel/router": "^0.0.16",
-		"@orkestrel/scaffold": "^0.0.80",
+		"@orkestrel/scaffold": "^0.0.81",
 		"@orkestrel/server": "^0.0.21",
 		"@orkestrel/test": "^0.0.24",
 		"@orkestrel/timeout": "^0.0.12",

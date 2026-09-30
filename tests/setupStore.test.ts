@@ -16,6 +16,7 @@ import { createOllama } from '@src/core'
 import { readFileSync } from 'node:fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+	attachThinking,
 	attemptStoreTask,
 	buildStoreCall,
 	buildStorePrompt,
@@ -523,18 +524,49 @@ describe('matchesStoreOracles with a failure', () => {
 const SEARCH_SEED =
 	'page "Harbor Goods — Catalogue" http://127.0.0.1/\ne35 searchbox "Search products"\ne36 button "Search"'
 
-/** Holds a search run that ends as the pinned failure ends: a click naming `type`, then no answer. */
-const STALLED_SEARCH: StoreTranscript = buildStoreTranscript(
-	[
-		buildStoreCall('look', { what: 'kettle products' }, SEARCH_SEED),
+/** Holds the result text of a submitted search that lists the two kettles. */
+const KETTLE_RESULTS = `Typed "kettles" into e35 searchbox "Search products" and submitted the form.
+
+page "Search: kettles" http://127.0.0.1/search?q=kettles
+e47 link "Alpine Kettle"
+e48 link "Copper Kettle"`
+
+/** Holds a search run that ends as run v7 ended: the kettles listed, then an empty final turn. */
+const STALLED_SEARCH: StoreTranscript = {
+	...buildStoreTranscript(
+		[
+			buildStoreCall('look', { what: 'kettle products' }, SEARCH_SEED),
+			buildStoreCall('type', { ref: 'e35', text: 'kettles', submit: true }, KETTLE_RESULTS),
+		],
+		SEARCH_SEED,
+	),
+	state: { cart: [], searches: ['kettles'], orders: [] },
+}
+
+/** Holds the run v6 ended as: the query submitted, no product listed, then an empty final turn. */
+const EMPTY_RESULTS_SEARCH: StoreTranscript = {
+	...STALLED_SEARCH,
+	calls: [
+		buildStoreCall(
+			'type',
+			{ ref: 'e35', text: 'kettles', submit: true },
+			'Typed "kettles" into e35 searchbox "Search products" and submitted the form.\n\n# Search results for “kettles”\nNo products match.',
+		),
+	],
+}
+
+/** Holds the run v5 and c5 ended as: a click receipt naming `type`, then an empty final turn. */
+const CLICKED_SEARCH: StoreTranscript = {
+	...STALLED_SEARCH,
+	calls: [
 		buildStoreCall(
 			'click',
 			{ ref: 'e35' },
 			`Clicked e35 searchbox "Search products"; call type with e35 to enter text.\n\n${SEARCH_SEED}`,
 		),
 	],
-	SEARCH_SEED,
-)
+	state: { cart: [], searches: [], orders: [] },
+}
 
 /** Holds a search run that submitted the query and named every matching product. */
 const COMPLETED_SEARCH: StoreTranscript = {
@@ -553,15 +585,17 @@ const COMPLETED_SEARCH: StoreTranscript = {
 }
 
 describe('matchesSearchOracle', () => {
-	it('holds for a run that submitted the query and names exactly the products it matches', () => {
+	it('holds for a run whose recorded search resolves to the products the query matches and whose answer names them', () => {
 		expect(matchesSearchOracle(COMPLETED_SEARCH, STORE_QUERY)).toBe(true)
 		const spaced = { ...COMPLETED_SEARCH, state: { cart: [], searches: [' Kettle '], orders: [] } }
 		expect(matchesSearchOracle(spaced, STORE_QUERY)).toBe(true)
+		const plural = { ...COMPLETED_SEARCH, state: { cart: [], searches: ['kettles'], orders: [] } }
+		expect(matchesSearchOracle(plural, STORE_QUERY)).toBe(true)
 	})
 
 	it('fails a run that submitted no query, another query, or names too few or too many products', () => {
 		expect(matchesSearchOracle(STALLED_SEARCH, STORE_QUERY)).toBe(false)
-		const other = { ...COMPLETED_SEARCH, state: { cart: [], searches: ['anchor'], orders: [] } }
+		const other = { ...COMPLETED_SEARCH, state: { cart: [], searches: ['teapot'], orders: [] } }
 		expect(matchesSearchOracle(other, STORE_QUERY)).toBe(false)
 		const partial = { ...COMPLETED_SEARCH, answer: 'The Alpine Kettle matches.' }
 		expect(matchesSearchOracle(partial, STORE_QUERY)).toBe(false)
@@ -574,33 +608,51 @@ describe('matchesSearchOracle', () => {
 })
 
 describe('matchesStalledSearch', () => {
-	it('holds for a run whose last call is a click receipt naming type and whose answer is empty', () => {
+	it('holds for run v7: the last call a submitting type that lists a match, the answer empty', () => {
 		expect(matchesStalledSearch(STALLED_SEARCH)).toBe(true)
 	})
 
-	it('fails a completed search, an answered or cut stall, and a click receipt that names no type', () => {
+	it('fails run v6, which listed no product, and runs v5 and c5, whose last call was a click', () => {
+		expect(matchesStalledSearch(EMPTY_RESULTS_SEARCH)).toBe(false)
+		expect(matchesStalledSearch(CLICKED_SEARCH)).toBe(false)
+	})
+
+	it('fails a completed search, an answered or cut stall, a failed type, and a type without submit', () => {
 		expect(matchesStalledSearch(COMPLETED_SEARCH)).toBe(false)
-		expect(matchesStalledSearch({ ...STALLED_SEARCH, answer: 'The search box is ready.' })).toBe(
-			false,
-		)
+		expect(matchesStalledSearch({ ...STALLED_SEARCH, answer: 'The kettles match.' })).toBe(false)
 		expect(matchesStalledSearch({ ...STALLED_SEARCH, partial: true })).toBe(false)
-		const [look, click] = STALLED_SEARCH.calls
-		if (look === undefined || click === undefined) throw new Error('the stall fixture lost a call')
-		const plain = buildStoreCall(
-			'click',
-			{ ref: 'e35' },
-			`Clicked e35 searchbox.\n\n${SEARCH_SEED}`,
-		)
-		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, plain] })).toBe(false)
-		const failed = { ...click, success: false }
+		const [look, type] = STALLED_SEARCH.calls
+		if (look === undefined || type === undefined) throw new Error('the stall fixture lost a call')
+		const failed = { ...type, success: false }
 		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, failed] })).toBe(false)
+		const unsubmitted = { ...type, arguments: { ref: 'e35', text: 'kettles' } }
+		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, unsubmitted] })).toBe(false)
 		const reread = buildStoreCall('read', { what: 'kettle products' }, '# Harbor Goods')
-		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, click, reread] })).toBe(false)
+		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, type, reread] })).toBe(false)
+	})
+})
+
+describe('attachThinking', () => {
+	it('gives the n-th assistant message the n-th turn thinking and leaves a silent turn bare', () => {
+		const messages = [
+			{ id: 'm1', role: 'user', content: 'Search for kettle.' },
+			{ id: 'm2', role: 'assistant', content: '' },
+			{ id: 'm3', role: 'tool', content: 'results' },
+			{ id: 'm4', role: 'assistant', content: '' },
+		] as const
+		const recorded = attachThinking(messages, ['I will search.', ''])
+		expect(recorded.map((message) => message.thinking)).toEqual([
+			undefined,
+			'I will search.',
+			undefined,
+			undefined,
+		])
+		expect(recorded[3]).toBe(messages[3])
 	})
 })
 
 describe('the search pin in tests/service/browser.test.ts', () => {
-	it('holds for the recorded stall: the shared oracles and the stall hold, the search oracle fails', () => {
+	it('holds for the recorded v7 stall: the shared oracles and the stall hold, the search oracle fails', () => {
 		expect(matchesStoreOracles(STALLED_SEARCH)).toBe(true)
 		expect(matchesStalledSearch(STALLED_SEARCH)).toBe(true)
 		expect(matchesSearchOracle(STALLED_SEARCH, STORE_QUERY)).toBe(false)

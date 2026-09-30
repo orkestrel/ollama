@@ -660,6 +660,12 @@ export interface StoreCall {
 	readonly text: string
 }
 
+/** Represents one conversation message as the transcript records it: the message and its thinking. */
+export interface StoreMessage extends Message {
+	/** The reasoning the provider separated from the answer; absent when the turn surfaced none. */
+	readonly thinking?: string
+}
+
 /** Represents the record one store run leaves, which the proof's assertions read. */
 export interface StoreTranscript {
 	/** The task's name, which also names the transcript file. */
@@ -672,8 +678,8 @@ export interface StoreTranscript {
 	readonly seed: string
 	/** The task the first user turn states. */
 	readonly prompt: string
-	/** Every conversation message after the run, in order. */
-	readonly messages: readonly Message[]
+	/** Every conversation message after the run, in order; an assistant message carries its turn's thinking. */
+	readonly messages: readonly StoreMessage[]
 	/** Every tool call the run dispatched, in order, with its result text. */
 	readonly calls: readonly StoreCall[]
 	/** The run's final answer. */
@@ -736,6 +742,27 @@ export function renderToolText(result: ToolResult): string {
 	return typeof result.value === 'string' ? result.value : JSON.stringify(result.value)
 }
 
+/**
+ * Pairs each assistant message with the thinking its turn surfaced.
+ *
+ * @param messages - The conversation's messages, in order
+ * @param thoughts - The thinking each provider turn surfaced, in turn order; `''` for a silent turn
+ * @returns The same messages; the n-th assistant message carries the n-th turn's thinking when it
+ * is not empty
+ */
+export function attachThinking(
+	messages: readonly Message[],
+	thoughts: readonly string[],
+): readonly StoreMessage[] {
+	let turn = 0
+	return messages.map((message) => {
+		if (message.role !== 'assistant') return message
+		const thinking = thoughts[turn] ?? ''
+		turn += 1
+		return thinking === '' ? message : { ...message, thinking }
+	})
+}
+
 /** Names the arguments of the `look` call a store run is seeded with. */
 export const STORE_SEED_ARGUMENTS: Readonly<Record<string, unknown>> = Object.freeze({
 	what: 'the page',
@@ -780,6 +807,7 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 		const seed = renderToolText(seeded)
 		const calls: StoreCall[] = []
 		const usages: TokenUsage[] = []
+		const thoughts: string[] = ['']
 		const agent = createAgent(options.provider, {
 			system: STORE_SYSTEM_PROMPT,
 			tools: toolset.tools,
@@ -800,7 +828,20 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 		let failure: unknown
 		let driven: Awaited<ReturnType<typeof driveAgent>> | undefined
 		try {
-			driven = await driveAgent(agent.stream())
+			const stream = agent.stream()
+			// The usage chunk closes a provider turn, so the thinking between two of them is one turn's.
+			const tapped: typeof stream = {
+				events: (async function* () {
+					for await (const chunk of stream.events) {
+						if (chunk.category === 'think') thoughts[thoughts.length - 1] += chunk.content
+						else if (chunk.category === 'usage') thoughts.push('')
+						yield chunk
+					}
+				})(),
+				result: stream.result,
+				abort: (reason) => stream.abort(reason),
+			}
+			driven = await driveAgent(tapped)
 		} catch (error) {
 			failure = error
 		}
@@ -810,7 +851,7 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 			system: STORE_SYSTEM_PROMPT,
 			seed,
 			prompt: options.prompt,
-			messages: agent.context.messages.messages(),
+			messages: attachThinking(agent.context.messages.messages(), thoughts),
 			calls,
 			answer: driven?.result.content ?? '',
 			partial: driven?.result.partial ?? true,
@@ -1155,44 +1196,57 @@ export function matchesPagingOracle(transcript: StoreTranscript, token: string):
 }
 
 /**
- * Checks whether a search run completed the search: the store recorded the query and the answer
- * names exactly the products it matches.
+ * Checks whether two product lists hold the same products in the same order.
+ *
+ * @param left - One list
+ * @param right - The other list
+ * @returns True if both hold the same products in the same order; false otherwise
+ */
+function sameProducts(left: readonly StoreProduct[], right: readonly StoreProduct[]): boolean {
+	return left.length === right.length && left.every((product, index) => product === right[index])
+}
+
+/**
+ * Checks whether a search run completed the search: the store recorded a query that matches the
+ * task's products and the answer names exactly those products.
  *
  * @param transcript - The run's transcript
  * @param query - The query the task asks the model to submit
- * @returns True if a recorded search equals the query, ignoring case and surrounding space, and
- * {@link filterNamedProducts} reads from the answer exactly the products
- * {@link filterProducts} matches; false otherwise
+ * @returns True if a recorded search resolves through {@link filterProducts} to the same products
+ * as the query (so `kettles` counts for `kettle`), and {@link filterNamedProducts} reads from the
+ * answer exactly the products {@link filterProducts} matches for the query; false otherwise
  */
 export function matchesSearchOracle(transcript: StoreTranscript, query: string): boolean {
-	const needle = query.trim().toLowerCase()
-	const named = filterNamedProducts(transcript.answer).map((product) => product.name)
-	const matched = filterProducts(query).map((product) => product.name)
+	const matched = filterProducts(query)
+	const named = filterNamedProducts(transcript.answer)
 	return (
-		transcript.state.searches.some((search) => search.trim().toLowerCase() === needle) &&
-		named.length === matched.length &&
-		named.every((name, index) => name === matched[index])
+		transcript.state.searches.some((search) => sameProducts(filterProducts(search), matched)) &&
+		sameProducts(named, matched)
 	)
 }
 
 /**
- * Checks whether a search run ended in the known stall: a click receipt naming `type`, then an
- * empty final turn.
+ * Checks whether a search run ended in the known stall: the model completes the search and stops
+ * before answering.
  *
  * @param transcript - The run's transcript
- * @returns True if the last call is a successful `click` whose receipt's first line names
- * `call type with` a reference, and the run settled with an empty answer; false otherwise
+ * @returns True if the last call is a successful `type` with `submit` whose result lists at least
+ * one product {@link filterProducts} matches for the typed text, and the run settled with an
+ * empty answer; false otherwise
+ * @remarks Run v7 typed `kettles`, received the two kettles, and ended with an empty turn. Run v6
+ * typed the same query, received no products, and ended empty too, so it does not hold. Runs v5
+ * and c5 ended empty after a `click` receipt naming `type`; that earlier stall is deleted because
+ * U14c and C7 let the model reach `type`.
  */
 export function matchesStalledSearch(transcript: StoreTranscript): boolean {
 	const last = transcript.calls.at(-1)
-	return (
-		last !== undefined &&
-		last.name === 'click' &&
-		last.success &&
-		/\bcall type with e[1-9]\d*\b/.test(last.text.split('\n', 1)[0] ?? '') &&
-		transcript.answer.trim() === '' &&
-		!transcript.partial
-	)
+	if (last === undefined || last.name !== 'type' || !last.success) return false
+	if (last.arguments['submit'] !== true) return false
+	const typed = last.arguments['text']
+	const listed =
+		typeof typed === 'string' &&
+		filterProducts(typed).some((product) => last.text.includes(product.name))
+	return listed && transcript.answer.trim() === '' && !transcript.partial
 }
 
 /**

@@ -149,7 +149,7 @@ describe('Browser vocabulary (live) — the store tasks', () => {
 	)
 
 	it(
-		'ends its turn empty after the click receipt names type, short of submitting the query',
+		'ends its turn empty after the submitted search lists the kettles, short of answering',
 		async () => {
 			const { transcript } = await attempt(STORE_TASKS.search, 1)
 			expectSharedOracles(transcript)

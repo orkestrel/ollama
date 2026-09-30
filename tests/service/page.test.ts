@@ -17,8 +17,9 @@
  * part of the connection — which `createPageSession` hands it, so an expiry at discovery, at the
  * port-free check, before the launch, or at `client.connect()` ends the acquisition at the
  * dependency — while the target listing that connection ends with, and every page command after
- * it, takes a per-call `timeout` and no signal, one of them issuing several separately bounded
- * CDP commands. So a sum over those per-call values states an arithmetic the dependency never
+ * it, takes `{ timeout, signal }` (see the `BrowserPageInterface` section of
+ * `guides/browser.md`) and receives a `timeout` alone from the session helper, one of them
+ * issuing several separately bounded CDP commands. So a sum over those per-call values states an arithmetic the dependency never
  * runs, and the race is what bounds every phase the signal does not reach. The attempt-bound
  * controls at the end of this file drive each interleaving of that bound.
  *
@@ -138,9 +139,9 @@ describe('Agent tool loop in a real page (live) — the published closure', () =
 					// No agent has run: this case reads the closure's own evaluation, so a top-level
 					// side effect or an unresolved specifier surfaces as itself rather than as a
 					// failure of the scenario built on top of it.
-					expect(await session.page.evaluate('globalThis.ready === true', PAGE_BOUNDS.read)).toBe(
-						true,
-					)
+					expect(
+						await session.page.evaluate('globalThis.ready === true', { timeout: PAGE_BOUNDS.read }),
+					).toBe(true)
 					// The operation table the page actually parked, read out of the running browser
 					// and compared whole. The served document is a string this process never
 					// executes, so every name the other cases evaluate is bound to what the page
@@ -551,7 +552,7 @@ describe('Agent tool loop in a real page (live) — the attempt bound', () => {
 			// An allowance no browser acquisition fits. The failure names the attempt's own
 			// allowance rather than whichever CDP command timed out first, which is the reading
 			// the installed browser surface produces by itself for every phase its own signal
-			// does not reach: those calls take a per-call `timeout` and no signal, so one call's
+			// does not reach: the session helper passes those calls a `timeout` alone, so one call's
 			// deadline never bounds the call that contains it. The elapsed time is asserted beside
 			// the message, because the message alone is also what an attempt that reported its
 			// bound and then waited past it would produce.
@@ -601,7 +602,7 @@ describe('Agent tool loop in a real page (live) — the attempt bound', () => {
 				acquired,
 				`the attempt acquired no session within ${PAGE_INTERVALS.observe} ms`,
 			)
-			const refused = await released.page.evaluate('1', PAGE_BOUNDS.read).then(
+			const refused = await released.page.evaluate('1', { timeout: PAGE_BOUNDS.read }).then(
 				() => undefined,
 				(thrown: unknown) => thrown,
 			)
@@ -650,7 +651,7 @@ describe('Agent tool loop in a real page (live) — the attempt bound', () => {
 				delayed,
 				`the acquisition took no session within ${PAGE_INTERVALS.late + PAGE_INTERVALS.hold} ms`,
 			)
-			const refused = await released.page.evaluate('1', PAGE_BOUNDS.read).then(
+			const refused = await released.page.evaluate('1', { timeout: PAGE_BOUNDS.read }).then(
 				() => undefined,
 				(thrown: unknown) => thrown,
 			)
@@ -698,7 +699,7 @@ describe('Agent tool loop in a real page (live) — the attempt bound', () => {
 				crossed,
 				`the acquisition took no session within ${PAGE_INTERVALS.late} ms`,
 			)
-			const refused = await released.page.evaluate('1', PAGE_BOUNDS.read).then(
+			const refused = await released.page.evaluate('1', { timeout: PAGE_BOUNDS.read }).then(
 				() => undefined,
 				(thrown: unknown) => thrown,
 			)

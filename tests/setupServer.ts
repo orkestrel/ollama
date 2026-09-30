@@ -621,8 +621,9 @@ export const CONTROL_PATH = '/control'
  * `@orkestrel/browser` surface takes a signal on part of the connection — `BrowserOptions.signal`
  * races discovery, the port-free check, the launch, and `client.connect()`, which is why
  * {@link createPageSession} hands the attempt's signal to `createBrowser` — while the target
- * listing that connection ends with, and every page command after it, takes a per-call `timeout`
- * and no signal. One of those calls issues several separately bounded CDP commands:
+ * listing that connection ends with, and every page command after it, takes `{ timeout, signal }`
+ * (`BrowserCallOptions`, see the `BrowserPageInterface` section of `guides/browser.md`), and the
+ * session helper passes a `timeout` alone. One of those calls issues several separately bounded CDP commands:
  * `browser.create()` alone awaits `Target.createTarget`, `Target.attachToTarget`, `Page.enable`,
  * `Runtime.enable`, `Page.getFrameTree`, `Target.setAutoAttach`,
  * `Page.setInterceptFileChooserDialog`, `Browser.setDownloadBehavior`, and `Network.enable`. A
@@ -1085,8 +1086,9 @@ export interface PageSessionInterface {
  * aborted, and the attempt race is what bounds it. The readiness wait observes the signal, so a
  * page that never parks ends at the attempt's deadline rather than at its own budget. An
  * acquisition that starts after the signal aborted throws its reason before taking anything.
- * Every page command after the connection takes a per-call `timeout` and no signal, so
- * {@link boundPageAttempt} races those too.
+ * Every page command after the connection takes `{ timeout, signal }` (see the
+ * `BrowserPageInterface` section of `guides/browser.md`), and the session helper passes a
+ * `timeout` alone, so {@link boundPageAttempt} races those too.
  */
 export async function createPageSession(
 	options: PageSessionOptions,
@@ -1125,7 +1127,9 @@ export async function createPageSession(
 		try {
 			await waitForCondition(
 				'the page driver to park its operations',
-				async () => (await page.evaluate('globalThis.ready === true', PAGE_BOUNDS.read)) === true,
+				async () =>
+					(await page.evaluate('globalThis.ready === true', { timeout: PAGE_BOUNDS.read })) ===
+					true,
 				{
 					budget: PAGE_BOUNDS.ready,
 					...(options.signal === undefined ? {} : { signal: options.signal }),
@@ -1165,8 +1169,9 @@ export async function createPageSession(
  * reason as its cause.
  * @remarks This is the losing side of the race {@link boundPageAttempt} runs, and the
  * translation is its whole job. The installed `@orkestrel/browser` surface takes a signal on part
- * of the connection and nowhere else; the target listing that connection ends with, and every
- * page command after it, accepts a per-call `timeout` number and no signal, so an over-long
+ * of the connection; the target listing that connection ends with, and every page command
+ * after it, takes `{ timeout, signal }` (see the `BrowserPageInterface` section of
+ * `guides/browser.md`), and the session helper passes a `timeout` alone, so an over-long
  * observation reports as whichever inner CDP call happened to time out first — a reading that
  * names a browser command rather than the bound it broke. Racing this promise against the attempt
  * makes the caller read the allowance instead, carrying the signal's abort reason as the cause;
@@ -1207,7 +1212,7 @@ export function describeFailure(failure: unknown): string {
  * out before the acquisition settled and released.
  * @remarks An acquisition the attempt's deadline outran owns a browser no other reference can
  * reach, so it is settled and released here rather than abandoned. It is not awaited without a
- * bound, though: a page command in flight takes no signal, so an acquisition can outlast any
+ * bound, though: the session helper passes each page command a `timeout` alone, so an acquisition can outlast any
  * deadline the caller holds, and awaiting it turns an expired attempt into a hang. The share is
  * what separates the two readings — inside it the browser is released, past it the browser is
  * named as stranded and the caller is handed back its own failure.
@@ -1256,8 +1261,8 @@ export async function releasePageAttempt(
  * installed `BrowserOptions.signal` races discovery, the port-free check, the launch, and
  * `client.connect()`, so an expiry in any of those ends the acquisition at the dependency rather
  * than abandoning it. It reaches nothing after that: the target listing the connection ends with
- * takes the client's per-request `timeout`, every page command takes a per-call `timeout` and no
- * signal, and a `page.evaluate` in flight cannot be cancelled at all. So the race is what releases
+ * takes the client's per-request `timeout`, and the session helper passes every page command,
+ * `page.evaluate` included, a `timeout` alone. So the race is what releases
  * the caller on every phase the signal does not cover, and the release is what stops the browser
  * outliving it.
  *
@@ -1438,7 +1443,7 @@ export async function readOutcome<T>(
 	guard: (value: unknown) => value is T,
 	timeout: number,
 ): Promise<T> {
-	const returned = await page.evaluate(expression, timeout)
+	const returned = await page.evaluate(expression, { timeout })
 	if (!isString(returned)) {
 		throw new Error(`the page expression ${expression} returned ${String(returned)}, not a string`)
 	}

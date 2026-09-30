@@ -673,10 +673,10 @@ describe('readOutcome', () => {
 	it('narrows a JSON string across the evaluate boundary and refuses every other reading', async () => {
 		// The boundary stub implements the one member the reader crosses — `evaluate` — and
 		// answers with the strings a real page answers with. The subject is the narrowing.
-		const answers: Array<readonly [string, number | undefined]> = []
+		const answers: Array<readonly [string, { readonly timeout?: number } | undefined]> = []
 		const page = {
-			evaluate(expression: string, timeout?: number) {
-				answers.push([expression, timeout])
+			evaluate(expression: string, options?: { readonly timeout?: number }) {
+				answers.push([expression, options])
 				return Promise.resolve(expression === 'ok' ? '{"status":200,"text":"control"}' : undefined)
 			},
 		}
@@ -687,7 +687,7 @@ describe('readOutcome', () => {
 		})
 		// The caller's deadline reaches the boundary, so an attempt spends the allowance its
 		// own arithmetic counted rather than one this reader chose.
-		expect(answers).toEqual([['ok', PAGE_BOUNDS.read]])
+		expect(answers).toEqual([['ok', { timeout: PAGE_BOUNDS.read }]])
 
 		// A reading that is not a string at all.
 		await expect(readOutcome(page, 'absent', isPageControl, PAGE_BOUNDS.read)).rejects.toThrow(
@@ -716,7 +716,7 @@ describe('expirePageAttempt', () => {
 		// The losing side of the race `boundPageAttempt` runs. Its whole job is the translation:
 		// a caller reads the attempt's own allowance being exceeded rather than whichever inner
 		// CDP call happened to time out first, which is the reading the installed browser
-		// surface gives on its own because it accepts per-call `timeout` numbers and no signal.
+		// surface gives on its own because a page command takes `{ timeout, signal }` and the session helper passes a `timeout` alone.
 		const expired = expirePageAttempt(AbortSignal.timeout(20), 20)
 		await expect(expired).rejects.toThrow('the page attempt exceeded its 20 ms allowance')
 

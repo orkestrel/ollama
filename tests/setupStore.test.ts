@@ -206,8 +206,32 @@ describe('escapeMarkup', () => {
 })
 
 describe('filterProducts', () => {
-	it('matches a name substring regardless of case and surrounding space', () => {
+	it('matches a name word regardless of case and surrounding space', () => {
 		expect(filterProducts(' TRAY ').map((product) => product.name)).toEqual(['Cedar Tea Tray'])
+	})
+
+	it('returns the same products for a plural and a singular word', () => {
+		const plural = filterProducts('kettles').map((product) => product.name)
+		expect(plural.length).toBeGreaterThan(0)
+		expect(plural).toEqual(filterProducts('kettle').map((product) => product.name))
+	})
+
+	it('requires every query word to match', () => {
+		expect(filterProducts('tea tray').map((product) => product.name)).toEqual(['Cedar Tea Tray'])
+		expect(filterProducts('alpine kettle').map((product) => product.name)).toEqual([
+			'Alpine Kettle',
+		])
+	})
+
+	it('returns an empty list for a word no name carries', () => {
+		expect(filterProducts('teapot')).toEqual([])
+	})
+
+	it('keeps catalogue order', () => {
+		expect(filterProducts('kettles').map((product) => product.name)).toEqual([
+			'Alpine Kettle',
+			'Copper Kettle',
+		])
 	})
 
 	it('matches nothing for a blank query', () => {

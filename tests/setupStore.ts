@@ -149,15 +149,25 @@ export function escapeMarkup(text: string): string {
 }
 
 /**
- * Returns the products whose name contains the query, ignoring case.
+ * Returns the products whose name carries every word of the query.
+ *
+ * A word matches when, lower-cased and with one trailing `s` removed, it is a prefix of some
+ * name word treated the same way, so `kettles` finds `Alpine Kettle`.
  *
  * @param query - The submitted search text
  * @returns The matching products in catalogue order; empty for a blank query
  */
 export function filterProducts(query: string): readonly StoreProduct[] {
-	const needle = query.trim().toLowerCase()
-	if (needle === '') return []
-	return STORE_PRODUCTS.filter((product) => product.name.toLowerCase().includes(needle))
+	const stem = (word: string): string => word.toLowerCase().replace(/s$/, '')
+	const words = query
+		.split(/\s+/)
+		.filter((word) => word !== '')
+		.map(stem)
+	if (words.length === 0) return []
+	return STORE_PRODUCTS.filter((product) => {
+		const nameWords = product.name.split(/\s+/).map(stem)
+		return words.every((word) => nameWords.some((nameWord) => nameWord.startsWith(word)))
+	})
 }
 
 /**

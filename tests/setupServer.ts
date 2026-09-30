@@ -11,6 +11,7 @@ import type { TokenUsage } from '@orkestrel/budget'
 import type { RecorderInterface } from '@orkestrel/test'
 import type { RouteInput } from '@orkestrel/router'
 import type {
+	BrowserCallOptions,
 	BrowserConsoleMessage,
 	BrowserPageError,
 	BrowserPageInterface,
@@ -617,19 +618,8 @@ export const CONTROL_PATH = '/control'
  * against. `release` is the share the release after that race is raced against, so a browser
  * this process can no longer reach is reported as stranded rather than awaited.
  *
- * No sum over the inner values bounds an attempt, and none is offered. The installed
- * `@orkestrel/browser` surface takes a signal on part of the connection — `BrowserOptions.signal`
- * races discovery, the port-free check, the launch, and `client.connect()`, which is why
- * {@link createPageSession} hands the attempt's signal to `createBrowser` — while the target
- * listing that connection ends with, and every page command after it, takes `{ timeout, signal }`
- * (`BrowserCallOptions`, see the `BrowserPageInterface` section of `guides/browser.md`), and the
- * session helper passes a `timeout` alone. One of those calls issues several separately bounded CDP commands:
- * `browser.create()` alone awaits `Target.createTarget`, `Target.attachToTarget`, `Page.enable`,
- * `Runtime.enable`, `Page.getFrameTree`, `Target.setAutoAttach`,
- * `Page.setInterceptFileChooserDialog`, `Browser.setDownloadBehavior`, and `Network.enable`. A
- * table that counted that call as one `command` would state an arithmetic the dependency does
- * not run, so `command`, `ready`, `read`, and `evaluate` are shares spent inside the allowance
- * rather than terms of it.
+ * `command`, `ready`, `read`, and `evaluate` are shares spent inside the allowance rather than
+ * terms of it, and no sum over them bounds an attempt; {@link boundPageAttempt} states why.
  *
  * `case` contains `attempt + release`, and `budget` contains `launches × (attempt + release)`,
  * so `retryUntil` ends on its attempt count rather than expiring mid-attempt and reporting a
@@ -1068,32 +1058,21 @@ export interface PageSessionInterface {
  * idempotent, so registering it before `connect()` is safe: a browser that never connected
  * holds nothing to release and its `destroy()` resolves.
  *
- * Each CDP step here spends a named share of {@link PAGE_BOUNDS}: the connection, the page
- * creation, the network start, and the navigation take `command` as the deadline each CDP request
- * they issue allows, and the readiness wait takes `ready` with `read` on its own probe. The
- * fixture start and the port reservation take no share of their own and observe no signal, and
- * the race {@link boundPageAttempt} runs is their only bound. Every share here bounds one request
- * rather than the acquisition, which is what `options.signal` is for.
+ * Each step here spends a named share of {@link PAGE_BOUNDS}: the connection takes `command` as
+ * its `BrowserOptions.timeout`, the navigation takes `command`, and the readiness wait takes
+ * `ready` with `read` on its own probe. The fixture start and the port reservation take no share
+ * of their own and observe no signal.
  *
- * The signal reaches the launch, the readiness wait, and the entry. `createBrowser` takes it as
- * the `BrowserOptions.signal` the installed declaration documents as "external AbortSignal for
- * cancelling the connection attempt", and the installed implementation races it at discovery, at
- * the port-free check, before the launch, and at each `client.connect()` — so an expiry in any of
- * those ends the connection at the dependency, and an already-aborted signal makes `connect()`
- * reject with `Connection aborted` and launches no process. The target listing that connection
- * ends with is not raced against it: `#syncContexts` sends `Target.getTargets` under the client's
- * per-request `timeout` alone, so a connection held there can still resolve after the signal
- * aborted, and the attempt race is what bounds it. The readiness wait observes the signal, so a
- * page that never parks ends at the attempt's deadline rather than at its own budget. An
- * acquisition that starts after the signal aborted throws its reason before taking anything.
- * Every page command after the connection takes `{ timeout, signal }` (see the
- * `BrowserPageInterface` section of `guides/browser.md`), and the session helper passes a
- * `timeout` alone, so {@link boundPageAttempt} races those too.
+ * The signal reaches the entry, the connection, the navigation, the readiness wait, and its
+ * probe, so an acquisition that starts after the signal aborted throws its reason before taking
+ * anything, and a page that never parks ends at the attempt's deadline rather than at its own
+ * budget. {@link boundPageAttempt} states which calls take the signal and what bounds the rest.
  */
 export async function createPageSession(
 	options: PageSessionOptions,
 ): Promise<PageSessionInterface> {
 	options.signal?.throwIfAborted()
+	const signal = options.signal === undefined ? {} : { signal: options.signal }
 	const requests: BrowserRequest[] = []
 	const errors: BrowserPageError[] = []
 	const messages: BrowserConsoleMessage[] = []
@@ -1111,7 +1090,7 @@ export async function createPageSession(
 			args: options.args,
 			cdp: { port, discover: false },
 			timeout: PAGE_BOUNDS.command,
-			...(options.signal === undefined ? {} : { signal: options.signal }),
+			...signal,
 		})
 		teardown.add(() => browser.destroy())
 		await browser.connect()
@@ -1123,17 +1102,16 @@ export async function createPageSession(
 			},
 		})
 		await page.network.start()
-		await page.navigate(fixture.url, { timeout: PAGE_BOUNDS.command })
+		await page.navigate(fixture.url, { timeout: PAGE_BOUNDS.command, ...signal })
 		try {
 			await waitForCondition(
 				'the page driver to park its operations',
 				async () =>
-					(await page.evaluate('globalThis.ready === true', { timeout: PAGE_BOUNDS.read })) ===
-					true,
-				{
-					budget: PAGE_BOUNDS.ready,
-					...(options.signal === undefined ? {} : { signal: options.signal }),
-				},
+					(await page.evaluate('globalThis.ready === true', {
+						timeout: PAGE_BOUNDS.read,
+						...signal,
+					})) === true,
+				{ budget: PAGE_BOUNDS.ready, ...signal },
 			)
 		} catch (failure) {
 			throw new Error(
@@ -1167,16 +1145,12 @@ export async function createPageSession(
  * @returns Never; this promise only rejects
  * @throws An `Error` naming the allowance the attempt exceeded, carrying the signal's abort
  * reason as its cause.
- * @remarks This is the losing side of the race {@link boundPageAttempt} runs, and the
- * translation is its whole job. The installed `@orkestrel/browser` surface takes a signal on part
- * of the connection; the target listing that connection ends with, and every page command
- * after it, takes `{ timeout, signal }` (see the `BrowserPageInterface` section of
- * `guides/browser.md`), and the session helper passes a `timeout` alone, so an over-long
- * observation reports as whichever inner CDP call happened to time out first — a reading that
- * names a browser command rather than the bound it broke. Racing this promise against the attempt
- * makes the caller read the allowance instead, carrying the signal's abort reason as the cause;
- * an inner CDP failure reaches the caller unchanged only when that command's own `timeout`
- * fires before the allowance does.
+ * @remarks This is the losing side of the race {@link racePageAttempt} runs, and the
+ * translation is its whole job. A call the signal does not reach ends on its own deadline, which
+ * names a browser call rather than the bound it broke. The caller reads the allowance instead,
+ * carrying the signal's abort reason as the cause, and a call's own failure reaches the caller
+ * unchanged only when it fires before the allowance does. {@link boundPageAttempt} states which
+ * calls the signal reaches.
  *
  * While the allowance holds, this promise stays pending, so the work wins the race on its own
  * result. `waitForAbort` parks on a one-shot abort listener without a timer or a poll, and an
@@ -1187,6 +1161,32 @@ export async function expirePageAttempt(signal: AbortSignal, allowance: number):
 	throw new Error(`the page attempt exceeded its ${allowance} ms allowance`, {
 		cause: signal.reason,
 	})
+}
+
+/**
+ * Races one step of a page attempt against the attempt's allowance.
+ *
+ * @param work - The step to race, such as the acquisition or the observation
+ * @param signal - The attempt's deadline signal, armed for `allowance` milliseconds
+ * @param allowance - The allowance that signal was armed for, named in the error
+ * @returns What the step resolved with, when it settles while the allowance holds
+ * @throws The step's own failure, or the {@link expirePageAttempt} error when the deadline won or
+ * the step rejected with the signal's abort reason.
+ * @remarks A call that takes the attempt's signal rejects with `signal.reason` when it aborts, and
+ * that rejection can settle the race before the expiry does. It is the allowance expiring all the
+ * same, so it reports as the allowance.
+ */
+export async function racePageAttempt<T>(
+	work: Promise<T>,
+	signal: AbortSignal,
+	allowance: number,
+): Promise<T> {
+	try {
+		return await Promise.race([work, expirePageAttempt(signal, allowance)])
+	} catch (failure) {
+		if (signal.aborted && failure === signal.reason) return expirePageAttempt(signal, allowance)
+		throw failure
+	}
 }
 
 /**
@@ -1212,8 +1212,8 @@ export function describeFailure(failure: unknown): string {
  * out before the acquisition settled and released.
  * @remarks An acquisition the attempt's deadline outran owns a browser no other reference can
  * reach, so it is settled and released here rather than abandoned. It is not awaited without a
- * bound, though: the session helper passes each page command a `timeout` alone, so an acquisition can outlast any
- * deadline the caller holds, and awaiting it turns an expired attempt into a hang. The share is
+ * bound, though: an acquisition can outlast any deadline the caller holds (see
+ * {@link boundPageAttempt}), and awaiting it turns an expired attempt into a hang. The share is
  * what separates the two readings — inside it the browser is released, past it the browser is
  * named as stranded and the caller is handed back its own failure.
  *
@@ -1248,23 +1248,24 @@ export async function releasePageAttempt(
  * @param observe - The observation to take on the acquired session, given the attempt's signal
  * @returns What the observation returned
  * @throws The observation's own failure, the acquisition's, the release's, an `Error` naming the
- * exceeded allowance when the deadline won, or an `Error` naming the stranded browser when the
- * release outlasted its share.
+ * exceeded allowance when the deadline won or a call rejected with its abort reason, or an `Error`
+ * naming the stranded browser when the release outlasted its share.
  * @remarks An attempt ends within `attempt + release`, whatever it is waiting on. `attempt` is
  * the allowance the acquisition and the observation are raced against; `release` is the share the
- * release after that race is raced against. Neither is a sum of the inner per-call shares,
- * because no such sum bounds a call the dependency makes: `browser.create()` alone awaits a run
- * of separately bounded CDP commands, so a table of per-call values states an arithmetic that
- * never runs.
+ * release after that race is raced against.
  *
- * The signal reaches the acquisition and the observation, and cancels part of what they do. The
- * installed `BrowserOptions.signal` races discovery, the port-free check, the launch, and
- * `client.connect()`, so an expiry in any of those ends the acquisition at the dependency rather
- * than abandoning it. It reaches nothing after that: the target listing the connection ends with
- * takes the client's per-request `timeout`, and the session helper passes every page command,
- * `page.evaluate` included, a `timeout` alone. So the race is what releases
- * the caller on every phase the signal does not cover, and the release is what stops the browser
- * outliving it.
+ * The signal reaches every call whose public contract takes one, and the race bounds the rest.
+ * `createBrowser` takes it as `BrowserOptions.signal`, which the dependency documents as
+ * cancelling the connection attempt. A page command takes `{ timeout, signal }`
+ * (`BrowserCallOptions`, see the `BrowserPageInterface` section of `guides/browser.md`), so
+ * {@link createPageSession} and {@link readOutcome} pass the attempt's signal beside each
+ * command's own deadline. `page.network.start()` takes neither; `browser.create()` takes no
+ * signal, and its `timeout` bounds only the navigation to an initial URL; `navigate` documents
+ * its signal as aborting the `Page.navigate` send alone. So no per-call share bounds an attempt,
+ * and no sum of the shares does either. The race is what releases the caller from every call the
+ * signal does not end, and the release is what stops the browser outliving it.
+ * {@link racePageAttempt} reports a call the signal ends as the allowance, as it reports the race
+ * the deadline won.
  *
  * Nothing is awaited without a bound after the allowance expires. The acquisition that lost the
  * race and the `session.destroy()` release both run inside the `release` share, and an attempt
@@ -1278,9 +1279,7 @@ export async function releasePageAttempt(
  *
  * Neither deadline signal is cleared, and neither needs to be. `AbortSignal.timeout` arms an
  * unref'd timer, so an attempt that returned inside its allowance leaves a signal that holds
- * neither the Vitest worker nor the process open — measured on Node 24, where a process left with
- * a 60 000 ms signal armed and nothing else pending exited at once. An armed deadline is
- * collected with the signal it belongs to.
+ * neither the Vitest worker nor the process open, and the timer is collected with its signal.
  */
 export async function boundPageAttempt<
 	TSession extends Pick<PageSessionInterface, 'destroy'>,
@@ -1294,11 +1293,8 @@ export async function boundPageAttempt<
 	const acquisition = acquire(signal)
 	let observed: TResult
 	try {
-		const session = await Promise.race([acquisition, expirePageAttempt(signal, bounds.attempt)])
-		observed = await Promise.race([
-			observe(session, signal),
-			expirePageAttempt(signal, bounds.attempt),
-		])
+		const session = await racePageAttempt(acquisition, signal, bounds.attempt)
+		observed = await racePageAttempt(observe(session, signal), signal, bounds.attempt)
 		if (signal.aborted) await expirePageAttempt(signal, bounds.attempt)
 	} catch (failure) {
 		// The attempt's own failure is the one worth reporting, so a release that also fails
@@ -1423,7 +1419,8 @@ export function isPageReceipts(value: unknown): value is readonly PageReceipt[] 
  * @param page - The evaluate boundary to run the expression through, normally a navigated page
  * @param expression - The expression to evaluate, which must resolve to a JSON string
  * @param guard - The guard the parsed value must satisfy
- * @param timeout - The deadline this one evaluate allows, in milliseconds
+ * @param options - The deadline this one evaluate allows, in milliseconds, and the attempt's
+ * signal, which the evaluate takes as its `BrowserCallOptions`
  * @returns The parsed, narrowed value
  * @throws Thrown when the expression returns no string, or its JSON fails the guard.
  * @remarks The page driver parks its operations on `globalThis` and reports through JSON
@@ -1435,15 +1432,16 @@ export function isPageReceipts(value: unknown): value is readonly PageReceipt[] 
  * The deadline is the caller's because an attempt's allowances differ by expression: an
  * in-page agent run takes {@link PAGE_BOUNDS.evaluate}, and an instant read of what the page
  * already holds takes {@link PAGE_BOUNDS.read}. Spending the run's deadline on every read would
- * put an attempt's admissible cost far outside the case bound that contains it.
+ * put an attempt's admissible cost far outside the case bound that contains it. The signal is
+ * the caller's so the read ends when the attempt does; {@link boundPageAttempt} states the bound.
  */
 export async function readOutcome<T>(
 	page: Pick<BrowserPageInterface, 'evaluate'>,
 	expression: string,
 	guard: (value: unknown) => value is T,
-	timeout: number,
+	options: BrowserCallOptions,
 ): Promise<T> {
-	const returned = await page.evaluate(expression, { timeout })
+	const returned = await page.evaluate(expression, options)
 	if (!isString(returned)) {
 		throw new Error(`the page expression ${expression} returned ${String(returned)}, not a string`)
 	}

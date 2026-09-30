@@ -11,6 +11,7 @@
 // in any of these cases.
 
 import type { AgentResult, ProviderDelta, ProviderResult } from '@orkestrel/agent'
+import type { BrowserCallOptions } from '@orkestrel/browser'
 import { isError, isRecord, isString } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
@@ -54,6 +55,7 @@ import {
 	PAGE_BOUNDS,
 	PAGE_DOCUMENT,
 	PAGE_INTERVALS,
+	racePageAttempt,
 	drive,
 	INSATIABLE_TOOL_CHUNKS,
 	insatiableResult,
@@ -673,50 +675,50 @@ describe('readOutcome', () => {
 	it('narrows a JSON string across the evaluate boundary and refuses every other reading', async () => {
 		// The boundary stub implements the one member the reader crosses — `evaluate` — and
 		// answers with the strings a real page answers with. The subject is the narrowing.
-		const answers: Array<readonly [string, { readonly timeout?: number } | undefined]> = []
+		const answers: Array<readonly [string, BrowserCallOptions | undefined]> = []
 		const page = {
-			evaluate(expression: string, options?: { readonly timeout?: number }) {
+			evaluate(expression: string, options?: BrowserCallOptions) {
 				answers.push([expression, options])
 				return Promise.resolve(expression === 'ok' ? '{"status":200,"text":"control"}' : undefined)
 			},
 		}
 
-		expect(await readOutcome(page, 'ok', isPageControl, PAGE_BOUNDS.read)).toEqual({
+		const { signal } = new AbortController()
+		const call = { timeout: PAGE_BOUNDS.read, signal }
+		expect(await readOutcome(page, 'ok', isPageControl, call)).toEqual({
 			status: 200,
 			text: 'control',
 		})
-		// The caller's deadline reaches the boundary, so an attempt spends the allowance its
-		// own arithmetic counted rather than one this reader chose.
-		expect(answers).toEqual([['ok', { timeout: PAGE_BOUNDS.read }]])
+		// The caller's deadline and the attempt's signal reach the boundary, so a read spends the
+		// allowance its caller counted and ends when the attempt does.
+		expect(answers).toEqual([['ok', { timeout: PAGE_BOUNDS.read, signal }]])
+		expect(answers[0]?.[1]?.signal).toBe(signal)
 
 		// A reading that is not a string at all.
-		await expect(readOutcome(page, 'absent', isPageControl, PAGE_BOUNDS.read)).rejects.toThrow(
+		await expect(readOutcome(page, 'absent', isPageControl, call)).rejects.toThrow(
 			'the page expression absent returned undefined, not a string',
 		)
 		// A reading that is a string of JSON the guard refuses.
 		const mismatched = { evaluate: () => Promise.resolve('{"status":"200"}') }
-		await expect(readOutcome(mismatched, 'wrong', isPageControl, PAGE_BOUNDS.read)).rejects.toThrow(
+		await expect(readOutcome(mismatched, 'wrong', isPageControl, call)).rejects.toThrow(
 			'returned an unexpected shape: {"status":"200"}',
 		)
 		// A reading that is a string but not JSON.
 		const unparsed = { evaluate: () => Promise.resolve('control') }
-		await expect(readOutcome(unparsed, 'raw', isPageControl, PAGE_BOUNDS.read)).rejects.toThrow(
+		await expect(readOutcome(unparsed, 'raw', isPageControl, call)).rejects.toThrow(
 			'returned an unexpected shape: control',
 		)
 		// A guard that accepts it narrows to that guard's type rather than to `unknown`.
 		const text = { evaluate: () => Promise.resolve('"receipt-1"') }
-		expect(
-			(await readOutcome(text, 'text', isString, PAGE_BOUNDS.read)).startsWith('receipt-'),
-		).toBe(true)
+		expect((await readOutcome(text, 'text', isString, call)).startsWith('receipt-')).toBe(true)
 	})
 })
 
 describe('expirePageAttempt', () => {
 	it('rejects with the attempt-wide deadline error and parks forever while the allowance holds', async () => {
 		// The losing side of the race `boundPageAttempt` runs. Its whole job is the translation:
-		// a caller reads the attempt's own allowance being exceeded rather than whichever inner
-		// CDP call happened to time out first, which is the reading the installed browser
-		// surface gives on its own because a page command takes `{ timeout, signal }` and the session helper passes a `timeout` alone.
+		// a caller reads the attempt's own allowance being exceeded rather than whichever browser
+		// call ended first; `boundPageAttempt` states which calls the signal reaches.
 		const expired = expirePageAttempt(AbortSignal.timeout(20), 20)
 		await expect(expired).rejects.toThrow('the page attempt exceeded its 20 ms allowance')
 
@@ -747,6 +749,33 @@ describe('expirePageAttempt', () => {
 		await expect(expirePageAttempt(controller.signal, 95_000)).rejects.toThrow(
 			'the page attempt exceeded its 95000 ms allowance',
 		)
+	})
+})
+
+describe('racePageAttempt', () => {
+	it('returns the step while the allowance holds and passes its own failure unchanged', async () => {
+		const { signal } = new AbortController()
+		expect(await racePageAttempt(Promise.resolve('the page answered'), signal, 500)).toBe(
+			'the page answered',
+		)
+		const fault = new Error('the page reported a fault')
+		await expect(racePageAttempt(Promise.reject(fault), signal, 500)).rejects.toBe(fault)
+	})
+
+	it('reports the allowance for a step that parks past it or rejects with the abort reason', async () => {
+		const parked = racePageAttempt(new Promise<never>(() => undefined), AbortSignal.timeout(20), 20)
+		await expect(parked).rejects.toThrow('the page attempt exceeded its 20 ms allowance')
+		const reason = new Error('the attempt was already over')
+		const aborted = AbortSignal.abort(reason)
+		const failure = await racePageAttempt(Promise.reject(reason), aborted, 20).catch(
+			(thrown: unknown) => thrown,
+		)
+		expect(describeFailure(failure)).toBe('the page attempt exceeded its 20 ms allowance')
+		expect(isError(failure) ? failure.cause : undefined).toBe(reason)
+		// Only the abort reason itself is the allowance; another failure after the abort is the
+		// step's own.
+		const fault = new Error('the page reported a fault')
+		await expect(racePageAttempt(Promise.reject(fault), aborted, 20)).rejects.toBe(fault)
 	})
 })
 
@@ -850,6 +879,30 @@ describe('boundPageAttempt', () => {
 		)
 		expect(describeFailure(refused)).toBe('the page reported a fault')
 		expect(failed.count).toBe(1)
+	})
+
+	it('reports its allowance when a call that took the attempt signal rejects with its reason', async () => {
+		// A page command given the attempt's signal rejects with `signal.reason` when it aborts,
+		// and that rejection can settle the race before the expiry does. The attempt still reads
+		// as its allowance, with the reason as the cause.
+		const released = createRecorder()
+		const aborted = await boundPageAttempt(
+			{ attempt: 30, release: 500 },
+			() => Promise.resolve({ destroy: () => Promise.resolve(released.handler()) }),
+			async (_session, signal) => {
+				await waitForAbort(signal)
+				throw signal.reason
+			},
+		).then(
+			() => undefined,
+			(thrown: unknown) => thrown,
+		)
+		expect(describeFailure(aborted)).toBe('the page attempt exceeded its 30 ms allowance')
+		if (!isError(aborted)) throw new Error('the attempt reported no error')
+		const reason = aborted.cause
+		if (!isError(reason)) throw new Error('the attempt reported no abort reason')
+		expect(reason.name).toBe('TimeoutError')
+		expect(released.count).toBe(1)
 	})
 
 	it('reports its allowance and the browser it stranded when the acquisition never settles', async () => {

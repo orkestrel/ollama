@@ -8,13 +8,15 @@
 // (the browser package's own `createBrowserReading` over the served HTML), and every pure
 // reader the live proof asserts through.
 
-import type { StoreServerInterface } from './setupStore.js'
+import type { StoreServerInterface, StoreTranscript } from './setupStore.js'
 import { ProviderError } from '@orkestrel/agent'
 import { BROWSER_TOOL_LIMIT, createBrowserReading } from '@orkestrel/browser'
 import { createScratch } from '@orkestrel/test/server'
+import { createOllama } from '@src/core'
 import { readFileSync } from 'node:fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+	attemptStoreTask,
 	buildStoreCall,
 	buildStorePrompt,
 	buildStoreTranscript,
@@ -28,6 +30,8 @@ import {
 	findUnlistedReferences,
 	matchesDaemonFault,
 	matchesPagingOracle,
+	matchesSearchOracle,
+	matchesStalledSearch,
 	matchesStoreOracles,
 	normalizeAnswer,
 	renderToolText,
@@ -488,5 +492,111 @@ describe('matchesStoreOracles with a failure', () => {
 		const transcript = buildStoreTranscript([buildStoreCall('click', { ref: 'e1' })])
 		expect(matchesStoreOracles(transcript)).toBe(true)
 		expect(matchesStoreOracles({ ...transcript, failure: 'provider error: 500' })).toBe(false)
+	})
+})
+
+/** Names the seeded catalogue view the search fixtures open on. */
+const SEARCH_SEED =
+	'page "Harbor Goods — Catalogue" http://127.0.0.1/\ne35 searchbox "Search products"\ne36 button "Search"'
+
+/** Holds a search run that ends as the pinned failure ends: a click naming `type`, then no answer. */
+const STALLED_SEARCH: StoreTranscript = buildStoreTranscript(
+	[
+		buildStoreCall('look', { what: 'kettle products' }, SEARCH_SEED),
+		buildStoreCall(
+			'click',
+			{ ref: 'e35' },
+			`Clicked e35 searchbox "Search products"; call type with e35 to enter text.\n\n${SEARCH_SEED}`,
+		),
+	],
+	SEARCH_SEED,
+)
+
+/** Holds a search run that submitted the query and named every matching product. */
+const COMPLETED_SEARCH: StoreTranscript = {
+	...buildStoreTranscript(
+		[
+			buildStoreCall(
+				'type',
+				{ ref: 'e35', text: STORE_QUERY, submit: true },
+				'Typed into e35 searchbox "Search products".\n\npage "Search: kettle" http://127.0.0.1/search?q=kettle\ne40 link "Alpine Kettle"\ne41 link "Copper Kettle"',
+			),
+		],
+		SEARCH_SEED,
+	),
+	answer: 'The Alpine Kettle and the Copper Kettle match.',
+	state: { cart: [], searches: [STORE_QUERY], orders: [] },
+}
+
+describe('matchesSearchOracle', () => {
+	it('holds for a run that submitted the query and names exactly the products it matches', () => {
+		expect(matchesSearchOracle(COMPLETED_SEARCH, STORE_QUERY)).toBe(true)
+		const spaced = { ...COMPLETED_SEARCH, state: { cart: [], searches: [' Kettle '], orders: [] } }
+		expect(matchesSearchOracle(spaced, STORE_QUERY)).toBe(true)
+	})
+
+	it('fails a run that submitted no query, another query, or names too few or too many products', () => {
+		expect(matchesSearchOracle(STALLED_SEARCH, STORE_QUERY)).toBe(false)
+		const other = { ...COMPLETED_SEARCH, state: { cart: [], searches: ['anchor'], orders: [] } }
+		expect(matchesSearchOracle(other, STORE_QUERY)).toBe(false)
+		const partial = { ...COMPLETED_SEARCH, answer: 'The Alpine Kettle matches.' }
+		expect(matchesSearchOracle(partial, STORE_QUERY)).toBe(false)
+		const extra = {
+			...COMPLETED_SEARCH,
+			answer: `${COMPLETED_SEARCH.answer} So does ${STORE_NAMED}.`,
+		}
+		expect(matchesSearchOracle(extra, STORE_QUERY)).toBe(false)
+	})
+})
+
+describe('matchesStalledSearch', () => {
+	it('holds for a run whose last call is a click receipt naming type and whose answer is empty', () => {
+		expect(matchesStalledSearch(STALLED_SEARCH)).toBe(true)
+	})
+
+	it('fails a completed search, an answered or cut stall, and a click receipt that names no type', () => {
+		expect(matchesStalledSearch(COMPLETED_SEARCH)).toBe(false)
+		expect(matchesStalledSearch({ ...STALLED_SEARCH, answer: 'The search box is ready.' })).toBe(
+			false,
+		)
+		expect(matchesStalledSearch({ ...STALLED_SEARCH, partial: true })).toBe(false)
+		const [look, click] = STALLED_SEARCH.calls
+		if (look === undefined || click === undefined) throw new Error('the stall fixture lost a call')
+		const plain = buildStoreCall(
+			'click',
+			{ ref: 'e35' },
+			`Clicked e35 searchbox.\n\n${SEARCH_SEED}`,
+		)
+		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, plain] })).toBe(false)
+		const failed = { ...click, success: false }
+		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, failed] })).toBe(false)
+		const reread = buildStoreCall('read', { what: 'kettle products' }, '# Harbor Goods')
+		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, click, reread] })).toBe(false)
+	})
+})
+
+describe('the search pin in tests/service/browser.test.ts', () => {
+	it('holds for the recorded stall: the shared oracles and the stall hold, the search oracle fails', () => {
+		expect(matchesStoreOracles(STALLED_SEARCH)).toBe(true)
+		expect(matchesStalledSearch(STALLED_SEARCH)).toBe(true)
+		expect(matchesSearchOracle(STALLED_SEARCH, STORE_QUERY)).toBe(false)
+	})
+
+	it('reddens for a run that completes the search, on the search oracle the pin expects to fail', () => {
+		expect(matchesStoreOracles(COMPLETED_SEARCH)).toBe(true)
+		expect(matchesSearchOracle(COMPLETED_SEARCH, STORE_QUERY)).toBe(true)
+	})
+
+	it('reddens for a daemon fault on the shared oracles, however the run ended', () => {
+		expect(matchesStalledSearch({ ...STALLED_SEARCH, failure: 'provider error: 500' })).toBe(true)
+		expect(matchesStoreOracles({ ...STALLED_SEARCH, failure: 'provider error: 500' })).toBe(false)
+	})
+
+	it('rejects a thrown attempt with its own error rather than returning a transcript', async () => {
+		const refusal = new Error('the browser refused a page')
+		const provider = createOllama({ model: 'fixture', url: 'http://127.0.0.1:9' })
+		await expect(
+			attemptStoreTask({ create: () => Promise.reject(refusal) }, STORE_TASKS.search, 1, provider),
+		).rejects.toBe(refusal)
 	})
 })

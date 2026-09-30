@@ -10,9 +10,13 @@
  * turn is the daemon's fault rather than the toolset's, so it ends that attempt as a failed one,
  * with its message in the transcript's `failure`, and spends the same attempt budget.
  *
- * The search task is pinned with `it.fails`: at temperature 0 with 256 predicted tokens,
- * `qwen3.5:2b-q4_K_M` ends its turn empty after the click receipt names `type`, in every
- * vocabulary this campaign tried. The pin reddens when the model completes the flow.
+ * The search task is pinned to its known failure. At temperature 0 with 256 predicted tokens,
+ * `qwen3.5:2b-q4_K_M` clicks the search box and ends its turn empty after the click receipt names
+ * `type`: the transcripts under `tmp/probes/logs/v4/`, `tmp/probes/logs/c5/`, and
+ * `tmp/probes/logs/v5/` show that sequence. The first round, `tmp/probes/logs/v1/`, failed
+ * differently, with repeated reads and no search-box click. The case asserts the attempt, the
+ * shared oracles, and that sequence, and expects only the search oracle to fail, so a completed
+ * search reddens the pin and a thrown attempt or a daemon fault fails the case as itself.
  *
  * The paging task's oracle is the reading, not the answer: a `read` continued at the offset an
  * earlier footer named, whose slice contains the token. Paging is what the toolset controls;
@@ -44,11 +48,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { reservePort } from '../setupServer.js'
 import {
 	attemptStoreTask,
-	filterNamedProducts,
-	filterProducts,
 	findContinuedRead,
 	findUnlistedReferences,
 	matchesPagingOracle,
+	matchesSearchOracle,
+	matchesStalledSearch,
 	matchesStoreOracles,
 	normalizeAnswer,
 	OLLAMA_ABSENT_REASON,
@@ -144,15 +148,16 @@ describe('Browser vocabulary (live) — the store tasks', () => {
 		STORE_BOUNDS.single,
 	)
 
-	it.fails(
-		'submits the query and names the matching products and no other',
+	it(
+		'ends its turn empty after the click receipt names type, short of submitting the query',
 		async () => {
-			const { transcript, store } = await attempt(STORE_TASKS.search, 1)
-			expect(store.readSearches().map((query) => query.trim().toLowerCase())).toContain(STORE_QUERY)
-			expect(filterNamedProducts(transcript.answer).map((product) => product.name)).toEqual(
-				filterProducts(STORE_QUERY).map((product) => product.name),
-			)
+			const { transcript } = await attempt(STORE_TASKS.search, 1)
 			expectSharedOracles(transcript)
+			expect(
+				matchesSearchOracle(transcript, STORE_QUERY),
+				'the model completed the search, so the pin no longer holds',
+			).toBe(false)
+			expect(matchesStalledSearch(transcript), 'the search failed another way').toBe(true)
 		},
 		STORE_BOUNDS.single,
 	)

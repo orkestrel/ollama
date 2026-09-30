@@ -988,14 +988,15 @@ export interface StoreAttempt {
 /**
  * Runs one attempt of a store task on a fresh page over a fresh store, then releases both.
  *
- * @param browser - The connected browser that opens the attempt's page
+ * @param browser - The connected browser's `create` member, which opens the attempt's page
  * @param task - The task to run
  * @param attempt - The attempt number, counted from 1
  * @param provider - The model the agent runs
  * @returns The transcript and the stopped store, whose cart, searches, and orders stay readable
+ * @throws Rethrown from the page's creation or from {@link runStoreTask}, after the store stops
  */
 export async function attemptStoreTask(
-	browser: BrowserInterface,
+	browser: Pick<BrowserInterface, 'create'>,
 	task: StoreTask,
 	attempt: number,
 	provider: ProviderInterface,
@@ -1141,6 +1142,47 @@ export function findContinuedRead(
  */
 export function matchesPagingOracle(transcript: StoreTranscript, token: string): boolean {
 	return matchesStoreOracles(transcript) && findContinuedRead(transcript.calls, token) !== undefined
+}
+
+/**
+ * Checks whether a search run completed the search: the store recorded the query and the answer
+ * names exactly the products it matches.
+ *
+ * @param transcript - The run's transcript
+ * @param query - The query the task asks the model to submit
+ * @returns True if a recorded search equals the query, ignoring case and surrounding space, and
+ * {@link filterNamedProducts} reads from the answer exactly the products
+ * {@link filterProducts} matches; false otherwise
+ */
+export function matchesSearchOracle(transcript: StoreTranscript, query: string): boolean {
+	const needle = query.trim().toLowerCase()
+	const named = filterNamedProducts(transcript.answer).map((product) => product.name)
+	const matched = filterProducts(query).map((product) => product.name)
+	return (
+		transcript.state.searches.some((search) => search.trim().toLowerCase() === needle) &&
+		named.length === matched.length &&
+		named.every((name, index) => name === matched[index])
+	)
+}
+
+/**
+ * Checks whether a search run ended in the known stall: a click receipt naming `type`, then an
+ * empty final turn.
+ *
+ * @param transcript - The run's transcript
+ * @returns True if the last call is a successful `click` whose receipt's first line names
+ * `call type with` a reference, and the run settled with an empty answer; false otherwise
+ */
+export function matchesStalledSearch(transcript: StoreTranscript): boolean {
+	const last = transcript.calls.at(-1)
+	return (
+		last !== undefined &&
+		last.name === 'click' &&
+		last.success &&
+		/\bcall type with e[1-9]\d*\b/.test(last.text.split('\n', 1)[0] ?? '') &&
+		transcript.answer.trim() === '' &&
+		!transcript.partial
+	)
 }
 
 /**

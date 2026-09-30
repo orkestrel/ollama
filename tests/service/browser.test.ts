@@ -3,9 +3,9 @@
  * fixture through `createBrowserToolset` and `@orkestrel/agent`, and every assertion reads the
  * run's transcript and the store's own state rather than the model's words alone.
  *
- * The read and click tasks get one attempt each. The form, paging, and search tasks each spend at
- * most `STORE_BOUNDS.attempts` attempts through `retryUntil`, because the model's choice to wait
- * for late text or to continue a `read` is the step they measure. Every attempt writes
+ * Each of the five tasks spends at most `STORE_BOUNDS.attempts` attempts through `retryUntil`,
+ * because the model's first choice of a link, a wait, or a `read` continuation is the step they
+ * measure. Every attempt writes
  * `tmp/probes/logs/<task>-<attempt>.json`, the failing ones included. A daemon 5xx on a model
  * turn is the daemon's fault rather than the toolset's, so it ends that attempt as a failed one,
  * with its message in the transcript's `failure`, and spends the same attempt budget.
@@ -17,6 +17,8 @@
  * run `v8` completed on the first attempt, typing `kettles` with submit and answering with both
  * kettles. The store proof's transcripts sit under `tmp/probes/logs/v4/`, `tmp/probes/logs/c5/`,
  * `tmp/probes/logs/v5/`, `tmp/probes/logs/v6/`, `tmp/probes/logs/v7/`, and `tmp/probes/logs/v8/`.
+ * Run `v9` failed the click task's single attempt: the model clicked the Cart link, then typed into
+ * a reference no view listed (`tmp/probes/logs/v9/click-1.json`).
  *
  * The paging task's oracle is the reading, not the answer: a `read` continued at the offset an
  * earlier footer named, whose slice contains the token. Paging is what the toolset controls;
@@ -123,29 +125,48 @@ describe('Browser vocabulary (live) — the store tasks', () => {
 	it(
 		'answers the shipping cutoff from a read the seeded view did not carry',
 		async () => {
-			const { transcript } = await attempt(STORE_TASKS.read, 1)
 			const fact = normalizeAnswer(STORE_FACT)
-			expect(normalizeAnswer(transcript.seed)).not.toContain(fact)
-			const reading = transcript.calls.find(
-				(call) =>
-					(call.name === 'read' || call.name === 'look') &&
-					normalizeAnswer(call.text).includes(fact),
+			const read = (transcript: StoreTranscript) =>
+				transcript.calls.find(
+					(call) =>
+						(call.name === 'read' || call.name === 'look') &&
+						normalizeAnswer(call.text).includes(fact),
+				)
+			let count = 0
+			const { transcript } = await retryUntil(
+				'find the shipping cutoff in a read the seeded view did not carry',
+				() => attempt(STORE_TASKS.read, (count += 1)),
+				(run) =>
+					!normalizeAnswer(run.transcript.seed).includes(fact) &&
+					read(run.transcript) !== undefined &&
+					normalizeAnswer(run.transcript.answer).includes(fact) &&
+					matchesStoreOracles(run.transcript),
+				{ attempts: STORE_BOUNDS.attempts, budget: STORE_BOUNDS.budget },
 			)
-			expect(reading).toBeDefined()
+			expect(normalizeAnswer(transcript.seed)).not.toContain(fact)
+			expect(read(transcript)).toBeDefined()
 			expect(normalizeAnswer(transcript.answer)).toContain(fact)
 			expectSharedOracles(transcript)
 		},
-		STORE_BOUNDS.single,
+		STORE_BOUNDS.retry,
 	)
 
 	it(
 		'adds the named product to the cart and no other',
 		async () => {
-			const { transcript, store } = await attempt(STORE_TASKS.click, 1)
+			let count = 0
+			const { transcript, store } = await retryUntil(
+				'add the named product to the cart and no other',
+				() => attempt(STORE_TASKS.click, (count += 1)),
+				(run) =>
+					JSON.stringify(run.store.readCart()) === JSON.stringify([STORE_NAMED]) &&
+					matchesStoreOracles(run.transcript),
+				{ attempts: STORE_BOUNDS.attempts, budget: STORE_BOUNDS.budget },
+			)
 			expect(store.readCart()).toEqual([STORE_NAMED])
 			expectSharedOracles(transcript)
 		},
-		STORE_BOUNDS.single,
+		STORE_BOUNDS.retry,
 	)
 
 	it(

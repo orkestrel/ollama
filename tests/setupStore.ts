@@ -1226,8 +1226,8 @@ export function matchesSearchOracle(transcript: StoreTranscript, query: string):
 }
 
 /**
- * Checks whether a search run ended in the known stall: the model completes the search and stops
- * before answering.
+ * Names a diagnosed stall for a failure message: the model completes the search and stops before
+ * answering.
  *
  * @param transcript - The run's transcript
  * @returns True if the last call is a successful `type` with `submit` whose result lists at least

@@ -3,20 +3,20 @@
  * fixture through `createBrowserToolset` and `@orkestrel/agent`, and every assertion reads the
  * run's transcript and the store's own state rather than the model's words alone.
  *
- * The read, click, and search tasks get one attempt each. The form and paging tasks each spend at
+ * The read and click tasks get one attempt each. The form, paging, and search tasks each spend at
  * most `STORE_BOUNDS.attempts` attempts through `retryUntil`, because the model's choice to wait
  * for late text or to continue a `read` is the step they measure. Every attempt writes
  * `tmp/probes/logs/<task>-<attempt>.json`, the failing ones included. A daemon 5xx on a model
  * turn is the daemon's fault rather than the toolset's, so it ends that attempt as a failed one,
  * with its message in the transcript's `failure`, and spends the same attempt budget.
  *
- * The search task is pinned to its known failure. At temperature 0 with 256 predicted tokens,
- * `qwen3.5:2b-q4_K_M` clicks the search box and ends its turn empty after the click receipt names
- * `type`: the transcripts under `tmp/probes/logs/v4/`, `tmp/probes/logs/c5/`, and
- * `tmp/probes/logs/v5/` show that sequence. The first round, `tmp/probes/logs/v1/`, failed
- * differently, with repeated reads and no search-box click. The case asserts the attempt, the
- * shared oracles, and that sequence, and expects only the search oracle to fail, so a completed
- * search reddens the pin and a thrown attempt or a daemon fault fails the case as itself.
+ * The search task runs as the others do. Its history at temperature 0 with 256 predicted tokens:
+ * runs `v4`, `c5`, and `v5` clicked the search box and ended an empty turn after a click receipt
+ * naming `type`; run `v6` submitted a search the fixture's substring match answered with no
+ * result, then ended empty; run `v7` completed the search, listed the kettles, and ended empty;
+ * run `v8` completed on the first attempt, typing `kettles` with submit and answering with both
+ * kettles. The store proof's transcripts sit under `tmp/probes/logs/v4/`, `tmp/probes/logs/c5/`,
+ * `tmp/probes/logs/v5/`, `tmp/probes/logs/v6/`, `tmp/probes/logs/v7/`, and `tmp/probes/logs/v8/`.
  *
  * The paging task's oracle is the reading, not the answer: a `read` continued at the offset an
  * earlier footer named, whose slice contains the token. Paging is what the toolset controls;
@@ -149,17 +149,36 @@ describe('Browser vocabulary (live) — the store tasks', () => {
 	)
 
 	it(
-		'ends its turn empty after the submitted search lists the kettles, short of answering',
+		'answers the search by naming the products the submitted query lists',
 		async () => {
-			const { transcript } = await attempt(STORE_TASKS.search, 1)
-			expectSharedOracles(transcript)
-			expect(
-				matchesSearchOracle(transcript, STORE_QUERY),
-				'the model completed the search, so the pin no longer holds',
-			).toBe(false)
-			expect(matchesStalledSearch(transcript), 'the search failed another way').toBe(true)
+			let count = 0
+			let last: StoreTranscript | undefined
+			try {
+				const { transcript } = await retryUntil(
+					'complete the search and name the listed products',
+					async () => {
+						const run = await attempt(STORE_TASKS.search, (count += 1))
+						last = run.transcript
+						return run
+					},
+					(run) => matchesSearchOracle(run.transcript, STORE_QUERY),
+					{ attempts: STORE_BOUNDS.attempts, budget: STORE_BOUNDS.budget },
+				)
+				expect(matchesSearchOracle(transcript, STORE_QUERY)).toBe(true)
+				expectSharedOracles(transcript)
+			} catch (error) {
+				if (last !== undefined && matchesStalledSearch(last)) {
+					throw new Error(
+						'the last search attempt stalled: it listed the products and ended empty',
+						{
+							cause: error,
+						},
+					)
+				}
+				throw error
+			}
 		},
-		STORE_BOUNDS.single,
+		STORE_BOUNDS.retry,
 	)
 
 	it(

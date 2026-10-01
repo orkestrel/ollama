@@ -21,20 +21,29 @@ export interface LiveProviderOptions {
 	readonly temperature?: number
 	/** The provider's context-framing default; omission leaves framing undefined. */
 	readonly format?: ContextFormat
+	/** The Ollama `num_ctx` window in tokens; omission leaves the daemon's default window. */
+	readonly context?: number
+	/** The provider's deadline for one turn in milliseconds; omission leaves the provider's default. */
+	readonly turn?: number
 }
 
 /**
  * Builds a concrete provider against the selected live daemon and warmed model.
  *
- * @param options - Optional prediction, temperature, and framing overrides
+ * @param options - Optional prediction, temperature, framing, window, and turn-deadline overrides
  * @returns A concrete provider configured for the service axis
  */
 export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider {
 	return new OllamaProvider({
 		model: OLLAMA_CONFIG.model,
 		url: OLLAMA_CONFIG.host,
-		options: { num_predict: options?.predict ?? 32, temperature: options?.temperature ?? 0 },
+		options: {
+			num_predict: options?.predict ?? 32,
+			temperature: options?.temperature ?? 0,
+			...(options?.context === undefined ? {} : { num_ctx: options.context }),
+		},
 		...(options?.format === undefined ? {} : { format: options.format }),
+		...(options?.turn === undefined ? {} : { timeout: options.turn }),
 	})
 }
 

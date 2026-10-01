@@ -344,6 +344,30 @@ describe('createLiveOllama', () => {
 		expect(createLiveOllama({ format: FRAMING }).format).toBe(FRAMING)
 		expect(createLiveOllama().format).toBeUndefined()
 	})
+
+	it('carries a requested context window to the wire as num_ctx', async () => {
+		const provider = createLiveOllama({ predict: 7, context: 16_384 })
+
+		await provider.generate([createUserMessage('hi')], AbortSignal.timeout(5000))
+
+		expect(latestChat().options).toEqual({ num_predict: 7, temperature: 0, num_ctx: 16_384 })
+	})
+
+	it('ends a turn the daemon never answers at the requested deadline, before the caller signal', async () => {
+		daemon.chat({ status: 200, content: FIXTURE_CONTENT, park: true })
+		try {
+			const provider = createLiveOllama({ turn: 30 })
+			const started = performance.now()
+
+			await expect(
+				provider.generate([createUserMessage('hi')], AbortSignal.timeout(3000)),
+			).rejects.toThrow(Error)
+
+			expect(performance.now() - started).toBeLessThan(1500)
+		} finally {
+			daemon.chat(READY_CHAT)
+		}
+	})
 })
 
 describe('createLiveSummarizer', () => {

@@ -161,8 +161,10 @@ export function setup(override?: UserConfig): UserConfig {
 		test: {
 			name: { label: 'setup', color: 'white' },
 			include: ['tests/setup*.test.ts'],
-			exclude: ['tests/setupBrowser.test.ts'],
+			exclude: ['tests/setupBrowser.test.ts', 'tests/setupStyles.test.ts'],
 			setupFiles: ['./tests/setup.ts'],
+			pool: 'threads',
+			isolate: false,
 			environment: 'node',
 			browser: { enabled: false },
 		},
@@ -193,7 +195,9 @@ export function conformance(override?: UserConfig): UserConfig {
 		test: {
 			name: { label: 'conformance', color: 'magenta' },
 			include: ['tests/conformance.test.ts'],
-			setupFiles: ['./tests/setup.ts'],
+			setupFiles: ['./tests/setup.ts', './tests/setupServer.ts'],
+			pool: 'threads',
+			isolate: false,
 			environment: 'node',
 			browser: { enabled: false },
 		},

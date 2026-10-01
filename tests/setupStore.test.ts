@@ -19,6 +19,7 @@ import {
 } from '@orkestrel/browser'
 import { createFileBrowserJourneyStore, createFileBrowserRunStore } from '@orkestrel/browser/server'
 import { createScratch } from '@orkestrel/test/server'
+import { createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/core'
 import { readdirSync, readFileSync } from 'node:fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -29,6 +30,8 @@ import {
 	buildStorePrompt,
 	buildStoreTranscript,
 	collectStoreFiles,
+	computeRefusals,
+	converseStore,
 	createStoreServer,
 	escapeMarkup,
 	extractFooterOffset,
@@ -55,7 +58,6 @@ import {
 	matchesStalledSearch,
 	matchesStoreOracles,
 	normalizeAnswer,
-	normalizeSchemaTypes,
 	parseJourneyEdits,
 	parseStoreJSON,
 	renderJourneyEdit,
@@ -81,6 +83,13 @@ import {
 	transcriptPath,
 	writeTranscript,
 } from './setupStore.js'
+import {
+	createLookupTool,
+	createRecordingTransport,
+	createScriptedTransport,
+	createThrowingTool,
+	wireTools,
+} from './setupServer.js'
 
 let store: StoreServerInterface
 
@@ -514,6 +523,11 @@ describe('STORE_BOUNDS', () => {
 		expect(STORE_BOUNDS.turn).toBeGreaterThan(DEFAULT_PROVIDER_TIMEOUT)
 		expect(STORE_BOUNDS.turn).toBeLessThan(STORE_BOUNDS.run)
 	})
+
+	it('lets a turn retry a refused tool and still answer inside the turn limit after the refusal bound', () => {
+		expect(STORE_BOUNDS.refusals).toBeGreaterThan(1)
+		expect(STORE_BOUNDS.refusals).toBeLessThan(STORE_BOUNDS.limit)
+	})
 })
 
 describe('matchesDaemonFault', () => {
@@ -865,56 +879,31 @@ describe('findMalformedCalls', () => {
 		]
 		expect(findMalformedCalls(malformed, definitions)).toEqual(malformed)
 	})
-})
 
-describe('normalizeSchemaTypes', () => {
-	it('splits a multi-type node into an anyOf of one node per type, in properties and items', () => {
-		expect(
-			normalizeSchemaTypes({
+	it('reads a type array as the union of its members, with the items of the array checked', () => {
+		const edit = {
+			name: 'edit',
+			parameters: {
 				type: 'object',
 				properties: {
 					edits: {
 						type: ['array', 'string'],
-						description: 'The changes.',
-						items: { type: 'object', properties: { id: { type: ['string', 'null'] } } },
+						items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
 					},
-					journey: { type: 'string' },
 				},
 				required: ['edits'],
-			}),
-		).toEqual({
-			type: 'object',
-			properties: {
-				edits: {
-					anyOf: [
-						{
-							type: 'array',
-							description: 'The changes.',
-							items: {
-								type: 'object',
-								properties: { id: { anyOf: [{ type: 'string' }, { type: 'null' }] } },
-							},
-						},
-						{
-							type: 'string',
-							description: 'The changes.',
-							items: {
-								type: 'object',
-								properties: { id: { anyOf: [{ type: 'string' }, { type: 'null' }] } },
-							},
-						},
-					],
-				},
-				journey: { type: 'string' },
 			},
-			required: ['edits'],
-		})
-	})
-
-	it('returns a schema with no multi-type node equal to its input', () => {
-		const look = BROWSER_TOOL_COPY.look.parameters ?? {}
-		expect(normalizeSchemaTypes(look)).toEqual(look)
-		expect(normalizeSchemaTypes({})).toEqual({})
+		}
+		const kept = [
+			buildStoreCall('edit', { edits: '[]' }),
+			buildStoreCall('edit', { edits: [{ id: 's3' }] }),
+		]
+		const malformed = [
+			buildStoreCall('edit', { edits: 3 }),
+			buildStoreCall('edit', { edits: [{ id: 3 }] }),
+			buildStoreCall('edit', { edits: null }),
+		]
+		expect(findMalformedCalls([...kept, ...malformed], [edit])).toEqual(malformed)
 	})
 })
 
@@ -1318,6 +1307,138 @@ describe('findJourneyLoops', () => {
 		expect(findJourneyLoops([])).toEqual([])
 		expect(findJourneyLoops([idle, empty, record, save])).toEqual([])
 		expect(findJourneyLoops([idle, ...JOURNEY_CALLS])).toEqual([])
+	})
+})
+
+describe('computeRefusals', () => {
+	const refused = (name: string) => ({ ...buildStoreCall(name, {}), success: false })
+
+	it('counts the most refused tool since the last success, with alternating tools counted apart', () => {
+		expect(computeRefusals([refused('save'), refused('save'), refused('save')])).toBe(3)
+		expect(
+			computeRefusals([
+				refused('record'),
+				refused('save'),
+				refused('record'),
+				refused('save'),
+				refused('record'),
+			]),
+		).toBe(3)
+		expect(
+			computeRefusals([
+				refused('save'),
+				refused('save'),
+				buildStoreCall('look', {}),
+				refused('save'),
+			]),
+		).toBe(1)
+	})
+
+	it('returns 0 for a turn with no call and for a turn whose last call succeeded', () => {
+		expect(computeRefusals([])).toBe(0)
+		expect(computeRefusals([refused('save'), buildStoreCall('look', {})])).toBe(0)
+	})
+})
+
+describe('converseStore', () => {
+	const fail = { content: '', tool_calls: [{ function: { name: 'fail', arguments: {} } }] }
+	const lookup = {
+		content: '',
+		tool_calls: [{ function: { name: 'lookup', arguments: { query: 'kettle' } } }],
+	}
+	const bound = Array.from({ length: STORE_BOUNDS.refusals }, () => fail)
+	const advertised = ['lookup', 'fail']
+
+	it('advertises no tool after the refusal bound until the next user turn advertises every tool again', async () => {
+		const daemon = createRecordingTransport(
+			createScriptedTransport([
+				...bound,
+				{ content: 'The tool refused.' },
+				lookup,
+				{ content: 'Found.' },
+			]),
+		)
+		const tools = createToolManager()
+		tools.add([createLookupTool(), createThrowingTool()])
+		const conversation = await converseStore({
+			provider: createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
+			system: STORE_SYSTEM_PROMPT,
+			tools,
+			turns: ['Call the fail tool.', 'Look up the kettle.'],
+		})
+		expect(daemon.requests.map(wireTools)).toEqual([
+			...bound.map(() => advertised),
+			[],
+			advertised,
+			advertised,
+		])
+		expect(conversation.ended).toBe(1)
+		expect(conversation.failure).toBeUndefined()
+		expect(conversation.result).toMatchObject({ content: 'Found.', partial: false })
+		expect(conversation.partial).toBe(false)
+		expect(conversation.calls.map((call) => [call.name, call.success])).toEqual([
+			...bound.map(() => ['fail', false]),
+			['lookup', true],
+		])
+		expect(
+			conversation.messages
+				.filter((message) => message.role === 'assistant')
+				.map((message) => message.content),
+		).toContain('The tool refused.')
+	})
+
+	it('advertises no tool after one provider turn whose parallel calls reach the bound', async () => {
+		const daemon = createRecordingTransport(
+			createScriptedTransport([
+				{ content: '', tool_calls: bound.flatMap((turn) => turn.tool_calls) },
+				{ content: 'The tool refused.' },
+			]),
+		)
+		const tools = createToolManager()
+		tools.add([createLookupTool(), createThrowingTool()])
+		const conversation = await converseStore({
+			provider: createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
+			system: STORE_SYSTEM_PROMPT,
+			tools,
+			turns: ['Call the fail tool.'],
+		})
+		expect(daemon.requests.map(wireTools)).toEqual([advertised, []])
+		expect(conversation.ended).toBe(1)
+		expect(conversation.result).toMatchObject({ content: 'The tool refused.', partial: false })
+	})
+
+	it('keeps advertising every tool while a success breaks the refusals', async () => {
+		const short = bound.slice(1)
+		const daemon = createRecordingTransport(
+			createScriptedTransport([...short, lookup, ...short, { content: 'Found.' }]),
+		)
+		const tools = createToolManager()
+		tools.add([createLookupTool(), createThrowingTool()])
+		const conversation = await converseStore({
+			provider: createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
+			system: STORE_SYSTEM_PROMPT,
+			tools,
+			turns: ['Call the fail tool, then look up the kettle.'],
+		})
+		expect(daemon.requests.map(wireTools)).toEqual(
+			[...short, lookup, ...short, undefined].map(() => advertised),
+		)
+		expect(conversation.ended).toBe(0)
+		expect(conversation.result).toMatchObject({ content: 'Found.', partial: false })
+	})
+
+	it('returns the error that ended a user turn with the calls made before it', async () => {
+		const tools = createToolManager()
+		tools.add([createLookupTool(), createThrowingTool()])
+		const conversation = await converseStore({
+			provider: createOllama({ model: 'fixture-model', fetch: createScriptedTransport([lookup]) }),
+			system: STORE_SYSTEM_PROMPT,
+			tools,
+			turns: ['Look up the kettle.'],
+		})
+		expect(conversation.result).toBeUndefined()
+		expect(String(conversation.failure)).toContain('the script holds 1 turns')
+		expect(conversation.calls.map((call) => [call.name, call.success])).toEqual([['lookup', true]])
 	})
 })
 

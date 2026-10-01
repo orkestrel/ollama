@@ -1,4 +1,4 @@
-import type { Message, ProviderInterface } from '@orkestrel/agent'
+import type { AgentResult, Message, ProviderInterface, ScopeInterface } from '@orkestrel/agent'
 import type {
 	BrowserJourney,
 	BrowserJourneyStep,
@@ -7,8 +7,8 @@ import type {
 } from '@orkestrel/browser'
 import type { BrowserInterface } from '@orkestrel/browser/server'
 import type { TokenUsage } from '@orkestrel/budget'
-import type { ToolDefinition, ToolResult } from '@orkestrel/tool'
-import { createAgent, isProviderError, sumUsage } from '@orkestrel/agent'
+import type { ToolDefinition, ToolManagerInterface, ToolResult } from '@orkestrel/tool'
+import { createAgent, createScope, isProviderError, sumUsage } from '@orkestrel/agent'
 import {
 	BROWSER_JOURNEY_TOOL_NAMES,
 	BROWSER_TOOL_LIMIT,
@@ -670,6 +670,9 @@ export const OLLAMA_ABSENT_REASON =
  * third turn and drops the task statement; `context` is
  * the window every attempt's model takes instead. `turn` bounds one model turn, above the
  * provider's 120 s default because a turn over the grown prompt outlasts it on a contended host.
+ * `refusals` ends a turn whose model keeps calling a tool the toolset refuses: one refusal can be an
+ * argument the model corrects and a second a retry, and a third shows the model is not acting on
+ * the refusal's text, which names the call to make instead.
  */
 export const STORE_BOUNDS = Object.freeze({
 	/** The agent's deadline for one attempt. */
@@ -693,6 +696,11 @@ export const STORE_BOUNDS = Object.freeze({
 	context: 16_384,
 	/** The provider's deadline for one model turn. */
 	turn: 300_000,
+	/**
+	 * The refusals of one tool, with no successful call between them, after which the rest of the
+	 * user turn advertises no tool (see {@link converseStore}).
+	 */
+	refusals: 3,
 })
 
 /**
@@ -772,6 +780,8 @@ export interface StoreTranscript {
 	readonly violations: number
 	/** How many `record` and `save` calls {@link findJourneyLoops} reads as refused after a save. */
 	readonly loops: number
+	/** How many user turns reached `STORE_BOUNDS.refusals` and went on with no tool advertised. */
+	readonly ended: number
 	/** Each JSON file the journey stores wrote under the run's root, by its `/`-separated path. */
 	readonly files: Readonly<Record<string, string>>
 }
@@ -882,6 +892,141 @@ export function buildStorePrompt(prompt: string, seed: string): string {
 	return `${prompt}\n\nThe browser shows this page:\n${seed}`
 }
 
+/** Represents what {@link converseStore} takes. */
+export interface StoreConversationOptions {
+	/** The model the agent runs. */
+	readonly provider: ProviderInterface
+	/** The system prompt the agent runs with. */
+	readonly system: string
+	/** The tools the agent advertises and dispatches. */
+	readonly tools: ToolManagerInterface
+	/** The user turns, in order, each sent when the model ends the previous one. */
+	readonly turns: readonly StoreTurn[]
+}
+
+/** Represents what one store conversation leaves. */
+export interface StoreConversation {
+	/** Every conversation message, in order; an assistant message carries its turn's thinking. */
+	readonly messages: readonly StoreMessage[]
+	/** Every tool call the agent dispatched, in order, with its result text. */
+	readonly calls: readonly StoreCall[]
+	/** The token usage each provider call reported, in turn order. */
+	readonly usages: readonly TokenUsage[]
+	/** The last user turn's result; `undefined` when a user turn ended with an error. */
+	readonly result: AgentResult | undefined
+	/** True if a deadline or the turn limit cut a user turn short; false otherwise. */
+	readonly partial: boolean
+	/** How many user turns reached `STORE_BOUNDS.refusals` and went on with no tool advertised. */
+	readonly ended: number
+	/** The error a user turn ended with; `undefined` when every user turn settled. */
+	readonly failure: unknown
+}
+
+/** Names the scope a user turn takes after `STORE_BOUNDS.refusals`: it advertises no tool. */
+export const STORE_ANSWER_SCOPE: ScopeInterface = createScope({ name: 'answer', tools: [] })
+
+/**
+ * Computes how many refusals the most refused tool has had since the last successful call.
+ *
+ * @param calls - The calls of one user turn, in order
+ * @returns The largest number of calls one tool name has among the calls after the last
+ * successful one; `0` when the last call succeeded or no call was made
+ * @remarks A refusal of another tool keeps the count, so a model alternating two refused tools
+ * reaches the bound as a model repeating one does.
+ */
+export function computeRefusals(calls: readonly StoreCall[]): number {
+	const counts = new Map<string, number>()
+	for (const call of calls.slice(calls.findLastIndex((candidate) => candidate.success) + 1)) {
+		counts.set(call.name, (counts.get(call.name) ?? 0) + 1)
+	}
+	return Math.max(0, ...counts.values())
+}
+
+/**
+ * Drives a store conversation's user turns through one agent.
+ *
+ * @param options - The model, the system prompt, the tools, and the user turns
+ * @returns The messages, the calls, the usage, the last turn's result, and the error a turn
+ * ended with
+ * @remarks The agent runs `STORE_BOUNDS.limit` tool turns under `STORE_BOUNDS.run` per user turn.
+ * When one tool's refusals since the turn's last successful call reach `STORE_BOUNDS.refusals`
+ * (see {@link computeRefusals}), the agent's context takes {@link STORE_ANSWER_SCOPE}, so the
+ * next provider turn advertises no tool and the model answers after the refusal it last read;
+ * every user turn starts with no scope and its own count. An error ends the conversation and is
+ * returned rather than thrown.
+ */
+export async function converseStore(options: StoreConversationOptions): Promise<StoreConversation> {
+	const calls: StoreCall[] = []
+	const usages: TokenUsage[] = []
+	const thoughts: string[] = ['']
+	let start = 0
+	let ended = 0
+	const agent = createAgent(options.provider, {
+		system: options.system,
+		tools: options.tools,
+		timeout: STORE_BOUNDS.run,
+		limit: STORE_BOUNDS.limit,
+		on: {
+			tool: (call, result) => {
+				calls.push({
+					name: call.name,
+					arguments: call.arguments,
+					success: result.success,
+					text: renderToolText(result),
+				})
+				if (
+					agent.context.scope !== STORE_ANSWER_SCOPE &&
+					computeRefusals(calls.slice(start)) >= STORE_BOUNDS.refusals
+				) {
+					agent.context.apply(STORE_ANSWER_SCOPE)
+					ended += 1
+				}
+			},
+			usage: (usage) => void usages.push(usage),
+		},
+	})
+	let result: AgentResult | undefined
+	let partial = false
+	let failure: unknown
+	try {
+		for (const turn of options.turns) {
+			start = calls.length
+			agent.context.apply(undefined)
+			agent.context.messages.add({
+				role: 'user',
+				content: typeof turn === 'string' ? turn : turn(calls),
+			})
+			const stream = agent.stream()
+			// The usage chunk closes a provider turn, so the thinking between two of them is one turn's.
+			const tapped: typeof stream = {
+				events: (async function* () {
+					for await (const chunk of stream.events) {
+						if (chunk.category === 'think') thoughts[thoughts.length - 1] += chunk.content
+						else if (chunk.category === 'usage') thoughts.push('')
+						yield chunk
+					}
+				})(),
+				result: stream.result,
+				abort: (reason) => stream.abort(reason),
+			}
+			result = (await driveAgent(tapped)).result
+			partial ||= result.partial
+		}
+	} catch (error) {
+		result = undefined
+		failure = error
+	}
+	return {
+		messages: attachThinking(agent.context.messages.messages(), thoughts),
+		calls,
+		usages,
+		result,
+		partial,
+		ended,
+		failure,
+	}
+}
+
 /**
  * Drives one store task with a live model through the browser toolset and writes its transcript.
  *
@@ -890,12 +1035,12 @@ export function buildStorePrompt(prompt: string, seed: string): string {
  * @returns The run's transcript, also written to {@link transcriptPath}
  * @remarks The page opens the start path, the toolset registers into a fresh tool manager with
  * the journey tools over file stores under `options.root`, and the first user turn carries the
- * toolset's own `look` result. The agent runs with the task's system prompt, which defaults to
- * the page tasks' own, `STORE_BOUNDS.limit` turns, and `STORE_BOUNDS.run` as each user turn's
- * deadline; each follow-up user turn is sent after the model ends the previous one. After the run,
+ * toolset's own `look` result. {@link converseStore} drives the first user turn and each
+ * follow-up with the task's system prompt, which defaults to the page tasks' own. After the run,
  * `options.meter` measures the first turn under three tool lists (see {@link measureToolCost}),
- * and the transcript records the JSON files under the root. The answer is the last user turn's. A run the agent ends with an error still writes its transcript, carrying
- * the error's message as `failure`. A daemon fault (see {@link matchesDaemonFault}) then returns
+ * and the transcript records the JSON files under the root. The answer is the last user turn's.
+ * A run the agent ends with an error still writes its transcript, carrying the error's message
+ * as `failure`. A daemon fault (see {@link matchesDaemonFault}) then returns
  * that transcript as a failed attempt, so an attempt loop spends it like any unmet oracle; every
  * other error is rethrown. The toolset is destroyed after the run, whether or not the run
  * succeeded; the page, the store, and the root stay the caller's.
@@ -920,54 +1065,13 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 		})
 		const seed = renderToolText(seeded)
 		const prompt = buildStorePrompt(options.prompt, seed)
-		const calls: StoreCall[] = []
-		const turns: TokenUsage[] = []
-		const thoughts: string[] = ['']
-		const agent = createAgent(options.provider, {
+		const conversation = await converseStore({
+			provider: options.provider,
 			system,
 			tools: toolset.tools,
-			timeout: STORE_BOUNDS.run,
-			limit: STORE_BOUNDS.limit,
-			on: {
-				tool: (call, result) =>
-					void calls.push({
-						name: call.name,
-						arguments: call.arguments,
-						success: result.success,
-						text: renderToolText(result),
-					}),
-				usage: (usage) => void turns.push(usage),
-			},
+			turns: [prompt, ...(options.followups ?? [])],
 		})
-		let failure: unknown
-		let driven: Awaited<ReturnType<typeof driveAgent>> | undefined
-		let partial = false
-		try {
-			for (const turn of [prompt, ...(options.followups ?? [])]) {
-				agent.context.messages.add({
-					role: 'user',
-					content: typeof turn === 'string' ? turn : turn(calls),
-				})
-				const stream = agent.stream()
-				// The usage chunk closes a provider turn, so the thinking between two of them is one turn's.
-				const tapped: typeof stream = {
-					events: (async function* () {
-						for await (const chunk of stream.events) {
-							if (chunk.category === 'think') thoughts[thoughts.length - 1] += chunk.content
-							else if (chunk.category === 'usage') thoughts.push('')
-							yield chunk
-						}
-					})(),
-					result: stream.result,
-					abort: (reason) => stream.abort(reason),
-				}
-				driven = await driveAgent(tapped)
-				partial ||= driven.result.partial
-			}
-		} catch (error) {
-			driven = undefined
-			failure = error
-		}
+		const { calls, result } = conversation
 		const elapsed = performance.now() - started
 		const definitions = toolset.tools.definitions()
 		let cost: StoreCost | undefined
@@ -991,30 +1095,36 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 			system,
 			seed,
 			prompt: options.prompt,
-			messages: attachThinking(agent.context.messages.messages(), thoughts),
+			messages: conversation.messages,
 			calls,
-			answer: driven?.result.content ?? '',
-			partial: driven === undefined || partial,
-			usage: turns.reduce<TokenUsage | undefined>((sum, turn) => sumUsage(sum, turn), undefined),
-			turns,
+			answer: result?.content ?? '',
+			partial: result === undefined || conversation.partial,
+			usage: conversation.usages.reduce<TokenUsage | undefined>(
+				(sum, turn) => sumUsage(sum, turn),
+				undefined,
+			),
+			turns: conversation.usages,
 			elapsed,
 			state: {
 				cart: options.store.readCart(),
 				searches: options.store.readSearches(),
 				orders: options.store.readOrders(),
 			},
-			failure: driven === undefined ? describeFailure(failure) : undefined,
+			failure: result === undefined ? describeFailure(conversation.failure) : undefined,
 			mentioned:
 				options.mention === undefined
 					? undefined
-					: (driven?.result.content ?? '').includes(options.mention),
+					: (result?.content ?? '').includes(options.mention),
 			cost,
 			violations: findMalformedCalls(calls, definitions).length,
 			loops: findJourneyLoops(calls).length,
+			ended: conversation.ended,
 			files: collectStoreFiles(options.root),
 		}
 		writeTranscript(transcript)
-		if (driven === undefined && !matchesDaemonFault(failure)) throw failure
+		if (result === undefined && !matchesDaemonFault(conversation.failure)) {
+			throw conversation.failure
+		}
 		return transcript
 	} finally {
 		await toolset.destroy()
@@ -1347,6 +1457,7 @@ export function buildStoreTranscript(
 		cost: undefined,
 		violations: 0,
 		loops: 0,
+		ended: 0,
 		files: {},
 	}
 }
@@ -1503,48 +1614,13 @@ export async function measureToolCost(
 }
 
 /**
- * Normalizes every JSON Schema node whose `type` lists several types into an `anyOf` of one node
- * per type.
- *
- * @param schema - A JSON Schema node, such as a tool definition's parameters
- * @returns The same schema with each multi-type node, its `properties` and `items` included,
- * replaced by an `anyOf` whose members carry one type each and the node's other keywords
- * @remarks `schemaToShape` reads a `type` array as a shape that accepts any value, so the
- * `edit` tool's `edits`, advertised as an array or a string, would accept every value; the
- * `anyOf` form compiles to a union that checks the array's items.
- */
-export function normalizeSchemaTypes(
-	schema: Readonly<Record<string, unknown>>,
-): Readonly<Record<string, unknown>> {
-	const properties = schema['properties']
-	const items = schema['items']
-	const node: Readonly<Record<string, unknown>> = {
-		...schema,
-		...(isRecord(properties)
-			? {
-					properties: Object.fromEntries(
-						Object.entries(properties).map(([key, value]) => [
-							key,
-							isRecord(value) ? normalizeSchemaTypes(value) : value,
-						]),
-					),
-				}
-			: {}),
-		...(isRecord(items) ? { items: normalizeSchemaTypes(items) } : {}),
-	}
-	const { type, ...rest } = node
-	if (!Array.isArray(type)) return node
-	return { anyOf: type.map((one: unknown) => ({ ...rest, type: one })) }
-}
-
-/**
  * Returns every call that names no advertised tool or breaks the tool's parameters.
  *
  * @param calls - The run's calls, in order
  * @param definitions - The tools the run advertised
  * @returns The calls whose name no definition carries, whose arguments fail the definition's JSON
- * Schema read through {@link normalizeSchemaTypes} and `@orkestrel/contract`, or that carry a
- * parameter the definition does not advertise, as `validateBrowserToolArguments` refuses it
+ * Schema read through `@orkestrel/contract`, or that carry a parameter the definition does not
+ * advertise, as `validateBrowserToolArguments` refuses it
  */
 export function findMalformedCalls(
 	calls: readonly StoreCall[],
@@ -1555,7 +1631,7 @@ export function findMalformedCalls(
 		if (definition === undefined) return true
 		if (
 			definition.parameters !== undefined &&
-			!createContract(schemaToShape(normalizeSchemaTypes(definition.parameters))).is(call.arguments)
+			!createContract(schemaToShape(definition.parameters)).is(call.arguments)
 		) {
 			return true
 		}

@@ -31,7 +31,9 @@
  * and `type`'s `secret` advertised beside the page vocabulary. Each transcript records the prompt
  * tokens the first turn spends with no tool, the page vocabulary, and every tool, how many calls
  * broke the advertised parameters, and how many `record` and `save` calls the toolset refused
- * after a save (`loops`). The journey task sends five user turns in one conversation: record the
+ * after a save (`loops`). A user turn whose model reaches `STORE_BOUNDS.refusals` refusals of one
+ * tool with no successful call between them goes on with no tool advertised, so the model answers
+ * (`converseStore`); the transcript counts those turns as `ended`. The journey task sends five user turns in one conversation: record the
  * form task's flow, save it, list it, edit it in one batch, and replay it with an input; the edit
  * turn spells the batch out with the step ids the last listing shows (`renderJourneyEdit`). Its
  * oracle is one order in the store carrying the input and the journey and run files under the

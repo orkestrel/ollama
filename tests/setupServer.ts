@@ -379,6 +379,32 @@ export function createStreamingTransport(chunks: readonly string[]): typeof glob
 }
 
 /**
+ * Builds a transport that answers the n-th `/api/chat` request with the n-th scripted message.
+ *
+ * @param messages - Each turn's daemon `message` record, such as its content and `tool_calls`,
+ * in request order
+ * @returns The transport; each answer streams the message record, then a closing `done` record
+ * @remarks A request past the script's end rejects with an error naming the script's length, so
+ * a run that asks the model for more turns than the script holds fails where it overran.
+ */
+export function createScriptedTransport(
+	messages: ReadonlyArray<Readonly<Record<string, unknown>>>,
+): typeof globalThis.fetch {
+	let served = 0
+	return (input, init) => {
+		const message = messages[served]
+		served += 1
+		if (message === undefined) {
+			return Promise.reject(new Error(`the script holds ${messages.length} turns`))
+		}
+		return createStreamingTransport([
+			`${JSON.stringify({ message })}\n`,
+			'{"done":true,"prompt_eval_count":3,"eval_count":4}\n',
+		])(input, init)
+	}
+}
+
+/**
  * Starts a pass-through recording server.
  *
  * The default upstream is deliberately unreachable so request-shape tests remain

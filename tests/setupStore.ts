@@ -1,15 +1,32 @@
 import type { Message, ProviderInterface } from '@orkestrel/agent'
-import type { BrowserPageInterface } from '@orkestrel/browser'
+import type {
+	BrowserJourney,
+	BrowserJourneyStep,
+	BrowserPageInterface,
+	BrowserRun,
+} from '@orkestrel/browser'
 import type { BrowserInterface } from '@orkestrel/browser/server'
 import type { TokenUsage } from '@orkestrel/budget'
-import type { ToolResult } from '@orkestrel/tool'
-import { createAgent, isProviderError } from '@orkestrel/agent'
-import { BROWSER_TOOL_LIMIT, createBrowserToolset, parseBrowserReference } from '@orkestrel/browser'
+import type { ToolDefinition, ToolResult } from '@orkestrel/tool'
+import { createAgent, isProviderError, sumUsage } from '@orkestrel/agent'
+import {
+	BROWSER_JOURNEY_TOOL_NAMES,
+	BROWSER_TOOL_LIMIT,
+	createBrowserToolset,
+	parseBrowserJourney,
+	parseBrowserReference,
+	parseBrowserRun,
+	renderBrowserJourney,
+	validateBrowserToolArguments,
+} from '@orkestrel/browser'
+import { createFileBrowserJourneyStore, createFileBrowserRunStore } from '@orkestrel/browser/server'
+import { createContract, isRecord, schemaToShape } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
+import { createScratch } from '@orkestrel/test/server'
 import { createToolManager } from '@orkestrel/tool'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname, join, relative, sep } from 'node:path'
 import { describeFailure, driveAgent, rootToPath, WORKSPACE_ROOT } from './setupServer.js'
 
 /** Represents one product the store fixture sells. */
@@ -119,6 +136,21 @@ export const STORE_SYSTEM_PROMPT =
 	'To press a button or follow a link, call click with its reference from the latest result. Never invent a reference. ' +
 	'If text you expect has not appeared, call wait once. ' +
 	'When the task is done, answer in one short sentence.'
+
+/**
+ * Names the system prompt the journey task gives the model: {@link STORE_SYSTEM_PROMPT} followed
+ * by one sentence for each journey tool.
+ *
+ * @remarks The store prompt stays as the five page tasks and the browser guide read it, so the
+ * journey sentences extend a copy rather than the prompt those tasks run with.
+ */
+export const STORE_JOURNEY_PROMPT =
+	`${STORE_SYSTEM_PROMPT} ` +
+	'To record a journey, call record with its name before you act; each action after it is a step. ' +
+	'When the recorded task is done, call save with one sentence that describes it. ' +
+	'To see the saved journeys and their step ids, call journeys. ' +
+	'To change a journey, call edit once with every change in edits, such as [{"operation": "declare", "name": "email", "parameter": {"default": "sam@example.test"}}, {"operation": "update", "arguments": {"text": {"parameter": "email"}}, "id": "s4"}, {"operation": "remove", "id": "s5"}]. ' +
+	"To run a journey again, call replay with its name and each parameter's value under inputs."
 
 /** Represents a running store fixture and the state its pages changed. */
 export interface StoreServerInterface {
@@ -360,6 +392,12 @@ form.addEventListener('submit', async (event) => {
 })
 </script>`
 
+/** Names the label of the checkout's name field, which is the field's accessible name. */
+export const STORE_NAME_FIELD = 'Full name'
+
+/** Names the checkout's submit button. */
+export const STORE_ORDER_BUTTON = 'Place order'
+
 /**
  * Renders the checkout page.
  *
@@ -370,9 +408,9 @@ export function renderCheckout(): string {
 		'Checkout',
 		`<h1>Checkout</h1>
 <form id="checkout">
-<label for="name">Full name</label>
+<label for="name">${STORE_NAME_FIELD}</label>
 <input id="name" type="text" name="name" autocomplete="off">
-<button type="submit">Place order</button>
+<button type="submit">${STORE_ORDER_BUTTON}</button>
 </form>`,
 		STORE_CHECKOUT_SCRIPT,
 	)
@@ -621,12 +659,17 @@ export const OLLAMA_ABSENT_REASON =
 	'GET /api/tags on the configured Ollama daemon did not answer or did not list the configured model, so no model can drive the browser tools'
 
 /**
- * Names the deadlines and attempt counts the live store proof takes, in milliseconds.
+ * Names the deadlines, attempt counts, and model settings the live store proof takes; deadlines
+ * in milliseconds.
  *
  * @remarks `run` is the agent's wall-clock deadline for one attempt. `single` bounds a task
  * that passes on its first attempt: one run plus the browser page and the seeded `look`.
  * `attempts` runs fit in `budget`, and `retry` bounds the case that spends them, so a retry
- * ends on its attempt count rather than on its budget.
+ * ends on its attempt count rather than on its budget. Every attempt advertises the journey
+ * tools beside the page vocabulary, so the daemon's default 4 096-token window cuts a page task's
+ * third turn and drops the task statement; `context` is
+ * the window every attempt's model takes instead. `turn` bounds one model turn, above the
+ * provider's 120 s default because a turn over the grown prompt outlasts it on a contended host.
  */
 export const STORE_BOUNDS = Object.freeze({
 	/** The agent's deadline for one attempt. */
@@ -646,6 +689,28 @@ export const STORE_BOUNDS = Object.freeze({
 	 * because a 64-token cap cut the model's narration before its tool call.
 	 */
 	predict: 256,
+	/** The Ollama `num_ctx` window each attempt's model takes, in tokens. */
+	context: 16_384,
+	/** The provider's deadline for one model turn. */
+	turn: 300_000,
+})
+
+/**
+ * Names the deadlines the journey task takes in place of the page tasks' own, in milliseconds.
+ * The task spends `STORE_BOUNDS.attempts` attempts and takes every other setting from
+ * {@link STORE_BOUNDS}.
+ *
+ * @remarks The journey task sends five user turns in one conversation, recording the form task's
+ * flow, then saving, listing, editing, and replaying it, and each user turn runs under
+ * `STORE_BOUNDS.run` and `STORE_BOUNDS.limit`, so one attempt takes at most `run`.
+ */
+export const STORE_JOURNEY_BOUNDS = Object.freeze({
+	/** The longest one attempt takes: five user turns at `STORE_BOUNDS.run` each. */
+	run: 2_400_000,
+	/** The elapsed-time budget the retried task gives `retryUntil`. */
+	budget: 7_200_000,
+	/** The deadline the retried case allows. */
+	retry: 7_260_000,
 })
 
 /** Represents one tool call a store run dispatched, as the transcript records it. */
@@ -688,6 +753,8 @@ export interface StoreTranscript {
 	readonly partial: boolean
 	/** The token usage summed over the run's provider calls, when the provider reported it. */
 	readonly usage: TokenUsage | undefined
+	/** The token usage each provider call reported, in turn order. */
+	readonly turns: readonly TokenUsage[]
 	/** The run's wall time in milliseconds, from the seeded `look` to the final answer. */
 	readonly elapsed: number
 	/** What the store recorded when the run ended: the cart, the searches, and the orders. */
@@ -699,6 +766,28 @@ export interface StoreTranscript {
 	 * task with no `mention`. The proof records it and never asserts it.
 	 */
 	readonly mentioned: boolean | undefined
+	/** The prompt tokens the first turn spends on each tool list; absent when the run was not measured. */
+	readonly cost: StoreCost | undefined
+	/** How many calls {@link findMalformedCalls} reads as malformed against the advertised tools. */
+	readonly violations: number
+	/** How many `record` and `save` calls {@link findJourneyLoops} reads as refused after a save. */
+	readonly loops: number
+	/** Each JSON file the journey stores wrote under the run's root, by its `/`-separated path. */
+	readonly files: Readonly<Record<string, string>>
+}
+
+/**
+ * Represents the prompt tokens the daemon counted for a run's first turn under three tool lists.
+ *
+ * @remarks `full - bare` is the whole tool list's cost and `full - page` the journey tools' cost.
+ */
+export interface StoreCost {
+	/** The prompt tokens with no tool advertised. */
+	readonly bare: number
+	/** The prompt tokens with the page vocabulary alone: no journey tool and no `type` `secret`. */
+	readonly page: number
+	/** The prompt tokens with every tool the run advertised. */
+	readonly full: number
 }
 
 /** Represents what a store recorded by the end of one run. */
@@ -729,7 +818,21 @@ export interface StoreRunOptions {
 	readonly page: BrowserPageInterface
 	/** The store the page opens. */
 	readonly store: StoreServerInterface
+	/** The existing directory the journey stores keep their files under. */
+	readonly root: string
+	/** The system prompt; omitted ⇒ {@link STORE_SYSTEM_PROMPT}. */
+	readonly system?: string | undefined
+	/** The model that measures the tool lists' cost after the run; omitted ⇒ no measurement. */
+	readonly meter?: ProviderInterface | undefined
+	/** The user turns after the first, each sent when the model ends the previous one; omitted ⇒ none. */
+	readonly followups?: readonly StoreTurn[] | undefined
 }
+
+/** Builds a user turn from the calls a run made so far. */
+export type StoreTurnFunction = (calls: readonly StoreCall[]) => string
+
+/** Represents one user turn: its text, or a function of the calls made so far that returns it. */
+export type StoreTurn = string | StoreTurnFunction
 
 /**
  * Renders the text a tool result hands the model.
@@ -782,20 +885,31 @@ export function buildStorePrompt(prompt: string, seed: string): string {
 /**
  * Drives one store task with a live model through the browser toolset and writes its transcript.
  *
- * @param options - The task, the attempt, the start path, the model, the page, and the store
+ * @param options - The task, the attempt, the start path, the model, the page, the store, and
+ * the journey root
  * @returns The run's transcript, also written to {@link transcriptPath}
- * @remarks The page opens the start path, the toolset registers into a fresh tool manager, and
- * the first user turn carries the toolset's own `look` result. The agent runs with
- * {@link STORE_SYSTEM_PROMPT}, `STORE_BOUNDS.limit` turns, and `STORE_BOUNDS.run` as its
- * deadline. A run the agent ends with an error still writes its transcript, carrying the error's
- * message as `failure`. A daemon fault (see {@link matchesDaemonFault}) then returns that
- * transcript as a failed attempt, so an attempt loop spends it like any unmet oracle; every other
- * error is rethrown. The toolset is destroyed after the run,
- * whether or not the run succeeded; the page and the store stay the caller's.
+ * @remarks The page opens the start path, the toolset registers into a fresh tool manager with
+ * the journey tools over file stores under `options.root`, and the first user turn carries the
+ * toolset's own `look` result. The agent runs with the task's system prompt, which defaults to
+ * the page tasks' own, `STORE_BOUNDS.limit` turns, and `STORE_BOUNDS.run` as each user turn's
+ * deadline; each follow-up user turn is sent after the model ends the previous one. After the run,
+ * `options.meter` measures the first turn under three tool lists (see {@link measureToolCost}),
+ * and the transcript records the JSON files under the root. The answer is the last user turn's. A run the agent ends with an error still writes its transcript, carrying
+ * the error's message as `failure`. A daemon fault (see {@link matchesDaemonFault}) then returns
+ * that transcript as a failed attempt, so an attempt loop spends it like any unmet oracle; every
+ * other error is rethrown. The toolset is destroyed after the run, whether or not the run
+ * succeeded; the page, the store, and the root stay the caller's.
  */
 export async function runStoreTask(options: StoreRunOptions): Promise<StoreTranscript> {
 	await options.page.navigate(`${options.store.url}${options.path}`)
-	const toolset = createBrowserToolset(options.page, { tools: createToolManager() })
+	const toolset = createBrowserToolset(options.page, {
+		tools: createToolManager(),
+		journeys: {
+			store: createFileBrowserJourneyStore({ root: options.root }),
+			runs: createFileBrowserRunStore({ root: options.root }),
+		},
+	})
+	const system = options.system ?? STORE_SYSTEM_PROMPT
 	try {
 		await toolset.start()
 		const started = performance.now()
@@ -805,11 +919,12 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 			arguments: STORE_SEED_ARGUMENTS,
 		})
 		const seed = renderToolText(seeded)
+		const prompt = buildStorePrompt(options.prompt, seed)
 		const calls: StoreCall[] = []
-		const usages: TokenUsage[] = []
+		const turns: TokenUsage[] = []
 		const thoughts: string[] = ['']
 		const agent = createAgent(options.provider, {
-			system: STORE_SYSTEM_PROMPT,
+			system,
 			tools: toolset.tools,
 			timeout: STORE_BOUNDS.run,
 			limit: STORE_BOUNDS.limit,
@@ -821,42 +936,68 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 						success: result.success,
 						text: renderToolText(result),
 					}),
-				usage: (usage) => void usages.push(usage),
+				usage: (usage) => void turns.push(usage),
 			},
 		})
-		agent.context.messages.add({ role: 'user', content: buildStorePrompt(options.prompt, seed) })
 		let failure: unknown
 		let driven: Awaited<ReturnType<typeof driveAgent>> | undefined
+		let partial = false
 		try {
-			const stream = agent.stream()
-			// The usage chunk closes a provider turn, so the thinking between two of them is one turn's.
-			const tapped: typeof stream = {
-				events: (async function* () {
-					for await (const chunk of stream.events) {
-						if (chunk.category === 'think') thoughts[thoughts.length - 1] += chunk.content
-						else if (chunk.category === 'usage') thoughts.push('')
-						yield chunk
-					}
-				})(),
-				result: stream.result,
-				abort: (reason) => stream.abort(reason),
+			for (const turn of [prompt, ...(options.followups ?? [])]) {
+				agent.context.messages.add({
+					role: 'user',
+					content: typeof turn === 'string' ? turn : turn(calls),
+				})
+				const stream = agent.stream()
+				// The usage chunk closes a provider turn, so the thinking between two of them is one turn's.
+				const tapped: typeof stream = {
+					events: (async function* () {
+						for await (const chunk of stream.events) {
+							if (chunk.category === 'think') thoughts[thoughts.length - 1] += chunk.content
+							else if (chunk.category === 'usage') thoughts.push('')
+							yield chunk
+						}
+					})(),
+					result: stream.result,
+					abort: (reason) => stream.abort(reason),
+				}
+				driven = await driveAgent(tapped)
+				partial ||= driven.result.partial
 			}
-			driven = await driveAgent(tapped)
 		} catch (error) {
+			driven = undefined
 			failure = error
+		}
+		const elapsed = performance.now() - started
+		const definitions = toolset.tools.definitions()
+		let cost: StoreCost | undefined
+		if (options.meter !== undefined) {
+			try {
+				cost = await measureToolCost(
+					options.meter,
+					[
+						{ id: 'system', role: 'system', content: system },
+						{ id: 'prompt', role: 'user', content: prompt },
+					],
+					definitions,
+				)
+			} catch (error) {
+				if (!matchesDaemonFault(error)) throw error
+			}
 		}
 		const transcript: StoreTranscript = {
 			task: options.task,
 			attempt: options.attempt,
-			system: STORE_SYSTEM_PROMPT,
+			system,
 			seed,
 			prompt: options.prompt,
 			messages: attachThinking(agent.context.messages.messages(), thoughts),
 			calls,
 			answer: driven?.result.content ?? '',
-			partial: driven?.result.partial ?? true,
-			usage: sumUsage(usages),
-			elapsed: performance.now() - started,
+			partial: driven === undefined || partial,
+			usage: turns.reduce<TokenUsage | undefined>((sum, turn) => sumUsage(sum, turn), undefined),
+			turns,
+			elapsed,
 			state: {
 				cart: options.store.readCart(),
 				searches: options.store.readSearches(),
@@ -867,6 +1008,10 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 				options.mention === undefined
 					? undefined
 					: (driven?.result.content ?? '').includes(options.mention),
+			cost,
+			violations: findMalformedCalls(calls, definitions).length,
+			loops: findJourneyLoops(calls).length,
+			files: collectStoreFiles(options.root),
 		}
 		writeTranscript(transcript)
 		if (driven === undefined && !matchesDaemonFault(failure)) throw failure
@@ -994,6 +1139,15 @@ export const STORE_QUERY = 'kettle'
 /** Names the buyer the form task asks the model to check out as. */
 export const STORE_BUYER = 'Ada Lovelace'
 
+/** Names the journey the journey task asks the model to record. */
+export const STORE_JOURNEY_NAME = 'place-order'
+
+/** Names the parameter the journey task asks the model to declare and bind to the name step. */
+export const STORE_JOURNEY_PARAMETER = 'buyer'
+
+/** Names the buyer the journey task asks the model to replay the journey with. */
+export const STORE_JOURNEY_BUYER = 'Grace Hopper'
+
 /** Represents one live store task: the transcript name, the prompt, and the start path. */
 export interface StoreTask {
 	/** The name the transcript files carry. */
@@ -1004,6 +1158,10 @@ export interface StoreTask {
 	readonly path: string
 	/** The text whose presence in the final answer the transcript notes; omitted ⇒ no note. */
 	readonly mention?: string | undefined
+	/** The system prompt; omitted ⇒ {@link STORE_SYSTEM_PROMPT}. */
+	readonly system?: string | undefined
+	/** The user turns after the first, each sent when the model ends the previous one; omitted ⇒ none. */
+	readonly followups?: readonly StoreTurn[] | undefined
 }
 
 /** Lists the live store tasks the browser-vocabulary proof runs, keyed by task name. */
@@ -1026,6 +1184,18 @@ export const STORE_TASKS = Object.freeze({
 		path: '/policy',
 		mention: STORE_POLICY_TOKEN,
 	},
+	journey: {
+		task: 'journey',
+		prompt: `Record a journey named ${STORE_JOURNEY_NAME}, then complete checkout with the name ${STORE_BUYER} and report the confirmation code.`,
+		followups: [
+			'Save the journey.',
+			'List the saved journeys.',
+			renderJourneyEdit,
+			`Replay ${STORE_JOURNEY_NAME} with the input ${STORE_JOURNEY_PARAMETER} set to ${STORE_JOURNEY_BUYER}.`,
+		],
+		path: '/',
+		system: STORE_JOURNEY_PROMPT,
+	},
 } satisfies Readonly<Record<string, StoreTask>>)
 
 /** Represents one finished attempt: its transcript and the store it ran against, stopped. */
@@ -1037,32 +1207,62 @@ export interface StoreAttempt {
 }
 
 /**
- * Runs one attempt of a store task on a fresh page over a fresh store, then releases both.
+ * Returns the directory every store attempt allocates its journey root under.
+ *
+ * @param root - The workspace root; defaults to {@link WORKSPACE_ROOT}
+ * @returns `tmp/browsers` under the root
+ */
+export function journeyPath(root: URL | string = WORKSPACE_ROOT): string {
+	return join(rootToPath(root), 'tmp', 'browsers')
+}
+
+/**
+ * Runs one attempt of a store task on a fresh page over a fresh store and a fresh journey root,
+ * then releases all three.
  *
  * @param browser - The connected browser's `create` member, which opens the attempt's page
  * @param task - The task to run
  * @param attempt - The attempt number, counted from 1
  * @param provider - The model the agent runs
+ * @param meter - The model that measures the tool lists' cost; omitted ⇒ no measurement
  * @returns The transcript and the stopped store, whose cart, searches, and orders stay readable
  * @throws Rethrown from the page's creation or from {@link runStoreTask}, after the store stops
+ * @remarks The journey root is a scratch directory under {@link journeyPath}, removed after the
+ * run; the transcript keeps the JSON files the run wrote there.
  */
 export async function attemptStoreTask(
 	browser: Pick<BrowserInterface, 'create'>,
 	task: StoreTask,
 	attempt: number,
 	provider: ProviderInterface,
+	meter?: ProviderInterface,
 ): Promise<StoreAttempt> {
-	const store = await createStoreServer()
+	const parent = journeyPath()
+	mkdirSync(parent, { recursive: true })
+	const root = createScratch({ parent, prefix: `${task.task}-${attempt}-` })
 	try {
-		const page = await browser.create()
+		const store = await createStoreServer()
 		try {
-			const transcript = await runStoreTask({ ...task, attempt, provider, page, store })
-			return { transcript, store }
+			const page = await browser.create()
+			try {
+				const transcript = await runStoreTask({
+					...task,
+					attempt,
+					provider,
+					page,
+					store,
+					root: root.path,
+					meter,
+				})
+				return { transcript, store }
+			} finally {
+				await page.close()
+			}
 		} finally {
-			await page.close()
+			await store.stop()
 		}
 	} finally {
-		await store.stop()
+		root.destroy()
 	}
 }
 
@@ -1139,10 +1339,15 @@ export function buildStoreTranscript(
 		answer: '',
 		partial: false,
 		usage: undefined,
+		turns: [],
 		elapsed: 0,
 		state: { cart: [], searches: [], orders: [] },
 		failure: undefined,
 		mentioned: undefined,
+		cost: undefined,
+		violations: 0,
+		loops: 0,
+		files: {},
 	}
 }
 
@@ -1249,17 +1454,412 @@ export function matchesStalledSearch(transcript: StoreTranscript): boolean {
 	return listed && transcript.answer.trim() === '' && !transcript.partial
 }
 
+// ── The journey task ──────────────────────────────────────────────────────────
+//
+// The readers the journey task's oracle takes: the tool lists' cost, the malformed
+// calls, the files the journey stores wrote, and the record, list, edit, and replay
+// sequence those files and the store must show.
+
 /**
- * Sums the token usage a run's provider calls reported.
+ * Returns the page vocabulary a toolset without journeys advertises.
  *
- * @param usages - Each reported usage, in order
- * @returns The field-wise sum; `undefined` when no call reported usage
+ * @param definitions - The tool definitions a toolset with journeys advertises
+ * @returns The definitions without the journey tools, and `type` without its `secret` parameter
  */
-export function sumUsage(usages: readonly TokenUsage[]): TokenUsage | undefined {
-	if (usages.length === 0) return undefined
-	return usages.reduce((sum, usage) => ({
-		prompt: sum.prompt + usage.prompt,
-		completion: sum.completion + usage.completion,
-		total: sum.total + usage.total,
-	}))
+export function inferPageTools(definitions: readonly ToolDefinition[]): readonly ToolDefinition[] {
+	return definitions
+		.filter((definition) => !BROWSER_JOURNEY_TOOL_NAMES.some((name) => name === definition.name))
+		.map((definition) => {
+			const properties = definition.parameters?.['properties']
+			if (definition.name !== 'type' || !isRecord(properties)) return definition
+			const { secret: _secret, ...kept } = properties
+			return { ...definition, parameters: { ...definition.parameters, properties: kept } }
+		})
+}
+
+/**
+ * Measures the prompt tokens one turn spends with no tool, the page vocabulary, and every tool.
+ *
+ * @param provider - The model to count with, such as one capped at one predicted token
+ * @param messages - The turn's messages: the system prompt and the first user turn
+ * @param definitions - Every tool the run advertised
+ * @returns The three prompt counts the daemon reported; `undefined` when a call reported no usage
+ * @remarks The daemon reports the whole prompt's token count whether or not it reused a cached
+ * prefix, so the three counts differ by the tool lists alone.
+ */
+export async function measureToolCost(
+	provider: ProviderInterface,
+	messages: readonly Message[],
+	definitions: readonly ToolDefinition[],
+): Promise<StoreCost | undefined> {
+	const signal = AbortSignal.timeout(STORE_BOUNDS.run)
+	const bare = await provider.generate(messages, signal, [])
+	const page = await provider.generate(messages, signal, inferPageTools(definitions))
+	const full = await provider.generate(messages, signal, definitions)
+	if (bare.usage === undefined || page.usage === undefined || full.usage === undefined) {
+		return undefined
+	}
+	return { bare: bare.usage.prompt, page: page.usage.prompt, full: full.usage.prompt }
+}
+
+/**
+ * Normalizes every JSON Schema node whose `type` lists several types into an `anyOf` of one node
+ * per type.
+ *
+ * @param schema - A JSON Schema node, such as a tool definition's parameters
+ * @returns The same schema with each multi-type node, its `properties` and `items` included,
+ * replaced by an `anyOf` whose members carry one type each and the node's other keywords
+ * @remarks `schemaToShape` reads a `type` array as a shape that accepts any value, so the
+ * `edit` tool's `edits`, advertised as an array or a string, would accept every value; the
+ * `anyOf` form compiles to a union that checks the array's items.
+ */
+export function normalizeSchemaTypes(
+	schema: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> {
+	const properties = schema['properties']
+	const items = schema['items']
+	const node: Readonly<Record<string, unknown>> = {
+		...schema,
+		...(isRecord(properties)
+			? {
+					properties: Object.fromEntries(
+						Object.entries(properties).map(([key, value]) => [
+							key,
+							isRecord(value) ? normalizeSchemaTypes(value) : value,
+						]),
+					),
+				}
+			: {}),
+		...(isRecord(items) ? { items: normalizeSchemaTypes(items) } : {}),
+	}
+	const { type, ...rest } = node
+	if (!Array.isArray(type)) return node
+	return { anyOf: type.map((one: unknown) => ({ ...rest, type: one })) }
+}
+
+/**
+ * Returns every call that names no advertised tool or breaks the tool's parameters.
+ *
+ * @param calls - The run's calls, in order
+ * @param definitions - The tools the run advertised
+ * @returns The calls whose name no definition carries, whose arguments fail the definition's JSON
+ * Schema read through {@link normalizeSchemaTypes} and `@orkestrel/contract`, or that carry a
+ * parameter the definition does not advertise, as `validateBrowserToolArguments` refuses it
+ */
+export function findMalformedCalls(
+	calls: readonly StoreCall[],
+	definitions: readonly ToolDefinition[],
+): readonly StoreCall[] {
+	return calls.filter((call) => {
+		const definition = definitions.find((candidate) => candidate.name === call.name)
+		if (definition === undefined) return true
+		if (
+			definition.parameters !== undefined &&
+			!createContract(schemaToShape(normalizeSchemaTypes(definition.parameters))).is(call.arguments)
+		) {
+			return true
+		}
+		try {
+			validateBrowserToolArguments(definition, call.arguments)
+			return false
+		} catch {
+			return true
+		}
+	})
+}
+
+/**
+ * Reads every JSON file under a directory.
+ *
+ * @param root - The directory to walk
+ * @returns Each `.json` file's text by its path under the root, `/`-separated and sorted
+ */
+export function collectStoreFiles(root: string): Readonly<Record<string, string>> {
+	const paths = readdirSync(root, { recursive: true, withFileTypes: true })
+		.filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+		.map((entry) => join(entry.parentPath, entry.name))
+	return Object.fromEntries(
+		paths
+			.map((path): readonly [string, string] => [
+				relative(root, path).split(sep).join('/'),
+				readFileSync(path, 'utf8'),
+			])
+			.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+	)
+}
+
+/**
+ * Parses JSON text.
+ *
+ * @param text - The text to parse
+ * @returns The parsed value; `undefined` for text that is not JSON
+ */
+export function parseStoreJSON(text: string): unknown {
+	try {
+		const value: unknown = JSON.parse(text)
+		return value
+	} catch {
+		return undefined
+	}
+}
+
+/** Represents the journey one run saved and the runs of it, as the file stores wrote them. */
+export interface StoreJourneyEvidence {
+	/** The journey's name, which is its directory under the root. */
+	readonly name: string
+	/** The revision `journey.json` carries. */
+	readonly revision: number | undefined
+	/** The journey `journey.json` carries. */
+	readonly journey: BrowserJourney
+	/** Each `runs/<id>/run.json` of the journey that parses as a run, in path order. */
+	readonly runs: readonly BrowserRun[]
+}
+
+/**
+ * Extracts the one saved journey and its runs from the files a run left.
+ *
+ * @param files - A transcript's files, by path under the journey root
+ * @returns The journey, its revision, and its runs; `undefined` when the files hold no
+ * `journey.json`, more than one, or one that does not parse as a stored journey
+ */
+export function extractJourneyEvidence(
+	files: Readonly<Record<string, string>>,
+): StoreJourneyEvidence | undefined {
+	const saved = Object.keys(files).filter((path) => /^[^/]+\/journey\.json$/.test(path))
+	const path = saved[0]
+	if (saved.length !== 1 || path === undefined) return undefined
+	const stored = parseStoreJSON(files[path] ?? '')
+	if (!isRecord(stored)) return undefined
+	const journey = parseBrowserJourney(stored['journey'])
+	if (journey === undefined) return undefined
+	const name = path.slice(0, path.indexOf('/'))
+	const revision = stored['revision']
+	return {
+		name,
+		revision: typeof revision === 'number' ? revision : undefined,
+		journey,
+		runs: Object.entries(files)
+			.filter(([run]) => run.startsWith(`${name}/runs/`) && run.endsWith('/run.json'))
+			.flatMap(([, text]) => {
+				const run = parseBrowserRun(parseStoreJSON(text))
+				return run === undefined ? [] : [run]
+			}),
+	}
+}
+
+/**
+ * Finds the parameter the checkout's name step binds.
+ *
+ * @param journey - The journey to read
+ * @returns The name of the declared parameter that carries a default and that the `text` of a
+ * `type` step into {@link STORE_NAME_FIELD} binds; `undefined` when none does
+ */
+export function findBoundParameter(journey: BrowserJourney): string | undefined {
+	return Object.keys(journey.parameters).find(
+		(name) =>
+			journey.parameters[name]?.default !== undefined &&
+			journey.steps.some((step) => matchesNameBinding(step, name)),
+	)
+}
+
+/**
+ * Checks whether a step types a parameter into the checkout's name field.
+ *
+ * @param step - The step to read
+ * @param parameter - The parameter's name
+ * @returns True if the step is a `type` into {@link STORE_NAME_FIELD} whose `text` binds the
+ * parameter; false otherwise
+ */
+export function matchesNameBinding(step: BrowserJourneyStep, parameter: string): boolean {
+	const text = step.arguments['text']
+	return (
+		step.action === 'type' &&
+		step.target?.name === STORE_NAME_FIELD &&
+		isRecord(text) &&
+		text['parameter'] === parameter
+	)
+}
+
+/**
+ * Lists the step lines of a journey listing that submit the checkout.
+ *
+ * @param listing - A `save`, `journeys`, or `edit` result, or a `renderBrowserJourney` listing
+ * @returns Each line, in order, that types with `submit`, presses Enter, or clicks
+ * {@link STORE_ORDER_BUTTON}
+ */
+export function filterSubmissionLines(listing: string): readonly string[] {
+	return listing
+		.split('\n')
+		.filter(
+			(line) =>
+				/^s[1-9]\d* type .*, submit$/.test(line) ||
+				/^s[1-9]\d* press Enter$/.test(line) ||
+				line.endsWith(` click button "${STORE_ORDER_BUTTON}"`),
+		)
+}
+
+/**
+ * Renders the journey task's edit turn from the listing the run's calls last returned.
+ *
+ * @param calls - The run's calls so far, in order
+ * @returns The turn that spells the batch out with the ids of the name step and of the second
+ * submission that the last successful `save` or `journeys` listing shows; the turn that names
+ * both steps in words when that listing holds no name step or fewer than two submissions
+ */
+export function renderJourneyEdit(calls: readonly StoreCall[]): string {
+	const listing =
+		calls.findLast((call) => call.success && (call.name === 'save' || call.name === 'journeys'))
+			?.text ?? ''
+	const name = listing
+		.split('\n')
+		.find(
+			(line) =>
+				/^s[1-9]\d* type /.test(line) && line.includes(` into textbox "${STORE_NAME_FIELD}"`),
+		)
+	const second = filterSubmissionLines(listing)[1]
+	if (name === undefined || second === undefined) {
+		return (
+			`Edit ${STORE_JOURNEY_NAME} in one call: declare the parameter ${STORE_JOURNEY_PARAMETER} with the default ${STORE_BUYER}, ` +
+			`update the step that types the name so its text is {"parameter": "${STORE_JOURNEY_PARAMETER}"}, ` +
+			'and remove the second submission.'
+		)
+	}
+	return (
+		`Edit ${STORE_JOURNEY_NAME} in one call with the edits ` +
+		`[{"operation": "declare", "name": "${STORE_JOURNEY_PARAMETER}", "parameter": {"default": "${STORE_BUYER}"}}, ` +
+		`{"operation": "update", "arguments": {"text": {"parameter": "${STORE_JOURNEY_PARAMETER}"}}, "id": "${name.slice(0, name.indexOf(' '))}"}, ` +
+		`{"operation": "remove", "id": "${second.slice(0, second.indexOf(' '))}"}].`
+	)
+}
+
+/**
+ * Parses an `edit` call's `edits` argument the way the `edit` tool reads it.
+ *
+ * @param value - The argument as the model sent it
+ * @returns The array as given, or the array a JSON string carries; `undefined` for a string that
+ * is not JSON, JSON that is not an array, and any other value
+ */
+export function parseJourneyEdits(value: unknown): readonly unknown[] | undefined {
+	const edits = typeof value === 'string' ? parseStoreJSON(value) : value
+	return Array.isArray(edits) ? edits : undefined
+}
+
+/**
+ * Checks whether a call is a successful `edit` holding a `declare`, an `update`, and a `remove`.
+ *
+ * @param call - The call to read
+ * @returns True if the call is a successful `edit` whose `edits`, read through
+ * {@link parseJourneyEdits}, hold all three operations; false otherwise
+ */
+export function matchesJourneyBatch(call: StoreCall): boolean {
+	const edits = parseJourneyEdits(call.arguments['edits'])
+	if (!call.success || call.name !== 'edit' || edits === undefined) return false
+	const operations = new Set(edits.map((edit) => (isRecord(edit) ? edit['operation'] : undefined)))
+	return operations.has('declare') && operations.has('update') && operations.has('remove')
+}
+
+/**
+ * Returns the refused `record` and `save` calls that follow a run's first successful `save`.
+ *
+ * @param calls - The run's calls, in order
+ * @returns Each unsuccessful `record` or `save` call after the first successful `save`, in order;
+ * empty when no `save` succeeded
+ * @remarks After a save, the toolset's refusals of `record` and `save` name `journeys`, `edit`,
+ * and `replay` as the next call, so the count is how often the model looped past them.
+ */
+export function findJourneyLoops(calls: readonly StoreCall[]): readonly StoreCall[] {
+	const saved = calls.findIndex((call) => call.success && call.name === 'save')
+	if (saved === -1) return []
+	return calls
+		.slice(saved + 1)
+		.filter((call) => !call.success && (call.name === 'record' || call.name === 'save'))
+}
+
+/** Lists the journey tools in the order the journey task calls them. */
+export const STORE_JOURNEY_SEQUENCE: readonly string[] = Object.freeze([
+	'record',
+	'save',
+	'journeys',
+	'edit',
+	'replay',
+])
+
+/**
+ * Checks whether a run called the journey tools in the journey task's order.
+ *
+ * @param calls - The run's calls, in order
+ * @returns True if a successful call of each {@link STORE_JOURNEY_SEQUENCE} tool follows the
+ * previous one, the `edit` one {@link matchesJourneyBatch} holds for and the `replay` one carrying
+ * `inputs`; false otherwise
+ */
+export function matchesJourneySequence(calls: readonly StoreCall[]): boolean {
+	let index = -1
+	for (const name of STORE_JOURNEY_SEQUENCE) {
+		index = calls.findIndex(
+			(call, position) =>
+				position > index &&
+				call.success &&
+				call.name === name &&
+				(name !== 'edit' || matchesJourneyBatch(call)) &&
+				(name !== 'replay' || isRecord(call.arguments['inputs'])),
+		)
+		if (index === -1) return false
+	}
+	return true
+}
+
+/**
+ * Checks whether the run's edit removed a later submission and left one.
+ *
+ * @param calls - The run's calls, in order
+ * @param listing - The listing of the journey as stored after the run
+ * @returns True if the listing the last successful `save` before the first
+ * {@link matchesJourneyBatch} edit returned holds two or more submissions, that edit removes the
+ * id of one after the first, and the stored listing holds exactly one; false otherwise
+ */
+export function matchesRemovedSubmission(calls: readonly StoreCall[], listing: string): boolean {
+	const index = calls.findIndex(matchesJourneyBatch)
+	const edits = parseJourneyEdits(calls[index]?.arguments['edits'])
+	const saved = calls
+		.slice(0, Math.max(index, 0))
+		.findLast((call) => call.success && call.name === 'save')
+	if (saved === undefined || edits === undefined) return false
+	const later = filterSubmissionLines(saved.text).slice(1)
+	return (
+		filterSubmissionLines(listing).length === 1 &&
+		edits.some(
+			(edit) =>
+				isRecord(edit) &&
+				edit['operation'] === 'remove' &&
+				later.some((line) => line.startsWith(`${String(edit['id'])} `)),
+		)
+	)
+}
+
+/**
+ * Checks whether a journey run holds its oracle.
+ *
+ * @param transcript - The run's transcript
+ * @param buyer - The input the replay must carry
+ * @returns True if the run ended without a failure, {@link matchesJourneySequence} holds, the files
+ * hold one saved journey whose name step binds a defaulted parameter, {@link matchesRemovedSubmission}
+ * holds for it, a run of its stored revision completed with the buyer as that parameter's input,
+ * and the store recorded exactly one order carrying the buyer; false otherwise
+ */
+export function matchesJourneyOracle(transcript: StoreTranscript, buyer: string): boolean {
+	if (transcript.failure !== undefined || !matchesJourneySequence(transcript.calls)) return false
+	const evidence = extractJourneyEvidence(transcript.files)
+	if (evidence === undefined) return false
+	const parameter = findBoundParameter(evidence.journey)
+	return (
+		parameter !== undefined &&
+		matchesRemovedSubmission(transcript.calls, renderBrowserJourney(evidence.journey)) &&
+		evidence.runs.some(
+			(run) =>
+				run.outcome === 'complete' &&
+				run.revision === evidence.revision &&
+				run.inputs[parameter] === buyer,
+		) &&
+		transcript.state.orders.filter((order) => order === buyer).length === 1
+	)
 }

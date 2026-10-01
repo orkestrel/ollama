@@ -26,6 +26,19 @@
  * the transcript records that as `mentioned` and the proof does not assert it, as it does not
  * assert the click task's answer.
  *
+ * Every toolset carries the journey tools over file stores under a scratch directory in
+ * `tmp/browsers`, so the five page tasks run with `record`, `save`, `journeys`, `edit`, `replay`,
+ * and `type`'s `secret` advertised beside the page vocabulary. Each transcript records the prompt
+ * tokens the first turn spends with no tool, the page vocabulary, and every tool, how many calls
+ * broke the advertised parameters, and how many `record` and `save` calls the toolset refused
+ * after a save (`loops`). The journey task sends five user turns in one conversation: record the
+ * form task's flow, save it, list it, edit it in one batch, and replay it with an input; the edit
+ * turn spells the batch out with the step ids the last listing shows (`renderJourneyEdit`). Its
+ * oracle is one order in the store carrying the input and the journey and run files under the
+ * root. Every attempt's model takes `STORE_BOUNDS.context` as the Ollama `num_ctx`, because the
+ * daemon's default 4 096-token window cuts a prompt past it to about half, and with the journey
+ * tools advertised a page task's third turn passes it.
+ *
  * The WebMCP task is not run: the Chromium 141.0.7390.37 on this host answers `WebMCP.enable` with
  * CDP error -32601 and `Schema.getDomains` lists no `WebMCP` domain, so no page registers a tool
  * the toolset could adopt.
@@ -37,22 +50,28 @@
  *
  * Each model turn takes `STORE_BOUNDS.predict` (256) tokens rather than
  * `TOOL_LOOP_OPTIONS.num_predict` (64): the model narrates before it calls a tool, and 64 tokens
- * cut that narration before the call. `TOOL_LOOP_OPTIONS` carries no timeout, so the agent's
- * deadline is `STORE_BOUNDS.run`.
+ * cut that narration before the call. The agent's deadline for each user turn is
+ * `STORE_BOUNDS.run`, and the provider's for each model turn is `STORE_BOUNDS.turn`.
  */
 
 import type { BrowserInterface } from '@orkestrel/browser/server'
 import type { StoreAttempt, StoreTask, StoreTranscript } from '../setupStore.js'
-import { BROWSER_TOOL_LIMIT } from '@orkestrel/browser'
+import { BROWSER_TOOL_LIMIT, renderBrowserJourney } from '@orkestrel/browser'
 import { createBrowser } from '@orkestrel/browser/server'
-import { retryUntil } from '@orkestrel/test'
+import { requireValue, retryUntil } from '@orkestrel/test'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { reservePort } from '../setupServer.js'
 import {
 	attemptStoreTask,
+	extractJourneyEvidence,
+	filterSubmissionLines,
+	findBoundParameter,
 	findContinuedRead,
 	findUnlistedReferences,
+	matchesJourneyOracle,
+	matchesJourneySequence,
 	matchesPagingOracle,
+	matchesRemovedSubmission,
 	matchesSearchOracle,
 	matchesStalledSearch,
 	matchesStoreOracles,
@@ -63,6 +82,8 @@ import {
 	STORE_BUYER,
 	STORE_CODE,
 	STORE_FACT,
+	STORE_JOURNEY_BOUNDS,
+	STORE_JOURNEY_BUYER,
 	STORE_NAMED,
 	STORE_POLICY_TOKEN,
 	STORE_QUERY,
@@ -80,14 +101,20 @@ const EXECUTABLE = requirePageBrowser().executable
 
 let browser: BrowserInterface | undefined
 
-/** Runs one attempt of a task in the browser this file launched. */
+/**
+ * Runs one attempt of a task in the browser this file launched, with the store model at
+ * `STORE_BOUNDS.context` and `STORE_BOUNDS.turn`; a one-token meter at the same window measures
+ * its tool lists.
+ */
 function attempt(task: StoreTask, number: number): Promise<StoreAttempt> {
 	if (browser === undefined) throw new Error('the store proof launched no browser')
+	const settings = { temperature: 0, context: STORE_BOUNDS.context, turn: STORE_BOUNDS.turn }
 	return attemptStoreTask(
 		browser,
 		task,
 		number,
-		createLiveOllama({ temperature: 0, predict: STORE_BOUNDS.predict }),
+		createLiveOllama({ ...settings, predict: STORE_BOUNDS.predict }),
+		createLiveOllama({ ...settings, predict: 1 }),
 	)
 }
 
@@ -102,22 +129,22 @@ function expectSharedOracles(transcript: StoreTranscript): void {
 	}
 }
 
+beforeAll(async () => {
+	if (!READY) return
+	browser = createBrowser({
+		executable: EXECUTABLE,
+		headless: true,
+		args: PAGE_BROWSER_ARGS,
+		cdp: { port: await reservePort(), discover: false },
+	})
+	await browser.connect()
+})
+
+afterAll(async () => {
+	await browser?.destroy()
+})
+
 describe('Browser vocabulary (live) — the store tasks', () => {
-	beforeAll(async () => {
-		if (!READY) return
-		browser = createBrowser({
-			executable: EXECUTABLE,
-			headless: true,
-			args: PAGE_BROWSER_ARGS,
-			cdp: { port: await reservePort(), discover: false },
-		})
-		await browser.connect()
-	})
-
-	afterAll(async () => {
-		await browser?.destroy()
-	})
-
 	beforeEach((context) => {
 		context.skip(!READY, OLLAMA_ABSENT_REASON)
 	})
@@ -236,5 +263,44 @@ describe('Browser vocabulary (live) — the store tasks', () => {
 			expectSharedOracles(transcript)
 		},
 		STORE_BOUNDS.retry,
+	)
+})
+
+describe('Browser vocabulary (live) — the journey task', () => {
+	beforeEach((context) => {
+		context.skip(!READY, OLLAMA_ABSENT_REASON)
+	})
+
+	it(
+		'records the checkout, lists it, edits it in one batch, and replays it with the input',
+		async () => {
+			let count = 0
+			const { transcript } = await retryUntil(
+				'record, list, edit, and replay the checkout journey',
+				() => attempt(STORE_TASKS.journey, (count += 1)),
+				(run) => matchesJourneyOracle(run.transcript, STORE_JOURNEY_BUYER),
+				{ attempts: STORE_BOUNDS.attempts, budget: STORE_JOURNEY_BOUNDS.budget },
+			)
+			const evidence = requireValue(extractJourneyEvidence(transcript.files))
+			const parameter = requireValue(findBoundParameter(evidence.journey))
+			const listing = renderBrowserJourney(evidence.journey)
+			const run = evidence.runs.find(
+				(candidate) => candidate.inputs[parameter] === STORE_JOURNEY_BUYER,
+			)
+			expect(transcript.failure).toBeUndefined()
+			expect(transcript.calls.length).toBeLessThanOrEqual(
+				(1 + STORE_TASKS.journey.followups.length) * STORE_BOUNDS.limit,
+			)
+			expect(matchesJourneySequence(transcript.calls)).toBe(true)
+			expect(evidence.journey.parameters[parameter]?.default).toBeDefined()
+			expect(filterSubmissionLines(listing)).toHaveLength(1)
+			expect(matchesRemovedSubmission(transcript.calls, listing)).toBe(true)
+			expect(run?.outcome).toBe('complete')
+			expect(run?.revision).toBe(evidence.revision)
+			expect(transcript.state.orders.filter((order) => order === STORE_JOURNEY_BUYER)).toEqual([
+				STORE_JOURNEY_BUYER,
+			])
+		},
+		STORE_JOURNEY_BOUNDS.retry,
 	)
 })

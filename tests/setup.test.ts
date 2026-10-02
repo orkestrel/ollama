@@ -1,13 +1,16 @@
 // The shared test infrastructure's own proof, over two subjects: the conversation
-// padding, the throwing summarizer, the workspace seeder, and the page tool definition
-// exported from `tests/setup.ts`, and the host-independent half of `tests/setupServer.ts`
-// — its request-narrowing guards, its refusing transport, its tool fixtures, its
-// agent-stream driver, and its environment readers. Each is real code the module,
-// integration, and live-service suites rely on, so it is proved here rather than trusted.
+// padding, the throwing summarizer, the workspace seeder, the page tool definition, and
+// the timer lead exported from `tests/setup.ts`, and the host-independent half of
+// `tests/setupServer.ts` — its request-narrowing guards, its refusing transport, its tool
+// fixtures, its agent-stream driver, and its environment readers. Each is real code the
+// module, integration, and live-service suites rely on, so it is proved here rather than
+// trusted. The timer lead's control runs real host timers measured on `performance.now()`,
+// armed late in a loop-clock millisecond by the aligner `tests/setupServer.ts` exports.
 //
 // The rest of that surface is proved beside this file. `tests/setupServer.test.ts` owns
 // the Node-resource half of `tests/setupServer.ts`: the recording proxy, the capture
-// wait, the provider-stream driver, and the wire tables that module declares.
+// wait, the provider-stream driver, the wire tables that module declares, and the
+// loop-clock reader and its aligner.
 // `tests/setupService.test.ts` owns the hermetic half of `tests/setupService.ts`, whose
 // live half the `service` project proves against a real daemon.
 //
@@ -18,7 +21,7 @@ import type { AgentResult, Message } from '@orkestrel/agent'
 import type { RecordedRequest } from './setupServer.js'
 import type { ToolContext, ToolResult } from '@orkestrel/tool'
 import { isRecord } from '@orkestrel/contract'
-import { createRecorder } from '@orkestrel/test'
+import { createRecorder, retryUntil, waitForDelay } from '@orkestrel/test'
 import { createWorkspace } from '@orkestrel/workspace'
 import { describe, expect, it } from 'vitest'
 import {
@@ -30,8 +33,10 @@ import {
 	PAGE_TOOL,
 	RECORDING_SUMMARIZER_DIGEST,
 	THROWING_SUMMARIZER_MESSAGE,
+	TIMER_LEAD,
 } from './setup.js'
 import {
+	alignLoopClock,
 	createInsatiableTool,
 	createScriptedAgentStream,
 	createLookupTool,
@@ -445,6 +450,29 @@ describe('PAGE_TOOL', () => {
 		const properties: unknown = parameters.properties
 		if (!isRecord(properties)) throw new Error('PAGE_TOOL declares no parameter properties')
 		expect(Object.keys(properties)).toEqual(['note'])
+	})
+})
+
+describe('TIMER_LEAD', () => {
+	it('covers a real timer that ends short of its duration when armed late in a loop-clock millisecond', async () => {
+		const spans: number[] = []
+		// The control: the full duration fails as a lower bound on at least one aligned span.
+		await retryUntil(
+			'a 10 ms timer armed late in a loop-clock millisecond ending short of 10 ms',
+			async () => {
+				alignLoopClock(0.9)
+				const started = performance.now()
+				const delayed = waitForDelay(10)
+				alignLoopClock()
+				await delayed
+				const span = performance.now() - started
+				spans.push(span)
+				return span
+			},
+			(span) => span < 10,
+			{ attempts: 50, budget: 5_000 },
+		)
+		for (const span of spans) expect(span).toBeGreaterThanOrEqual(10 - TIMER_LEAD)
 	})
 })
 

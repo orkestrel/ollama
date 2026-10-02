@@ -176,3 +176,25 @@ export const PAGE_TOOL: ToolDefinition = Object.freeze({
 		required: ['note'],
 	},
 })
+
+// ── Timer lead ────────────────────────────────────────────────────────────────
+//
+// The allowance an elapsed lower bound over a real host timer subtracts, declared in
+// the host-independent setup file so every project can import it.
+
+/**
+ * Bounds, in whole milliseconds, how far a real host timer can end short of its duration on a
+ * `performance.now()` span that opens before the timer is armed.
+ *
+ * @remarks
+ * Node refreshes libuv's loop clock when it arms a timer, and stamps the timer with that clock
+ * truncated to a whole millisecond. libuv reads `CLOCK_MONOTONIC_COARSE` when that clock ticks
+ * every millisecond, so the stamp can trail the arming by under 1 ms of truncation plus under 1 ms
+ * of coarse tick. The timer fires when the loop clock reaches the stamp plus the duration, so the
+ * span can close up to this lead early. Synchronous work earlier in the arming macrotask does not
+ * widen the shortfall, because the arming refreshes the clock. A timer armed when an earlier one
+ * fires is stamped no earlier than that one's deadline, so a chain of deadlines falls short by at
+ * most this lead in total. Assert a span that waits out `D` milliseconds of deadlines as at least
+ * `D` minus this lead.
+ */
+export const TIMER_LEAD = 2

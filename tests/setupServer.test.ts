@@ -1,14 +1,15 @@
 // The Node-resource half of `tests/setupServer.ts`: the loopback recording proxy, the
 // relay server, the capture wait, the provider-stream driver, the transport fixtures,
-// and the shared wire tables. The narrowing guards, the tool fixtures, and the
-// environment readers that module also exports are asserted by `tests/setup.test.ts`,
-// so this proof does not re-assert them.
+// the shared wire tables, and the loop-clock reader and its aligner. The narrowing guards,
+// the tool fixtures, and the environment readers that module also exports are asserted by
+// `tests/setup.test.ts`, so this proof does not re-assert them.
 //
 // The proxy and relay-server cases run against real sockets on 127.0.0.1 ephemeral
 // ports: a pass-through case forwards to a fixture upstream this file starts, and
 // `createRecordingProxy`'s own default upstream is deliberately unreachable. The
-// transport fixtures drive in-memory responses instead. No Ollama daemon takes part
-// in any of these cases.
+// transport fixtures drive in-memory responses instead. The loop-clock cases run real
+// host timers measured on `performance.now()`. No Ollama daemon takes part in any of
+// these cases.
 
 import type { AgentResult, ProviderDelta, ProviderResult } from '@orkestrel/agent'
 import type { BrowserCallOptions } from '@orkestrel/browser'
@@ -27,10 +28,11 @@ import { createNDJSONParser } from '@orkestrel/ndjson'
 import { describe, expect, it } from 'vitest'
 import { createScratch } from '@orkestrel/test/server'
 import { createServer as createNetServer } from 'node:net'
-import { PAGE_TOOL } from './setup.js'
+import { PAGE_TOOL, TIMER_LEAD } from './setup.js'
 import type { PageAttempt, PageTool } from './setupServer.js'
 import {
 	acceptPageAttempt,
+	alignLoopClock,
 	boundPageAttempt,
 	buildImportMap,
 	buildRelayRoute,
@@ -59,6 +61,7 @@ import {
 	drive,
 	INSATIABLE_TOOL_CHUNKS,
 	insatiableResult,
+	readLoopClock,
 	readModuleEntry,
 	readOutcome,
 	readRequest,
@@ -271,16 +274,15 @@ const DRIVEN_DELTAS: readonly ProviderDelta[] = [
 const EMPTY_RESULT: ProviderResult = { content: '' }
 
 /**
- * The scheduling allowance the elapsed assertions on a bounded attempt add to their nominal,
+ * The scheduling allowance the elapsed assertions on a bounded attempt add above their nominal,
  * in milliseconds.
  *
  * The property those cases prove is timer-bounded completion, not the nominal sum: a Vitest
- * worker sharing a host with its siblings reaches a fired timer's callback late, and a host timer
- * itself rounds up to its own granularity. So each case asserts that the attempt took at least
- * the deadlines it had to wait out and no more than those deadlines plus this allowance — an
- * interval that excludes both an attempt that returned before its deadlines and an attempt that
- * awaited something unbounded, which is the defect these cases exist for and which ends at the
- * case timeout rather than anywhere near this figure.
+ * worker sharing a host with its siblings reaches a fired timer's callback late. So each case
+ * asserts that the attempt took no more than the deadlines it had to wait out plus this
+ * allowance, which excludes an attempt that awaited something unbounded — the defect these cases
+ * exist for, which ends at the case timeout rather than anywhere near this figure.
+ * {@link TIMER_LEAD} owns the opposite bound, an attempt that returned before its deadlines.
  */
 const SCHEDULE_SLACK = 500
 
@@ -714,6 +716,34 @@ describe('readOutcome', () => {
 	})
 })
 
+describe('readLoopClock', () => {
+	it('advances in whole milliseconds by the time performance.now() measures between readings', () => {
+		const opened = performance.now()
+		const before = readLoopClock()
+		const inner = performance.now()
+		alignLoopClock(5)
+		const outer = performance.now()
+		const after = readLoopClock()
+		const closed = performance.now()
+		expect(Number.isInteger(before)).toBe(true)
+		expect(Number.isInteger(after)).toBe(true)
+		// Each reading truncates by under 1 ms and a coarse clock trails by under 1 ms more.
+		expect(after - before).toBeGreaterThan(outer - inner - 2)
+		expect(after - before).toBeLessThan(closed - opened + 2)
+	})
+})
+
+describe('alignLoopClock', () => {
+	it('returns after the loop clock ticks and the offset elapses on performance.now()', () => {
+		const before = readLoopClock()
+		const opened = performance.now()
+		alignLoopClock(0.5)
+		const closed = performance.now()
+		expect(readLoopClock()).toBeGreaterThan(before)
+		expect(closed - opened).toBeGreaterThanOrEqual(0.5)
+	})
+})
+
 describe('expirePageAttempt', () => {
 	it('rejects with the attempt-wide deadline error and parks forever while the allowance holds', async () => {
 		// The losing side of the race `boundPageAttempt` runs. Its whole job is the translation:
@@ -932,7 +962,7 @@ describe('boundPageAttempt', () => {
 		// The elapsed total is the claim: the attempt waits out both deadlines in turn and ends
 		// there, rather than returning early or waiting on what it cannot reach.
 		const elapsed = performance.now() - parked
-		expect(elapsed).toBeGreaterThanOrEqual(bounds.attempt + bounds.release)
+		expect(elapsed).toBeGreaterThanOrEqual(bounds.attempt + bounds.release - TIMER_LEAD)
 		expect(elapsed).toBeLessThan(bounds.attempt + bounds.release + SCHEDULE_SLACK)
 	})
 
@@ -977,7 +1007,7 @@ describe('boundPageAttempt', () => {
 		// only deadline that elapses: the attempt waits it out and ends there, well inside the
 		// allowance it never spends.
 		const elapsed = performance.now() - held
-		expect(elapsed).toBeGreaterThanOrEqual(bounds.release)
+		expect(elapsed).toBeGreaterThanOrEqual(bounds.release - TIMER_LEAD)
 		expect(elapsed).toBeLessThan(bounds.release + SCHEDULE_SLACK)
 	})
 

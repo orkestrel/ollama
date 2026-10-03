@@ -81,7 +81,7 @@
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.59.3",
 		"@orkestrel/abort": "^0.0.12",
-		"@orkestrel/browser": "^0.0.20",
+		"@orkestrel/browser": "^0.0.21",
 		"@orkestrel/guide": "^0.0.22",
 		"@orkestrel/probe": "^0.0.19",
 		"@orkestrel/router": "^0.0.16",

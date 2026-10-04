@@ -3,8 +3,9 @@
 // transcript the attempt leaves. The live half — that a real model drives a real Chromium
 // through the toolset over this store — is `tests/service/browser.test.ts`.
 //
-// What is proven here needs no browser and no daemon: every page's shape read with a plain
-// `fetch`, the per-instance state the pages change, the whole-page reading `read` slices
+// The attempt-isolation proof drives a real browser without a daemon. The other proofs cover
+// every page's shape read with a plain `fetch`, the per-instance state the pages change,
+// the whole-page reading `read` slices
 // (the browser package's own `createBrowserReading` over the served HTML), and every pure
 // reader the live proof asserts through.
 
@@ -17,7 +18,11 @@ import {
 	createBrowserReading,
 	renderBrowserJourney,
 } from '@orkestrel/browser'
-import { createFileBrowserJourneyStore, createFileBrowserRunStore } from '@orkestrel/browser/server'
+import {
+	createBrowser,
+	createFileBrowserJourneyStore,
+	createFileBrowserRunStore,
+} from '@orkestrel/browser/server'
 import { createScratch } from '@orkestrel/test/server'
 import { createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/core'
@@ -88,8 +93,10 @@ import {
 	createRecordingTransport,
 	createScriptedTransport,
 	createThrowingTool,
+	reservePort,
 	wireTools,
 } from './setupServer.js'
+import { PAGE_BROWSER_ARGS, requirePageBrowser } from './setupService.js'
 
 let store: StoreServerInterface
 
@@ -708,7 +715,7 @@ describe('the search pin in tests/service/browser.test.ts', () => {
 		const refusal = new Error('the browser refused a page')
 		const provider = createOllama({ model: 'fixture', url: 'http://127.0.0.1:9' })
 		await expect(
-			attemptStoreTask({ create: () => Promise.reject(refusal) }, STORE_TASKS.search, 1, provider),
+			attemptStoreTask({ isolate: () => Promise.reject(refusal) }, STORE_TASKS.search, 1, provider),
 		).rejects.toBe(refusal)
 	})
 })
@@ -1445,11 +1452,59 @@ describe('converseStore', () => {
 })
 
 describe('attemptStoreTask with a journey root', () => {
+	it('starts consecutive attempts at e1 in a real browser', async () => {
+		const browser = createBrowser({
+			executable: requirePageBrowser().executable,
+			headless: true,
+			args: PAGE_BROWSER_ARGS,
+			cdp: { port: await reservePort(), discover: false },
+		})
+		try {
+			await browser.connect()
+			const contexts = browser.contexts()
+			const seeds: string[] = []
+			for (const attempt of [1, 2]) {
+				const result = await attemptStoreTask(
+					browser,
+					{ ...STORE_TASKS.read, task: 'isolation' },
+					attempt,
+					createOllama({
+						model: 'fixture-model',
+						fetch: createScriptedTransport([{ content: 'Finished.' }]),
+					}),
+				)
+				seeds.push(extractReferences(result.transcript.seed)[0] ?? '')
+				expect(result.store.readCart()).toEqual([])
+				expect(browser.contexts()).toEqual(contexts)
+			}
+			expect(seeds).toEqual(['e1', 'e1'])
+			await expect(
+				attemptStoreTask(
+					browser,
+					{ ...STORE_TASKS.read, task: 'isolation-failure' },
+					1,
+					createOllama({
+						model: 'fixture-model',
+						fetch: async () => new Response('Refused', { status: 401 }),
+					}),
+				),
+			).rejects.toBeInstanceOf(ProviderError)
+			expect(browser.contexts()).toEqual(contexts)
+		} finally {
+			await browser.destroy()
+		}
+	})
+
 	it('removes the root it allocated under tmp/browsers when the page cannot open', async () => {
 		const refusal = new Error('the browser refused a page')
 		const provider = createOllama({ model: 'fixture', url: 'http://127.0.0.1:9' })
 		await expect(
-			attemptStoreTask({ create: () => Promise.reject(refusal) }, STORE_TASKS.journey, 7, provider),
+			attemptStoreTask(
+				{ isolate: () => Promise.reject(refusal) },
+				STORE_TASKS.journey,
+				7,
+				provider,
+			),
 		).rejects.toBe(refusal)
 		expect(readdirSync(journeyPath()).filter((name) => name.startsWith('journey-7-'))).toEqual([])
 	})

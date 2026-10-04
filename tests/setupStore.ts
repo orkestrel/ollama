@@ -1327,10 +1327,10 @@ export function journeyPath(root: URL | string = WORKSPACE_ROOT): string {
 }
 
 /**
- * Runs one attempt of a store task on a fresh page over a fresh store and a fresh journey root,
- * then releases all three.
+ * Runs one attempt of a store task in an isolated browser context over a fresh store and
+ * a fresh journey root, then releases the context, store, and root.
  *
- * @param browser - The connected browser's `create` member, which opens the attempt's page
+ * @param browser - The connected browser's `isolate` member, which creates the attempt's context
  * @param task - The task to run
  * @param attempt - The attempt number, counted from 1
  * @param provider - The model the agent runs
@@ -1341,7 +1341,7 @@ export function journeyPath(root: URL | string = WORKSPACE_ROOT): string {
  * run; the transcript keeps the JSON files the run wrote there.
  */
 export async function attemptStoreTask(
-	browser: Pick<BrowserInterface, 'create'>,
+	browser: Pick<BrowserInterface, 'isolate'>,
 	task: StoreTask,
 	attempt: number,
 	provider: ProviderInterface,
@@ -1353,8 +1353,9 @@ export async function attemptStoreTask(
 	try {
 		const store = await createStoreServer()
 		try {
-			const page = await browser.create()
+			const context = await browser.isolate()
 			try {
+				const page = await context.create()
 				const transcript = await runStoreTask({
 					...task,
 					attempt,
@@ -1366,7 +1367,7 @@ export async function attemptStoreTask(
 				})
 				return { transcript, store }
 			} finally {
-				await page.close()
+				await context.close()
 			}
 		} finally {
 			await store.stop()

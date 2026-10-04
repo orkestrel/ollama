@@ -113,7 +113,7 @@ export const STORE_PRODUCTS: readonly StoreProduct[] = Object.freeze([
 /** Names the shipping cutoff time the catalogue states in its body text. */
 export const STORE_FACT = '2:40 PM'
 
-/** Names the token the shipping policy page states past its first 4 000 distilled characters. */
+/** Names the token the shipping policy page states past its first 4 000 characters. */
 export const STORE_POLICY_TOKEN = 'HARBOR-TIDE-7153'
 
 /** Names the confirmation code the checkout page inserts after an order is placed. */
@@ -131,8 +131,8 @@ export const STORE_CODE_DELAY = 200
 export const STORE_SYSTEM_PROMPT =
 	'You control a web browser with tools and must call a tool before you answer. ' +
 	'The first message shows the page as look returns it; references such as e4 name its elements. ' +
-	'To learn a fact, call read with what set to your question; when its result ends by naming an offset, call read again with that offset. ' +
-	'To search, call type with the search box reference, the words, and submit true. ' +
+	'To learn a fact, call read with search set to words from your question; when its result ends by naming an offset, call read again with that offset. ' +
+	"To use the site's search box, call type with its reference, the words, and submit true. " +
 	'To press a button or follow a link, call click with its reference from the latest result. Never invent a reference. ' +
 	'If text you expect has not appeared, call wait once. ' +
 	'When the task is done, answer in one short sentence.'
@@ -254,9 +254,9 @@ export function renderProductList(products: readonly StoreProduct[]): string {
  * Lists the customer notes the catalogue's aside quotes.
  *
  * @remarks The aside sits between the product list and the story, and its text pushes the
- * shipping paragraph past the first 4 000 characters of the page's outline. The distilled
- * Markdown a `read` returns drops the aside as page furniture, so the paragraph stays inside the
- * first slice a `read` returns while a first `look` bounded at 4 000 characters stops before it.
+ * shipping paragraph past the first 4 000 characters of the page's outline and whole-page
+ * Markdown. A `read` retains the aside by default, so reaching the paragraph requires a search
+ * or a continued slice.
  */
 export const STORE_NOTES: readonly string[] = Object.freeze([
 	'“The kettle has lived on our stove for three winters and still sings like the first morning.” — Maren, Tromsø',
@@ -419,7 +419,7 @@ export function renderCheckout(): string {
 /**
  * Lists the sections of the shipping policy page, each a heading and its paragraphs.
  *
- * @remarks The sections run past 4 000 characters of distilled Markdown before the final
+ * @remarks The sections run past 4 000 characters of whole-page Markdown before the final
  * section that states {@link STORE_POLICY_TOKEN}, so one `read` at offset 0 stops before it.
  */
 export const STORE_POLICY: ReadonlyArray<readonly [heading: string, paragraph: string]> =
@@ -878,7 +878,7 @@ export function attachThinking(
 
 /** Names the arguments of the `look` call a store run is seeded with. */
 export const STORE_SEED_ARGUMENTS: Readonly<Record<string, unknown>> = Object.freeze({
-	what: 'the page',
+	search: '',
 })
 
 /**

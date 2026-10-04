@@ -4,7 +4,7 @@
 // through the toolset over this store — is `tests/service/browser.test.ts`.
 //
 // What is proven here needs no browser and no daemon: every page's shape read with a plain
-// `fetch`, the per-instance state the pages change, the distilled reading `read` slices
+// `fetch`, the per-instance state the pages change, the whole-page reading `read` slices
 // (the browser package's own `createBrowserReading` over the served HTML), and every pure
 // reader the live proof asserts through.
 
@@ -131,14 +131,15 @@ describe('createStoreServer', () => {
 		for (const product of matches) expect(html).not.toContain(product.name)
 	})
 
-	it('states the shipping cutoff once, after the customer notes, inside the first read slice', async () => {
+	it('states the shipping cutoff once, after the customer notes, beyond the first read slice', async () => {
 		const html = await (await fetch(`${store.url}/`)).text()
 		expect(html.split(STORE_FACT)).toHaveLength(2)
 		expect(html.indexOf(STORE_FACT)).toBeGreaterThan(html.indexOf('</aside>'))
 		const markdown = createBrowserReading({ url: `${store.url}/`, title: '', html }).markdown().text
-		expect(markdown).not.toContain('What customers say')
-		expect(markdown.indexOf(STORE_FACT)).toBeGreaterThan(0)
-		expect(markdown.indexOf(STORE_FACT) + STORE_FACT.length).toBeLessThanOrEqual(BROWSER_TOOL_LIMIT)
+		expect(markdown).toContain('What customers say')
+		expect(markdown.split(STORE_FACT)).toHaveLength(2)
+		expect(markdown.indexOf(STORE_FACT)).toBeGreaterThan(markdown.indexOf('What customers say'))
+		expect(markdown.indexOf(STORE_FACT)).toBeGreaterThan(BROWSER_TOOL_LIMIT)
 	})
 
 	it('records each submitted query and lists exactly the products whose name matches it', async () => {
@@ -219,7 +220,7 @@ describe('createStoreServer', () => {
 		expect(store.readOrders()).toEqual(['Grace Hopper'])
 	})
 
-	it('states the policy token past the first 4 000 characters of the distilled policy', async () => {
+	it('states the policy token past the first 4 000 characters of the whole-page policy', async () => {
 		const response = await fetch(`${store.url}/policy`)
 		const html = await response.text()
 		expect(response.status).toBe(200)
@@ -332,7 +333,7 @@ describe('findUnlistedReferences', () => {
 	it('accepts a reference the seed listed, in any spelling the toolset reads', () => {
 		const calls = [
 			buildStoreCall('click', { ref: 'e1' }),
-			buildStoreCall('look', { what: 'x', ref: '[e1]' }),
+			buildStoreCall('look', { search: 'x', ref: '[e1]' }),
 		]
 		expect(findUnlistedReferences('e1 link "Cart"', calls)).toEqual([])
 	})
@@ -340,7 +341,7 @@ describe('findUnlistedReferences', () => {
 	it('flags an invented, a non-string, and an unreadable reference', () => {
 		const invented = buildStoreCall('click', { ref: 'e9' })
 		const numeric = buildStoreCall('click', { ref: 1 })
-		const described = buildStoreCall('look', { what: 'x', ref: 'the search button' })
+		const described = buildStoreCall('look', { search: 'x', ref: 'the search button' })
 		expect(findUnlistedReferences('e1 link "Cart"', [invented, numeric, described])).toEqual([
 			invented,
 			numeric,
@@ -354,7 +355,7 @@ describe('findUnlistedReferences', () => {
 			{ ref: 'e1' },
 			'Clicked e1 link "Cart".\n\ne5 button "Pay"',
 		)
-		const reading = buildStoreCall('read', { what: 'x' }, '# Cart\n\nOne item.')
+		const reading = buildStoreCall('read', { search: 'x' }, '# Cart\n\nOne item.')
 		const stale = buildStoreCall('click', { ref: 'e1' })
 		const fresh = buildStoreCall('click', { ref: 'e5' })
 		expect(findUnlistedReferences('e1 link "Cart"', [receipt, reading, fresh, stale])).toEqual([
@@ -363,7 +364,7 @@ describe('findUnlistedReferences', () => {
 	})
 
 	it('flags nothing for calls that carry no reference', () => {
-		expect(findUnlistedReferences('', [buildStoreCall('read', { what: 'x' })])).toEqual([])
+		expect(findUnlistedReferences('', [buildStoreCall('read', { search: 'x' })])).toEqual([])
 	})
 })
 
@@ -388,17 +389,17 @@ describe('matchesStoreOracles', () => {
 	it('fails a run with no call, over the limit, with an unlisted reference, or with an oversized body', () => {
 		expect(matchesStoreOracles(buildStoreTranscript([]))).toBe(false)
 		const many = Array.from({ length: STORE_BOUNDS.limit + 1 }, () =>
-			buildStoreCall('read', { what: 'x' }),
+			buildStoreCall('read', { search: 'x' }),
 		)
 		expect(matchesStoreOracles(buildStoreTranscript(many))).toBe(false)
 		expect(
 			matchesStoreOracles(buildStoreTranscript([buildStoreCall('click', { ref: 'e2' })])),
 		).toBe(false)
-		const oversized = buildStoreCall('read', { what: 'x' }, 'x'.repeat(BROWSER_TOOL_LIMIT + 1))
+		const oversized = buildStoreCall('read', { search: 'x' }, 'x'.repeat(BROWSER_TOOL_LIMIT + 1))
 		expect(matchesStoreOracles(buildStoreTranscript([oversized]))).toBe(false)
 		const bounded = buildStoreCall(
 			'read',
-			{ what: 'x' },
+			{ search: 'x' },
 			`${'x'.repeat(BROWSER_TOOL_LIMIT)}\n\n[characters 0–4000 of 9000; call read with offset 4000 for more]`,
 		)
 		expect(matchesStoreOracles(buildStoreTranscript([bounded]))).toBe(true)
@@ -409,7 +410,7 @@ describe('writeTranscript', () => {
 	it('writes the transcript as JSON at the path its task and attempt name, under the root', () => {
 		const scratch = createScratch({ prefix: 'store-transcript-' })
 		try {
-			const transcript = buildStoreTranscript([buildStoreCall('read', { what: 'x' }, '# Store')])
+			const transcript = buildStoreTranscript([buildStoreCall('read', { search: 'x' }, '# Store')])
 			const path = writeTranscript(transcript, scratch.path)
 			expect(path).toBe(transcriptPath('fixture', 1, scratch.path))
 			expect(path.endsWith('fixture-1.json')).toBe(true)
@@ -451,15 +452,15 @@ const FIRST_SLICE = '# Policy\n\n[characters 0–3998 of 6250; call read with of
 
 describe('findContinuedRead', () => {
 	it('finds the read continued at the offset an earlier footer named whose slice holds the text', () => {
-		const first = buildStoreCall('read', { what: 'x' }, FIRST_SLICE)
-		const miss = buildStoreCall('read', { what: 'x', offset: 3998 }, '# Returns')
+		const first = buildStoreCall('read', { search: 'x' }, FIRST_SLICE)
+		const miss = buildStoreCall('read', { search: 'x', offset: 3998 }, '# Returns')
 		const failed = {
-			...buildStoreCall('read', { what: 'x', offset: 3998 }, STORE_POLICY_TOKEN),
+			...buildStoreCall('read', { search: 'x', offset: 3998 }, STORE_POLICY_TOKEN),
 			success: false,
 		}
 		const hit = buildStoreCall(
 			'read',
-			{ what: 'x', offset: '3998' },
+			{ search: 'x', offset: '3998' },
 			`Quote ${STORE_POLICY_TOKEN}.`,
 		)
 		expect(findContinuedRead([first, miss, failed, hit], STORE_POLICY_TOKEN)).toBe(hit)
@@ -467,10 +468,10 @@ describe('findContinuedRead', () => {
 	})
 
 	it('refuses an offset no earlier footer named, and a look carrying the text', () => {
-		const first = buildStoreCall('read', { what: 'x' }, FIRST_SLICE)
-		const guessed = buildStoreCall('read', { what: 'x', offset: 4000 }, STORE_POLICY_TOKEN)
-		const early = buildStoreCall('read', { what: 'x', offset: 3998 }, STORE_POLICY_TOKEN)
-		const look = buildStoreCall('look', { what: 'x', offset: 3998 }, STORE_POLICY_TOKEN)
+		const first = buildStoreCall('read', { search: 'x' }, FIRST_SLICE)
+		const guessed = buildStoreCall('read', { search: 'x', offset: 4000 }, STORE_POLICY_TOKEN)
+		const early = buildStoreCall('read', { search: 'x', offset: 3998 }, STORE_POLICY_TOKEN)
+		const look = buildStoreCall('look', { search: 'x', offset: 3998 }, STORE_POLICY_TOKEN)
 		expect(findContinuedRead([first, guessed, look], STORE_POLICY_TOKEN)).toBeUndefined()
 		expect(findContinuedRead([early, first], STORE_POLICY_TOKEN)).toBeUndefined()
 	})
@@ -479,8 +480,8 @@ describe('findContinuedRead', () => {
 describe('matchesPagingOracle', () => {
 	it('fails a run whose continued read lacks the token', () => {
 		const transcript = buildStoreTranscript([
-			buildStoreCall('read', { what: 'x' }, FIRST_SLICE),
-			buildStoreCall('read', { what: 'x', offset: 3998 }, '# Returns'),
+			buildStoreCall('read', { search: 'x' }, FIRST_SLICE),
+			buildStoreCall('read', { search: 'x', offset: 3998 }, '# Returns'),
 		])
 		expect(
 			matchesPagingOracle({ ...transcript, answer: STORE_POLICY_TOKEN }, STORE_POLICY_TOKEN),
@@ -489,8 +490,8 @@ describe('matchesPagingOracle', () => {
 
 	it('holds for a run whose continued read has the token though its answer omits it', () => {
 		const transcript = buildStoreTranscript([
-			buildStoreCall('read', { what: 'x' }, FIRST_SLICE),
-			buildStoreCall('read', { what: 'x', offset: 3998 }, `Quote ${STORE_POLICY_TOKEN}.`),
+			buildStoreCall('read', { search: 'x' }, FIRST_SLICE),
+			buildStoreCall('read', { search: 'x', offset: 3998 }, `Quote ${STORE_POLICY_TOKEN}.`),
 		])
 		expect(
 			matchesPagingOracle(
@@ -502,8 +503,8 @@ describe('matchesPagingOracle', () => {
 
 	it('fails a run that breaks a shared oracle', () => {
 		const transcript = buildStoreTranscript([
-			buildStoreCall('read', { what: 'x' }, FIRST_SLICE),
-			buildStoreCall('read', { what: 'x', offset: 3998 }, STORE_POLICY_TOKEN),
+			buildStoreCall('read', { search: 'x' }, FIRST_SLICE),
+			buildStoreCall('read', { search: 'x', offset: 3998 }, STORE_POLICY_TOKEN),
 		])
 		expect(
 			matchesPagingOracle({ ...transcript, failure: 'provider error: 500' }, STORE_POLICY_TOKEN),
@@ -570,7 +571,7 @@ e48 link "Copper Kettle"`
 const STALLED_SEARCH: StoreTranscript = {
 	...buildStoreTranscript(
 		[
-			buildStoreCall('look', { what: 'kettle products' }, SEARCH_SEED),
+			buildStoreCall('look', { search: 'kettle products' }, SEARCH_SEED),
 			buildStoreCall('type', { ref: 'e35', text: 'kettles', submit: true }, KETTLE_RESULTS),
 		],
 		SEARCH_SEED,
@@ -662,7 +663,7 @@ describe('matchesStalledSearch', () => {
 		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, failed] })).toBe(false)
 		const unsubmitted = { ...type, arguments: { ref: 'e35', text: 'kettles' } }
 		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, unsubmitted] })).toBe(false)
-		const reread = buildStoreCall('read', { what: 'kettle products' }, '# Harbor Goods')
+		const reread = buildStoreCall('read', { search: 'kettle products' }, '# Harbor Goods')
 		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, type, reread] })).toBe(false)
 	})
 })
@@ -760,7 +761,7 @@ const JOURNEY_CALLS = [
 	buildStoreCall('save', { description: 'Place an order at checkout.' }, SAVED_LISTING),
 	buildStoreCall(
 		'journeys',
-		{ what: 'saved journeys' },
+		{ search: 'saved journeys' },
 		SAVED_LISTING.split('\n').slice(2).join('\n'),
 	),
 	buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: EDITS }),
@@ -826,6 +827,7 @@ describe('inferPageTools', () => {
 		expect(page.map((definition) => definition.name)).toEqual([
 			'look',
 			'read',
+			'plain',
 			'click',
 			'type',
 			'press',
@@ -859,7 +861,7 @@ describe('findMalformedCalls', () => {
 					...JOURNEY_CALLS,
 					buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: JSON.stringify(EDITS) }),
 					buildStoreCall('type', { ref: 'e4', text: STORE_BUYER, submit: true, secret: false }),
-					buildStoreCall('read', { what: 'the code', offset: 4000 }),
+					buildStoreCall('read', { search: 'the code', offset: 4000 }),
 				],
 				definitions,
 			),
@@ -871,11 +873,11 @@ describe('findMalformedCalls', () => {
 			buildStoreCall('checkout', { name: STORE_BUYER }),
 			buildStoreCall('look', {}),
 			buildStoreCall('type', { ref: 'e4', text: STORE_BUYER, submit: 'true' }),
-			buildStoreCall('look', { what: 'the page', ref: 'e4' }),
+			buildStoreCall('look', { search: 'the page', ref: 'e4' }),
 			buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: 3 }),
 			buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: [{ id: 's3' }] }),
 			buildStoreCall('replay', { journey: STORE_JOURNEY_NAME, inputs: STORE_JOURNEY_BUYER }),
-			buildStoreCall('read', { what: 'the code', offset: 1.5 }),
+			buildStoreCall('read', { search: 'the code', offset: 1.5 }),
 		]
 		expect(findMalformedCalls(malformed, definitions)).toEqual(malformed)
 	})

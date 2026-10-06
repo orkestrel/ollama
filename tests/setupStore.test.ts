@@ -10,12 +10,20 @@
 // reader the live proof asserts through.
 
 import type { BrowserJourney } from '@orkestrel/browser'
-import type { StoreServerInterface, StoreTranscript } from './setupStore.js'
+import type {
+	StoreCall,
+	StoreServerInterface,
+	StoreTiming,
+	StoreTranscript,
+} from './setupStore/types.js'
 import { DEFAULT_PROVIDER_TIMEOUT, ProviderError } from '@orkestrel/agent'
 import {
 	BROWSER_TOOL_COPY,
 	BROWSER_TOOL_LIMIT,
 	createBrowserReading,
+	createBrowserToolset,
+	scanBrowserLines,
+	BROWSER_JOURNEY_TOOL_NAMES,
 	renderBrowserJourney,
 } from '@orkestrel/browser'
 import {
@@ -23,10 +31,11 @@ import {
 	createFileBrowserJourneyStore,
 	createFileBrowserRunStore,
 } from '@orkestrel/browser/server'
+import { requireValue } from '@orkestrel/test'
 import { createScratch } from '@orkestrel/test/server'
 import { createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/core'
-import { readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
 	attachThinking,
@@ -38,8 +47,10 @@ import {
 	computeRefusals,
 	converseStore,
 	createStoreServer,
+	createTimedProvider,
+	createTimedTools,
 	escapeMarkup,
-	extractFooterOffset,
+	extractFooterLine,
 	extractJourneyEvidence,
 	extractReferences,
 	filterNamedProducts,
@@ -58,7 +69,14 @@ import {
 	matchesJourneySequence,
 	matchesNameBinding,
 	matchesPagingOracle,
-	matchesRemovedSubmission,
+	matchesProducts,
+	matchesShippingOracle,
+	matchesCartOracle,
+	matchesCheckoutOracle,
+	STORE_POLICY,
+	STORE_SEED_ARGUMENTS,
+	STORE_PREDICATES,
+	matchesRemovedCart,
 	matchesSearchOracle,
 	matchesStalledSearch,
 	matchesStoreOracles,
@@ -99,6 +117,419 @@ import {
 import { PAGE_BROWSER_ARGS, requirePageBrowser } from './setupService.js'
 
 let store: StoreServerInterface
+
+describe('real line projection', () => {
+	it('records a cart click and one submission, removes the click, and replays exactly one order for the other buyer', async () => {
+		const fresh = await createStoreServer()
+		const root = createScratch({ parent: journeyPath(), prefix: 'journey-proof-' })
+		const browser = createBrowser({
+			executable: requirePageBrowser().executable,
+			headless: true,
+			args: PAGE_BROWSER_ARGS,
+			cdp: { port: await reservePort(), discover: false },
+		})
+		try {
+			await browser.connect()
+			const context = await browser.isolate()
+			const page = await context.create()
+			await page.navigate(fresh.url)
+			const tools = createBrowserToolset(page, {
+				journeys: {
+					store: createFileBrowserJourneyStore({ root: root.path }),
+					runs: createFileBrowserRunStore({ root: root.path }),
+				},
+			})
+			try {
+				await tools.start()
+				const seed = renderToolText(
+					await tools.tools.execute({ id: 'seed', name: 'read', arguments: { from: 1 } }),
+				)
+				const calls: StoreCall[] = []
+				for (const action of [
+					'record',
+					'Cart',
+					'Checkout',
+					'Full name',
+					'save',
+					'journeys',
+					'edit',
+					'replay',
+				]) {
+					let name = action
+					let args: Readonly<Record<string, unknown>> = {}
+					if (action === 'record') args = { journey: STORE_JOURNEY_NAME }
+					else if (action === 'save') args = { description: 'Open the cart and place one order.' }
+					else if (action === 'journeys') args = { from: 1 }
+					else if (action === 'edit') {
+						const instruction = renderJourneyEdit(calls)
+						args = {
+							journey: STORE_JOURNEY_NAME,
+							edits: parseStoreJSON(
+								instruction.slice(instruction.indexOf('['), instruction.lastIndexOf(']') + 1),
+							),
+						}
+					} else if (action === 'replay')
+						args = {
+							journey: STORE_JOURNEY_NAME,
+							inputs: { [STORE_JOURNEY_PARAMETER]: STORE_JOURNEY_BUYER },
+						}
+					else {
+						const text = calls.at(-1)?.text ?? seed
+						const line = requireValue(
+							text.split(/\r\n|\n/).find((row) => row.includes(`"${action}"`)),
+						)
+						const ref = requireValue(extractReferences(line)[0])
+						name = action === 'Full name' ? 'type' : 'click'
+						args = action === 'Full name' ? { ref, text: STORE_BUYER, submit: true } : { ref }
+					}
+					const result = await tools.tools.execute({ id: action, name, arguments: args })
+					if (!result.success)
+						writeFileSync(
+							'tmp/codex/reading-journey-refusal.json',
+							JSON.stringify({ action, args, result, calls }, undefined, 2),
+						)
+					expect(result.success).toBe(true)
+					calls.push({
+						name,
+						arguments: args,
+						success: result.success,
+						text: renderToolText(result),
+					})
+				}
+				const transcript = {
+					...buildStoreTranscript(calls, seed),
+					task: 'journey',
+					files: collectStoreFiles(root.path),
+					state: {
+						cart: fresh.readCart(),
+						searches: fresh.readSearches(),
+						orders: fresh.readOrders(),
+					},
+				}
+				expect(transcript.state.orders).toEqual([STORE_BUYER, STORE_JOURNEY_BUYER])
+				expect(matchesJourneyOracle(transcript)).toBe(true)
+				expect(
+					filterSubmissionLines(requireValue(calls.find((call) => call.name === 'save')).text),
+				).toHaveLength(1)
+				writeFileSync('tmp/codex/reading-journey.json', JSON.stringify(transcript, undefined, 2))
+				for (const refused of [
+					{ ...transcript, partial: true },
+					{
+						...transcript,
+						calls: [
+							...calls,
+							buildStoreCall('read', { from: 1 }, 'x'.repeat(BROWSER_TOOL_LIMIT + 1)),
+						],
+					},
+					{ ...transcript, calls: [...calls, buildStoreCall('click', { ref: 'e999' })] },
+					{
+						...transcript,
+						calls: [
+							...calls,
+							...Array.from({ length: 5 * STORE_BOUNDS.limit }, () =>
+								buildStoreCall('read', { from: 1 }),
+							),
+						],
+					},
+				])
+					expect(matchesJourneyOracle(refused)).toBe(false)
+			} finally {
+				await tools.destroy()
+			}
+		} finally {
+			await browser.destroy()
+			root.destroy()
+			await fresh.stop()
+		}
+	}, 60_000)
+
+	it('places the fact beyond the seed and the token in the third default window with the exact advertised tools', async () => {
+		const browser = createBrowser({
+			executable: requirePageBrowser().executable,
+			headless: true,
+			args: PAGE_BROWSER_ARGS,
+			cdp: { port: await reservePort(), discover: false },
+		})
+		const root = createScratch({ parent: journeyPath(), prefix: 'reading-proof-' })
+		try {
+			await browser.connect()
+			const context = await browser.isolate()
+			const page = await context.create()
+			await page.navigate(store.url)
+			const tools = createBrowserToolset(page)
+			try {
+				await tools.start()
+				const definitions = tools.tools.definitions()
+				expect(definitions.map((definition) => definition.name)).toEqual([
+					'read',
+					'click',
+					'type',
+					'press',
+					'navigate',
+					'wait',
+				])
+				expect(
+					definitions.find((definition) => definition.name === 'type')?.parameters?.['properties'],
+				).toHaveProperty('secret')
+				const seed = renderToolText(
+					await tools.tools.execute({ id: 'seed', name: 'read', arguments: STORE_SEED_ARGUMENTS }),
+				)
+				expect(seed).not.toContain(STORE_FACT)
+				expect(seed).not.toContain(STORE_POLICY_TOKEN)
+				const shipping = renderToolText(
+					await tools.tools.execute({
+						id: 'shipping',
+						name: 'read',
+						arguments: { from: 1, search: 'shipping cutoff' },
+					}),
+				)
+				expect(shipping).toContain(STORE_FACT)
+				const fact = Number(
+					requireValue(shipping.split(/\r\n|\n/).find((line) => line.includes(STORE_FACT))).split(
+						': ',
+					)[0],
+				)
+				await page.navigate(`${store.url}/policy`)
+				const policy = renderToolText(
+					await tools.tools.execute({
+						id: 'policy',
+						name: 'read',
+						arguments: STORE_SEED_ARGUMENTS,
+					}),
+				)
+				const second = requireValue(extractFooterLine(policy))
+				const middle = renderToolText(
+					await tools.tools.execute({ id: 'middle', name: 'read', arguments: { from: second } }),
+				)
+				const third = requireValue(extractFooterLine(middle))
+				const last = renderToolText(
+					await tools.tools.execute({ id: 'last', name: 'read', arguments: { from: third } }),
+				)
+				expect(policy).not.toContain(STORE_POLICY_TOKEN)
+				expect(middle).not.toContain(STORE_POLICY_TOKEN)
+				expect(last).toContain(STORE_POLICY_TOKEN)
+				const token = Number(
+					requireValue(
+						last.split(/\r\n|\n/).find((line) => line.includes(STORE_POLICY_TOKEN)),
+					).split(': ')[0],
+				)
+				expect(token).toBeGreaterThan(third - 1)
+				expect(
+					matchesPagingOracle(
+						buildStoreTranscript(
+							[
+								buildStoreCall('read', { from: second }, middle),
+								buildStoreCall('read', { from: third }, last),
+							],
+							policy,
+						),
+					),
+				).toBe(true)
+				expect(
+					matchesPagingOracle(
+						buildStoreTranscript([buildStoreCall('read', { from: second }, middle)], policy),
+					),
+				).toBe(false)
+				for (const text of [seed, shipping, policy, middle, last])
+					expect(text.length).toBeLessThanOrEqual(BROWSER_TOOL_LIMIT)
+				writeFileSync(
+					'tmp/codex/reading-positions.json',
+					JSON.stringify(
+						{ fact, token, second, third, seed, shipping, policy, middle, last },
+						undefined,
+						2,
+					),
+				)
+			} finally {
+				await tools.destroy()
+			}
+			const journeys = createBrowserToolset(page, {
+				journeys: {
+					store: createFileBrowserJourneyStore({ root: root.path }),
+					runs: createFileBrowserRunStore({ root: root.path }),
+				},
+			})
+			try {
+				await journeys.start()
+				const names = journeys.tools.definitions().map((definition) => definition.name)
+				for (const name of BROWSER_JOURNEY_TOOL_NAMES) expect(names).toContain(name)
+				expect(BROWSER_JOURNEY_TOOL_NAMES).toHaveLength(7)
+			} finally {
+				await journeys.destroy()
+			}
+		} finally {
+			await browser.destroy()
+			root.destroy()
+		}
+	}, 60_000)
+
+	it('gives the token section no prefix-rule word from the paging prompt', () => {
+		const section = requireValue(STORE_POLICY.at(-1)).join(' ')
+		expect(
+			scanBrowserLines(
+				[{ spans: [{ category: 'text', text: section }] }],
+				STORE_TASKS.paging.prompt,
+			),
+		).toEqual([])
+		expect(
+			scanBrowserLines([{ spans: [{ category: 'text', text: section }] }], 'quoting version'),
+		).toEqual([1])
+	})
+})
+
+describe('case predicates', () => {
+	it('accepts each page case and rejects every shared refusal including a whole result over the limit', () => {
+		const base = buildStoreTranscript([buildStoreCall('read', { from: 1 }, STORE_FACT)])
+		const cases = [
+			{ predicate: matchesShippingOracle, transcript: { ...base, answer: STORE_FACT } },
+			{
+				predicate: matchesCartOracle,
+				transcript: { ...base, state: { ...base.state, cart: [STORE_NAMED] } },
+			},
+			{
+				predicate: matchesSearchOracle,
+				transcript: {
+					...base,
+					state: { ...base.state, searches: [STORE_QUERY] },
+					answer: 'Alpine Kettle, Copper Kettle',
+				},
+			},
+			{
+				predicate: matchesCheckoutOracle,
+				transcript: {
+					...base,
+					state: { ...base.state, orders: [STORE_BUYER] },
+					answer: STORE_CODE,
+				},
+			},
+			{
+				predicate: matchesPagingOracle,
+				transcript: buildStoreTranscript([
+					buildStoreCall('read', { from: 1 }, FIRST_SLICE),
+					buildStoreCall('read', { from: 31 }, CONTINUED_SLICE),
+				]),
+			},
+		]
+		for (const { predicate, transcript } of cases) {
+			expect(predicate(transcript)).toBe(true)
+			for (const refused of [
+				{ ...transcript, partial: true },
+				{ ...transcript, failure: 'failed' },
+				{ ...transcript, calls: [] },
+				{ ...transcript, seed: 'x'.repeat(BROWSER_TOOL_LIMIT + 1) },
+				{
+					...transcript,
+					calls: [
+						...transcript.calls,
+						...Array.from({ length: STORE_BOUNDS.limit }, () =>
+							buildStoreCall('read', { from: 1 }),
+						),
+					],
+				},
+				{ ...transcript, calls: [...transcript.calls, buildStoreCall('click', { ref: 'e999' })] },
+				{
+					...transcript,
+					calls: [
+						...transcript.calls,
+						buildStoreCall(
+							'read',
+							{ from: 1 },
+							'x'.repeat(BROWSER_TOOL_LIMIT) + '\n[lines 1–1 of 1; the whole page]',
+						),
+					],
+				},
+			])
+				expect(predicate(refused)).toBe(false)
+		}
+		expect(Object.keys(STORE_PREDICATES)).toEqual(Object.keys(STORE_TASKS))
+	})
+	it('refuses missing fact evidence, the seed fact, an incorrect cart, and duplicate or wrong orders', () => {
+		const shipping = {
+			...buildStoreTranscript([buildStoreCall('read', { from: 1 }, STORE_FACT)]),
+			answer: STORE_FACT,
+		}
+		expect(matchesShippingOracle({ ...shipping, seed: STORE_FACT })).toBe(false)
+		expect(matchesShippingOracle({ ...shipping, answer: '' })).toBe(false)
+		expect(
+			matchesShippingOracle({ ...shipping, calls: [buildStoreCall('click', {}, STORE_FACT)] }),
+		).toBe(false)
+		expect(
+			matchesShippingOracle({
+				...shipping,
+				calls: [{ ...buildStoreCall('read', { from: 1 }, STORE_FACT), success: false }],
+			}),
+		).toBe(false)
+		for (const cart of [
+			[],
+			[STORE_NAMED, STORE_NAMED],
+			[STORE_NAMED, 'Linen Apron'],
+			['Linen Apron'],
+		])
+			expect(matchesCartOracle({ ...shipping, state: { ...shipping.state, cart } })).toBe(false)
+		for (const orders of [
+			[],
+			[STORE_BUYER, STORE_BUYER],
+			[STORE_JOURNEY_BUYER],
+			[STORE_BUYER, STORE_JOURNEY_BUYER],
+		])
+			expect(
+				matchesCheckoutOracle({
+					...shipping,
+					answer: STORE_CODE,
+					state: { ...shipping.state, orders },
+				}),
+			).toBe(false)
+		expect(
+			matchesCheckoutOracle({ ...shipping, state: { ...shipping.state, orders: [STORE_BUYER] } }),
+		).toBe(false)
+	})
+})
+
+describe('monotonic operation timing', () => {
+	it('records successful and refused tools without freezing the advertised registry', async () => {
+		const tools = createToolManager()
+		tools.add(createLookupTool())
+		const timings: StoreTiming[] = []
+		const measured = createTimedTools(tools, timings)
+		expect(measured.definitions()).toEqual(tools.definitions())
+		tools.add(createThrowingTool())
+		expect(measured.definitions()).toEqual(tools.definitions())
+		const calls = [
+			{ id: 'lookup', name: 'lookup', arguments: { query: 'kettle' } },
+			{ id: 'missing', name: 'missing', arguments: {} },
+		]
+		const result = await measured.execute(calls)
+		expect(result.map((entry) => entry.success)).toEqual([true, false])
+		expect(timings.map((timing) => timing.name).sort()).toEqual(['lookup', 'missing'])
+		for (const timing of timings) {
+			expect(timing.operation).toBe('tool')
+			expect(timing.end).toBeGreaterThanOrEqual(timing.start)
+		}
+		tools.destroy()
+	})
+
+	it('records a generation and a failed stream without changing their result or error', async () => {
+		const timings: StoreTiming[] = []
+		const provider = createTimedProvider(
+			createOllama({
+				model: 'fixture',
+				fetch: createScriptedTransport([{ content: 'Measured.' }]),
+			}),
+			timings,
+		)
+		const signal = AbortSignal.timeout(5000)
+		expect(
+			(await provider.generate([{ id: '1', role: 'user', content: 'Answer.' }], signal)).content,
+		).toBe('Measured.')
+		const stream = provider.stream([{ id: '2', role: 'user', content: 'Answer again.' }], signal)
+		await expect(stream.next()).rejects.toThrow('the script holds 1 turns')
+		expect(timings).toHaveLength(2)
+		for (const timing of timings) {
+			expect(timing.operation).toBe('generation')
+			expect(timing.end).toBeGreaterThanOrEqual(timing.start)
+		}
+	})
+})
 
 beforeAll(async () => {
 	store = await createStoreServer()
@@ -254,6 +685,13 @@ describe('escapeMarkup', () => {
 })
 
 describe('filterProducts', () => {
+	it('compares exact product membership and order, including empty lists', () => {
+		const matches = filterProducts('kettle')
+		expect(matchesProducts(matches, [...matches])).toBe(true)
+		expect(matchesProducts([], [])).toBe(true)
+		expect(matchesProducts(matches, [])).toBe(false)
+		expect(matchesProducts(matches, [...matches].reverse())).toBe(false)
+	})
 	it('matches a name word regardless of case and surrounding space', () => {
 		expect(filterProducts(' TRAY ').map((product) => product.name)).toEqual(['Cedar Tea Tray'])
 	})
@@ -325,6 +763,18 @@ describe('buildStorePrompt', () => {
 })
 
 describe('extractReferences', () => {
+	it('reads numbered headings and replaces exposure with an empty page listing', () => {
+		const seed =
+			'page "Store" http://store/ (2 lines)\n1: e1 link "Cart" /cart\n2: ### e2 link "Tray" /tray'
+		expect(extractReferences(seed)).toEqual(['e1', 'e2'])
+		const cleared = buildStoreCall(
+			'read',
+			{ from: 3 },
+			'page "Store" http://store/ (3 lines)\n3: Text only\n[lines 3–3 of 3; 2 above; end of page]',
+		)
+		const stale = buildStoreCall('click', { ref: 'e1' })
+		expect(findUnlistedReferences(seed, [cleared, stale])).toEqual([stale])
+	})
 	it('returns the reference that opens each element row, in row order', () => {
 		const view =
 			'page "Store" URL\ne1 link "Cart"\n# Heading\ntext e9 inside\ne12 button "Go"\n(2 of 2 elements)'
@@ -377,7 +827,7 @@ describe('findUnlistedReferences', () => {
 
 describe('splitResultFooter', () => {
 	it('splits the bound footer from the body', () => {
-		const footer = '[characters 0–3998 of 6250; call read with offset 3998 for more]'
+		const footer = '[lines 1–30 of 80; 50 below; call read with from 31 for more]'
 		expect(splitResultFooter(`# Policy\n\n${footer}`)).toEqual(['# Policy', footer])
 	})
 
@@ -409,7 +859,7 @@ describe('matchesStoreOracles', () => {
 			{ search: 'x' },
 			`${'x'.repeat(BROWSER_TOOL_LIMIT)}\n\n[characters 0–4000 of 9000; call read with offset 4000 for more]`,
 		)
-		expect(matchesStoreOracles(buildStoreTranscript([bounded]))).toBe(true)
+		expect(matchesStoreOracles(buildStoreTranscript([bounded]))).toBe(false)
 	})
 })
 
@@ -431,91 +881,64 @@ describe('writeTranscript', () => {
 describe('STORE_SYSTEM_PROMPT', () => {
 	it('stays under 120 words and names the tools the loop uses', () => {
 		expect(STORE_SYSTEM_PROMPT.split(/\s+/).length).toBeLessThan(120)
-		for (const tool of ['look', 'read', 'click', 'type', 'wait']) {
+		for (const answer of [STORE_FACT, STORE_CODE, STORE_POLICY_TOKEN, STORE_NAMED])
+			expect(STORE_SYSTEM_PROMPT).not.toContain(answer)
+		for (const tool of ['read', 'click', 'type', 'wait']) {
 			expect(STORE_SYSTEM_PROMPT).toContain(tool)
 		}
 	})
 })
 
-describe('extractFooterOffset', () => {
-	it('reads the offset a cut read footer names', () => {
-		const footer = '[characters 0–3998 of 6250; call read with offset 3998 for more]'
-		expect(extractFooterOffset(`# Policy\n\n${footer}`)).toBe(3998)
-	})
+const FIRST_SLICE =
+	'page "Policy" http://store/policy (80 lines)\n1: # Policy\n[lines 1–30 of 80; 50 below; call read with from 31 for more]'
+const CONTINUED_SLICE =
+	'page "Policy" http://store/policy (80 lines)\n31: Quote ' +
+	STORE_POLICY_TOKEN +
+	'\n[lines 31–80 of 80; 30 above; end of page]'
 
-	it('reads nothing from a final slice, a cut look, or a result with no footer', () => {
-		expect(extractFooterOffset('\n\n[characters 6250–6250 of 6250]')).toBeUndefined()
+describe('line continuation', () => {
+	it('reads a continuation line only from a trailing line footer', () => {
+		expect(extractFooterLine(FIRST_SLICE)).toBe(31)
+		expect(extractFooterLine(CONTINUED_SLICE)).toBeUndefined()
 		expect(
-			extractFooterOffset(
-				'e1 link "Cart"\n[characters 0–4000 of 4466; the rest was cut; call read for the page\'s text]',
-			),
+			extractFooterLine('[characters 0–30 of 80; call read with offset 30 for more]'),
 		).toBeUndefined()
-		expect(extractFooterOffset('Clicked e1 link "Cart".')).toBeUndefined()
 	})
-})
-
-/** Names the footer the first slice of the fixture policy reading carries. */
-const FIRST_SLICE = '# Policy\n\n[characters 0–3998 of 6250; call read with offset 3998 for more]'
-
-describe('findContinuedRead', () => {
-	it('finds the read continued at the offset an earlier footer named whose slice holds the text', () => {
-		const first = buildStoreCall('read', { search: 'x' }, FIRST_SLICE)
-		const miss = buildStoreCall('read', { search: 'x', offset: 3998 }, '# Returns')
-		const failed = {
-			...buildStoreCall('read', { search: 'x', offset: 3998 }, STORE_POLICY_TOKEN),
-			success: false,
-		}
-		const hit = buildStoreCall(
-			'read',
-			{ search: 'x', offset: '3998' },
-			`Quote ${STORE_POLICY_TOKEN}.`,
-		)
-		expect(findContinuedRead([first, miss, failed, hit], STORE_POLICY_TOKEN)).toBe(hit)
-		expect(findContinuedRead([first, miss, failed], STORE_POLICY_TOKEN)).toBeUndefined()
-	})
-
-	it('refuses an offset no earlier footer named, and a look carrying the text', () => {
-		const first = buildStoreCall('read', { search: 'x' }, FIRST_SLICE)
-		const guessed = buildStoreCall('read', { search: 'x', offset: 4000 }, STORE_POLICY_TOKEN)
-		const early = buildStoreCall('read', { search: 'x', offset: 3998 }, STORE_POLICY_TOKEN)
-		const look = buildStoreCall('look', { search: 'x', offset: 3998 }, STORE_POLICY_TOKEN)
-		expect(findContinuedRead([first, guessed, look], STORE_POLICY_TOKEN)).toBeUndefined()
-		expect(findContinuedRead([early, first], STORE_POLICY_TOKEN)).toBeUndefined()
-	})
-})
-
-describe('matchesPagingOracle', () => {
-	it('fails a run whose continued read lacks the token', () => {
-		const transcript = buildStoreTranscript([
-			buildStoreCall('read', { search: 'x' }, FIRST_SLICE),
-			buildStoreCall('read', { search: 'x', offset: 3998 }, '# Returns'),
+	it('requires a model read followed by its exact fresh continuation window', () => {
+		const first = buildStoreCall('read', { from: 1 }, FIRST_SLICE)
+		const continued = buildStoreCall('read', { from: 31 }, CONTINUED_SLICE)
+		expect(findContinuedRead([first, continued], STORE_POLICY_TOKEN)).toBe(continued)
+		expect(matchesPagingOracle(buildStoreTranscript([first, continued]))).toBe(true)
+		for (const calls of [
+			[continued],
+			[first, { ...continued, success: false }],
+			[{ ...first, success: false }, continued],
+			[first, { ...continued, arguments: { from: 31, search: 'token' } }],
+			[first, { ...continued, arguments: { from: 30 } }],
+			[first, { ...continued, arguments: { from: '31' } }],
+			[first, { ...continued, text: CONTINUED_SLICE.replace('31: ', '32: ') }],
+			[
+				first,
+				{
+					...continued,
+					text: CONTINUED_SLICE.replace('http://store/policy', 'http://store/other'),
+				},
+			],
+			[
+				first,
+				{
+					...continued,
+					text: CONTINUED_SLICE.replace(
+						'31: ',
+						'The page changed since the last view; line numbers might differ.\n31: ',
+					),
+				},
+			],
+			[first, buildStoreCall('read', { from: 40 }, CONTINUED_SLICE), continued],
+			[first, buildStoreCall('click', { ref: 'e1' }), continued],
+			[first, { ...continued, text: CONTINUED_SLICE.replace(STORE_POLICY_TOKEN, 'absent') }],
 		])
-		expect(
-			matchesPagingOracle({ ...transcript, answer: STORE_POLICY_TOKEN }, STORE_POLICY_TOKEN),
-		).toBe(false)
-	})
-
-	it('holds for a run whose continued read has the token though its answer omits it', () => {
-		const transcript = buildStoreTranscript([
-			buildStoreCall('read', { search: 'x' }, FIRST_SLICE),
-			buildStoreCall('read', { search: 'x', offset: 3998 }, `Quote ${STORE_POLICY_TOKEN}.`),
-		])
-		expect(
-			matchesPagingOracle(
-				{ ...transcript, answer: 'The policy covers delivery.', mentioned: false },
-				STORE_POLICY_TOKEN,
-			),
-		).toBe(true)
-	})
-
-	it('fails a run that breaks a shared oracle', () => {
-		const transcript = buildStoreTranscript([
-			buildStoreCall('read', { search: 'x' }, FIRST_SLICE),
-			buildStoreCall('read', { search: 'x', offset: 3998 }, STORE_POLICY_TOKEN),
-		])
-		expect(
-			matchesPagingOracle({ ...transcript, failure: 'provider error: 500' }, STORE_POLICY_TOKEN),
-		).toBe(false)
+			expect(matchesPagingOracle(buildStoreTranscript(calls, FIRST_SLICE))).toBe(false)
 	})
 })
 
@@ -720,7 +1143,7 @@ describe('the search pin in tests/service/browser.test.ts', () => {
 	})
 })
 
-/** Holds the checkout journey as the journey task's edit leaves it: s3, the second submission, removed. */
+/** Holds the checkout journey as the journey task's edit leaves it: s3, the recorded cart click, removed. */
 const EDITED_JOURNEY: BrowserJourney = {
 	format: 1,
 	name: STORE_JOURNEY_NAME,
@@ -739,14 +1162,14 @@ const EDITED_JOURNEY: BrowserJourney = {
 	],
 }
 
-/** Holds the `save` result the journey task's recording returns: two submissions, s2 and s3. */
+/** Holds the `save` result the journey task's recording returns: one submission and a cart click. */
 const SAVED_LISTING = [
 	`Saved ${STORE_JOURNEY_NAME} with 4 steps.`,
 	'',
 	`${STORE_JOURNEY_NAME} "Place an order at checkout."`,
 	's1 click link "Checkout"',
 	`s2 type "${STORE_BUYER}" into textbox "Full name", submit`,
-	's3 press Enter',
+	's3 click link "Cart"',
 	's4 wait "HG-48213"',
 ].join('\n')
 
@@ -768,8 +1191,10 @@ const JOURNEY_CALLS = [
 	buildStoreCall('save', { description: 'Place an order at checkout.' }, SAVED_LISTING),
 	buildStoreCall(
 		'journeys',
-		{ search: 'saved journeys' },
-		SAVED_LISTING.split('\n').slice(2).join('\n'),
+		{ from: 1 },
+		SAVED_LISTING.split(/\r\n|\n/)
+			.slice(2)
+			.join('\n'),
 	),
 	buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: EDITS }),
 	buildStoreCall('replay', {
@@ -829,19 +1254,16 @@ function buildJourneyTranscript(
 }
 
 describe('inferPageTools', () => {
-	it('drops the five journey tools and the type secret and keeps every other definition as advertised', () => {
+	it('drops every journey tool and retains type secret and keeps every other definition as advertised', () => {
 		const page = inferPageTools(Object.values(BROWSER_TOOL_COPY))
 		expect(page.map((definition) => definition.name)).toEqual([
-			'look',
 			'read',
-			'plain',
 			'click',
 			'type',
 			'press',
 			'navigate',
 			'wait',
 			'dialog',
-			'tabs',
 			'switch',
 		])
 		const typed = page.find((definition) => definition.name === 'type')
@@ -849,9 +1271,10 @@ describe('inferPageTools', () => {
 			'ref',
 			'text',
 			'submit',
+			'secret',
 		])
 		expect(typed?.parameters?.['required']).toEqual(['ref', 'text'])
-		expect(page[0]).toBe(BROWSER_TOOL_COPY.look)
+		expect(page[0]).toBe(BROWSER_TOOL_COPY.read)
 		expect(Object.keys(Object(BROWSER_TOOL_COPY.type.parameters?.['properties']))).toContain(
 			'secret',
 		)
@@ -868,7 +1291,7 @@ describe('findMalformedCalls', () => {
 					...JOURNEY_CALLS,
 					buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: JSON.stringify(EDITS) }),
 					buildStoreCall('type', { ref: 'e4', text: STORE_BUYER, submit: true, secret: false }),
-					buildStoreCall('read', { search: 'the code', offset: 4000 }),
+					buildStoreCall('read', { from: 40, search: 'the code' }),
 				],
 				definitions,
 			),
@@ -1005,6 +1428,7 @@ describe('filterSubmissionLines', () => {
 			filterSubmissionLines(
 				[
 					SAVED_LISTING,
+					's3 press Enter',
 					's5 click button "Place order"',
 					's6 type "x" into textbox "Full name"',
 					's7 press Tab',
@@ -1025,7 +1449,7 @@ describe('filterSubmissionLines', () => {
 })
 
 describe('renderJourneyEdit', () => {
-	it('spells the batch out with the name step and the second submission the last listing shows', () => {
+	it('spells the batch out with the name step and the recorded cart click the last listing shows', () => {
 		const turn = renderJourneyEdit(JOURNEY_CALLS.slice(0, 4))
 		const batch = parseStoreJSON(turn.slice(turn.indexOf('['), turn.lastIndexOf(']') + 1))
 		expect(batch).toEqual([
@@ -1044,7 +1468,7 @@ describe('renderJourneyEdit', () => {
 		const single = buildStoreCall(
 			'save',
 			{ description: 'Place an order at checkout.' },
-			SAVED_LISTING.replace('s3 press Enter', 's3 press Tab'),
+			SAVED_LISTING.replace('s3 click link "Cart"', 's3 press Tab'),
 		)
 		for (const calls of [
 			[single],
@@ -1053,7 +1477,7 @@ describe('renderJourneyEdit', () => {
 		]) {
 			const turn = renderJourneyEdit(calls)
 			expect(turn).not.toContain('[')
-			expect(turn).toContain('remove the second submission')
+			expect(turn).toContain('remove the recorded cart click')
 		}
 	})
 })
@@ -1117,11 +1541,11 @@ describe('matchesJourneySequence', () => {
 	})
 })
 
-describe('matchesRemovedSubmission', () => {
+describe('matchesRemovedCart', () => {
 	const stored = renderBrowserJourney(EDITED_JOURNEY)
 
 	it('holds when the batch removes the second saved submission and one remains', () => {
-		expect(matchesRemovedSubmission(JOURNEY_CALLS, stored)).toBe(true)
+		expect(matchesRemovedCart(JOURNEY_CALLS, stored)).toBe(true)
 	})
 
 	it('holds when that batch arrives as the JSON string of the array', () => {
@@ -1130,10 +1554,10 @@ describe('matchesRemovedSubmission', () => {
 				? buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: JSON.stringify(EDITS) })
 				: call,
 		)
-		expect(matchesRemovedSubmission(string, stored)).toBe(true)
+		expect(matchesRemovedCart(string, stored)).toBe(true)
 	})
 
-	it('fails a removal of the first submission, a saved listing with one submission, and two left', () => {
+	it('fails a removal of the first submission, a saved listing without a cart click, and two left', () => {
 		const first = JOURNEY_CALLS.map((call) =>
 			call.name === 'edit'
 				? buildStoreCall('edit', {
@@ -1142,19 +1566,19 @@ describe('matchesRemovedSubmission', () => {
 					})
 				: call,
 		)
-		expect(matchesRemovedSubmission(first, stored)).toBe(false)
+		expect(matchesRemovedCart(first, stored)).toBe(false)
 		const single = JOURNEY_CALLS.map((call) =>
 			call.name === 'save'
 				? buildStoreCall(
 						'save',
 						call.arguments,
-						SAVED_LISTING.replace('s3 press Enter', 's3 press Tab'),
+						SAVED_LISTING.replace('s3 click link "Cart"', 's3 press Tab'),
 					)
 				: call,
 		)
-		expect(matchesRemovedSubmission(single, stored)).toBe(false)
-		expect(matchesRemovedSubmission(JOURNEY_CALLS, `${stored}\ns5 press Enter`)).toBe(false)
-		expect(matchesRemovedSubmission([], stored)).toBe(false)
+		expect(matchesRemovedCart(single, stored)).toBe(false)
+		expect(matchesRemovedCart(JOURNEY_CALLS, `${stored}\ns5 press Enter`)).toBe(false)
+		expect(matchesRemovedCart([], stored)).toBe(false)
 	})
 })
 
@@ -1163,7 +1587,7 @@ describe('matchesJourneyOracle', () => {
 		const files = await writeJourneyFiles('complete')
 		expect(
 			matchesJourneyOracle(
-				buildJourneyTranscript(files, [STORE_BUYER, STORE_BUYER, STORE_JOURNEY_BUYER]),
+				buildJourneyTranscript(files, [STORE_BUYER, STORE_JOURNEY_BUYER]),
 				STORE_JOURNEY_BUYER,
 			),
 		).toBe(true)
@@ -1220,7 +1644,7 @@ describe('STORE_JOURNEY_BOUNDS', () => {
 		expect(STORE_JOURNEY_BOUNDS.retry).toBeGreaterThan(STORE_JOURNEY_BOUNDS.budget)
 		expect(STORE_TASKS.journey.system).toBe(STORE_JOURNEY_PROMPT)
 		expect(STORE_TASKS.journey.prompt).toContain(
-			STORE_TASKS.form.prompt.replace('Complete', 'complete'),
+			STORE_TASKS.checkout.prompt.replace('Complete', 'complete'),
 		)
 	})
 })
@@ -1466,7 +1890,7 @@ describe('attemptStoreTask with a journey root', () => {
 			for (const attempt of [1, 2]) {
 				const result = await attemptStoreTask(
 					browser,
-					{ ...STORE_TASKS.read, task: 'isolation' },
+					{ ...STORE_TASKS.shipping, task: 'isolation' },
 					attempt,
 					createOllama({
 						model: 'fixture-model',
@@ -1481,7 +1905,7 @@ describe('attemptStoreTask with a journey root', () => {
 			await expect(
 				attemptStoreTask(
 					browser,
-					{ ...STORE_TASKS.read, task: 'isolation-failure' },
+					{ ...STORE_TASKS.shipping, task: 'isolation-failure' },
 					1,
 					createOllama({
 						model: 'fixture-model',

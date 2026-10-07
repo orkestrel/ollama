@@ -916,9 +916,16 @@ export const STORE_BOUNDS = Object.freeze({
 	/** The most tool-iteration turns one attempt allows. */
 	limit: 8,
 	/**
-	 * The Ollama `num_predict` cap leaves room for the model's narration before its tool call.
+	 * The Ollama `num_predict` cap counts the model's thinking with its narration and its tool
+	 * call; a thinking turn that reasons over a page view reaches a few hundred tokens.
 	 */
-	predict: 256,
+	predict: 1_024,
+	/**
+	 * The `/api/chat` `think` flag. With thinking off, the 2B's choice between `click` and `type`
+	 * on a link is a near-tie that irrelevant bytes tip; with thinking on, it reasons about the
+	 * element's role and chooses the same call on every port.
+	 */
+	think: true,
 	/** The Ollama `num_ctx` window each attempt's model takes, in tokens. */
 	context: 16_384,
 	/** The provider's deadline for one model turn. */

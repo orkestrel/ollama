@@ -42,6 +42,7 @@ describe('Browser vocabulary (live)', () => {
 								context: STORE_BOUNDS.context,
 								turn: STORE_BOUNDS.turn,
 								predict: STORE_BOUNDS.predict,
+								think: STORE_BOUNDS.think,
 							}),
 						),
 					(run) => predicate(run.transcript),

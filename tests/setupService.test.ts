@@ -353,6 +353,14 @@ describe('createLiveOllama', () => {
 		expect(latestChat().options).toEqual({ num_predict: 7, temperature: 0, num_ctx: 16_384 })
 	})
 
+	it('carries a requested think flag to the wire and sends the provider default without one', async () => {
+		await createLiveOllama({ think: true }).generate([createUserMessage('hi')], AbortSignal.timeout(5000))
+		expect(latestChat().think).toBe(true)
+
+		await createLiveOllama().generate([createUserMessage('hi')], AbortSignal.timeout(5000))
+		expect(latestChat().think).toBe(false)
+	})
+
 	it('ends a turn the daemon never answers at the requested deadline, before the caller signal', async () => {
 		daemon.chat({ status: 200, content: FIXTURE_CONTENT, park: true })
 		try {

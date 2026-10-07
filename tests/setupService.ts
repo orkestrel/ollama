@@ -32,12 +32,14 @@ export interface LiveProviderOptions {
 	readonly context?: number
 	/** The provider's deadline for one turn in milliseconds; omission leaves the provider's default. */
 	readonly turn?: number
+	/** The `/api/chat` `think` flag; omission leaves the provider's default, which is `false`. */
+	readonly think?: boolean
 }
 
 /**
  * Builds a concrete provider against the selected live daemon and warmed model.
  *
- * @param options - Optional prediction, temperature, framing, window, and turn-deadline overrides
+ * @param options - Optional prediction, temperature, framing, window, turn-deadline, and thinking overrides
  * @returns A concrete provider configured for the service axis
  */
 export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider {
@@ -51,6 +53,7 @@ export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider 
 		},
 		...(options?.format === undefined ? {} : { format: options.format }),
 		...(options?.turn === undefined ? {} : { timeout: options.turn }),
+		...(options?.think === undefined ? {} : { think: options.think }),
 	})
 }
 

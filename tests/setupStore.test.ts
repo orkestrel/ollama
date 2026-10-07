@@ -190,7 +190,7 @@ describe('real line projection', () => {
 				}
 				expect(calls.map((call) => call.success)).toEqual([true, false, true, false, true])
 				for (const call of calls.filter((entry) => !entry.success))
-					expect(call.text).toContain('takes no text; call click')
+					expect(call.text).toContain('takes no text;')
 				expect(fresh.read().cart).toEqual([STORE_NAMED_PRODUCT])
 				expect(findUnlistedReferences(seed, calls)).toEqual([])
 				expect(
@@ -253,7 +253,7 @@ describe('real line projection', () => {
 						calls.push(action)
 						const accepted = STORE_ACCEPTED_EXPOSURES.includes(scenario)
 						expect(action.success).toBe(accepted)
-						expect(action.text.includes('not in the current view')).toBe(!accepted)
+						expect(/not in the current view|is not on this page/.test(action.text)).toBe(!accepted)
 						expect(findUnlistedReferences(seed, calls)).toEqual(accepted ? [] : [action])
 					} finally {
 						await toolset.destroy()

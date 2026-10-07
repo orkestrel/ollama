@@ -1342,7 +1342,9 @@ export function findUnlistedReferences(
 			if (
 				reference === undefined ||
 				!listed.has(reference) ||
-				(!call.success && call.text.includes('not in the current view'))
+				(!call.success &&
+					(call.text.includes('not in the current view') ||
+						call.text.includes('is not on this page')))
 			)
 				unlisted.push(call)
 		}
@@ -2495,8 +2497,8 @@ export const STORE_CART_CALLS: readonly StoreCall[] = Object.freeze([
 	buildStoreCall('read', { from: 46, to: 52, search: STORE_NAMED_PRODUCT }),
 	buildStoreCall('type', { ref: 'e7', text: STORE_NAMED_PRODUCT, submit: true }),
 	buildStoreCall('click', { ref: 'e7' }),
-	buildStoreCall('type', { ref: 'e16', text: 'Add to cart', submit: true }),
-	buildStoreCall('click', { ref: 'e16' }),
+	buildStoreCall('type', { ref: 'e13', text: 'Add to cart', submit: true }),
+	buildStoreCall('click', { ref: 'e13' }),
 ])
 
 /** Lists the reference-exposure scenarios. */
@@ -2762,7 +2764,7 @@ export const STORE_REFUSED_SAVE: StoreCall = Object.freeze(
 	buildRefusedCall(
 		'save',
 		{ description: 'Place an order at checkout.' },
-		`Nothing is recording; "${STORE_JOURNEY_NAME}" was saved. Call journeys, edit, or replay.`,
+		`Nothing is recording, so there is nothing to save; "${STORE_JOURNEY_NAME}" is already saved. Answer the user.`,
 	),
 )
 

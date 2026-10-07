@@ -3,6 +3,14 @@ import type { BrowserJourney, BrowserPageInterface, BrowserRun } from '@orkestre
 import type { TokenUsage } from '@orkestrel/budget'
 import type { ToolManagerInterface } from '@orkestrel/tool'
 
+/** Represents a page-arm instrument draw over one task and port. */
+export interface StoreDraw {
+	readonly task: StoreTask
+	readonly port: number
+	readonly attempt: number
+	readonly arm: 'page'
+}
+
 /** Represents one product the store fixture sells. */
 export interface StoreProduct {
 	/** The path segment of the product's page, such as `p4`. */

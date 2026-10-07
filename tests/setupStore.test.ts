@@ -41,6 +41,7 @@ import {
 	attachThinking,
 	attemptStoreTask,
 	buildStoreCall,
+	buildStoreDraws,
 	buildStorePrompt,
 	buildStoreTranscript,
 	collectStoreFiles,
@@ -276,6 +277,7 @@ describe('real line projection', () => {
 				)
 				expect(seed).not.toContain(STORE_FACT)
 				expect(seed).not.toContain(STORE_POLICY_TOKEN)
+				const catalogueNext = requireValue(extractFooterLine(seed))
 				const shipping = renderToolText(
 					await tools.tools.execute({
 						id: 'shipping',
@@ -289,6 +291,7 @@ describe('real line projection', () => {
 						': ',
 					)[0],
 				)
+				expect(fact).toBeGreaterThan(catalogueNext - 1)
 				await page.navigate(`${store.url}/policy`)
 				const policy = renderToolText(
 					await tools.tools.execute({
@@ -333,9 +336,9 @@ describe('real line projection', () => {
 				for (const text of [seed, shipping, policy, middle, last])
 					expect(text.length).toBeLessThanOrEqual(BROWSER_TOOL_LIMIT)
 				writeFileSync(
-					'tmp/codex/reading-positions.json',
+					'tmp/codex/harness-positions.json',
 					JSON.stringify(
-						{ fact, token, second, third, seed, shipping, policy, middle, last },
+						{ fact, token, catalogueNext, second, third, seed, shipping, policy, middle, last },
 						undefined,
 						2,
 					),
@@ -790,32 +793,53 @@ describe('findUnlistedReferences', () => {
 	it('accepts a reference the seed listed, in any spelling the toolset reads', () => {
 		const calls = [
 			buildStoreCall('click', { ref: 'e1' }),
-			buildStoreCall('look', { search: 'x', ref: '[e1]' }),
+			buildStoreCall(
+				'read',
+				{ from: 1, search: 'Cart' },
+				'page "Store" http://store/ (1 lines)\n1: e1 link "Cart"\n[lines 1–1 of 1; end of page]',
+			),
+			buildStoreCall('click', { ref: '[e1]' }),
 		]
-		expect(findUnlistedReferences('e1 link "Cart"', calls)).toEqual([])
+		expect(findMalformedCalls(calls, [BROWSER_TOOL_COPY.read, BROWSER_TOOL_COPY.click])).toEqual([])
+		expect(
+			findUnlistedReferences('page "Store" http://store/ (1 lines)\n1: e1 link "Cart"', calls),
+		).toEqual([])
 	})
 
 	it('flags an invented, a non-string, and an unreadable reference', () => {
 		const invented = buildStoreCall('click', { ref: 'e9' })
 		const numeric = buildStoreCall('click', { ref: 1 })
-		const described = buildStoreCall('look', { search: 'x', ref: 'the search button' })
-		expect(findUnlistedReferences('e1 link "Cart"', [invented, numeric, described])).toEqual([
-			invented,
-			numeric,
-			described,
-		])
+		const described = buildStoreCall('click', { ref: 'the search button' })
+		expect(findMalformedCalls([described], [BROWSER_TOOL_COPY.click])).toEqual([])
+		expect(
+			findUnlistedReferences('page "Store" http://store/ (1 lines)\n1: e1 link "Cart"', [
+				invented,
+				numeric,
+				described,
+			]),
+		).toEqual([invented, numeric, described])
 	})
 
-	it('replaces the listed view with a result that lists elements and keeps it past one that lists none', () => {
+	it('replaces references with each read view and keeps them across receipts without a view', () => {
 		const receipt = buildStoreCall(
 			'click',
 			{ ref: 'e1' },
-			'Clicked e1 link "Cart".\n\ne5 button "Pay"',
+			'Clicked e1 link "Cart".\n\npage "Cart" http://store/cart (1 lines)\n1: e5 button "Pay"',
 		)
-		const reading = buildStoreCall('read', { search: 'x' }, '# Cart\n\nOne item.')
+		const reading = buildStoreCall(
+			'read',
+			{ from: 1 },
+			'page "Cart" http://store/cart (2 lines)\n1: # Cart\n2: One item.\n[lines 1–2 of 2; end of page]',
+		)
+		expect(reading.text).toMatch(/^page .+\n1: /)
 		const stale = buildStoreCall('click', { ref: 'e1' })
 		const fresh = buildStoreCall('click', { ref: 'e5' })
+		const notice = buildStoreCall('press', { key: 'Tab' }, 'Pressed Tab.')
+		expect(findUnlistedReferences('e1 link "Cart"', [receipt, notice, fresh, stale])).toEqual([
+			stale,
+		])
 		expect(findUnlistedReferences('e1 link "Cart"', [receipt, reading, fresh, stale])).toEqual([
+			fresh,
 			stale,
 		])
 	})
@@ -896,6 +920,34 @@ const CONTINUED_SLICE =
 	STORE_POLICY_TOKEN +
 	'\n[lines 31–80 of 80; 30 above; end of page]'
 
+describe('instrument draws', () => {
+	it('balances every count prefix across tasks and preserves port attempts', () => {
+		const tasks = [
+			STORE_TASKS.shipping,
+			STORE_TASKS.cart,
+			STORE_TASKS.search,
+			STORE_TASKS.checkout,
+			STORE_TASKS.paging,
+		]
+		const draws = buildStoreDraws(tasks, [49171, 49173])
+		expect(draws.map((draw) => draw.task.task)).toEqual(
+			[...tasks, ...tasks].map((task) => task.task),
+		)
+		for (let count = 1; count <= draws.length; count += 1) {
+			const tallies = tasks.map(
+				(task) => draws.slice(0, count).filter((draw) => draw.task === task).length,
+			)
+			expect(Math.max(...tallies) - Math.min(...tallies)).toBeLessThanOrEqual(1)
+		}
+		expect(draws.map((draw) => [draw.port, draw.attempt, draw.arm])).toEqual([
+			...tasks.map(() => [49171, 1, 'page']),
+			...tasks.map(() => [49173, 2, 'page']),
+		])
+		expect(buildStoreDraws([], [49171])).toEqual([])
+		expect(buildStoreDraws(tasks, [])).toEqual([])
+	})
+})
+
 describe('line continuation', () => {
 	it('reads a continuation line only from a trailing line footer', () => {
 		expect(extractFooterLine(FIRST_SLICE)).toBe(31)
@@ -909,36 +961,99 @@ describe('line continuation', () => {
 		const continued = buildStoreCall('read', { from: 31 }, CONTINUED_SLICE)
 		expect(findContinuedRead([first, continued], STORE_POLICY_TOKEN)).toBe(continued)
 		expect(matchesPagingOracle(buildStoreTranscript([first, continued]))).toBe(true)
-		for (const calls of [
-			[continued],
-			[first, { ...continued, success: false }],
-			[{ ...first, success: false }, continued],
-			[first, { ...continued, arguments: { from: 31, search: 'token' } }],
-			[first, { ...continued, arguments: { from: 30 } }],
-			[first, { ...continued, arguments: { from: '31' } }],
-			[first, { ...continued, text: CONTINUED_SLICE.replace('31: ', '32: ') }],
+	})
+	it('accepts a search that leaves the continuation window at the named line', () => {
+		const first = buildStoreCall('read', { from: 1 }, FIRST_SLICE)
+		const continued = buildStoreCall('read', { from: 31, search: 'token' }, CONTINUED_SLICE)
+		expect(findContinuedRead([first, continued], STORE_POLICY_TOKEN)).toBe(continued)
+	})
+	it('accepts an earlier fresh footer across other reads on the same page', () => {
+		const first = buildStoreCall('read', { from: 1 }, FIRST_SLICE)
+		const other = buildStoreCall('read', { from: 40 }, CONTINUED_SLICE.replace('31: ', '40: '))
+		const continued = buildStoreCall('read', { from: 31 }, CONTINUED_SLICE)
+		expect(findContinuedRead([first, other, continued], STORE_POLICY_TOKEN)).toBe(continued)
+	})
+	it.each([
+		['seed footer', []],
+		[
+			'failed footer call',
+			[{ ...buildStoreCall('read', { from: 1 }, FIRST_SLICE), success: false }],
+		],
+		[
+			'action',
+			[buildStoreCall('read', { from: 1 }, FIRST_SLICE), buildStoreCall('press', { key: 'Tab' })],
+		],
+		[
+			'failed action',
 			[
-				first,
-				{
-					...continued,
-					text: CONTINUED_SLICE.replace('http://store/policy', 'http://store/other'),
-				},
+				buildStoreCall('read', { from: 1 }, FIRST_SLICE),
+				{ ...buildStoreCall('press', { key: 'Tab' }), success: false },
 			],
+		],
+		[
+			'intervening change note',
 			[
-				first,
-				{
-					...continued,
-					text: CONTINUED_SLICE.replace(
+				buildStoreCall('read', { from: 1 }, FIRST_SLICE),
+				buildStoreCall(
+					'read',
+					{ from: 40 },
+					'The page changed since the last view; line numbers might differ.\n' +
+						CONTINUED_SLICE.replace('31: ', '40: '),
+				),
+			],
+		],
+		[
+			'changed page then return',
+			[
+				buildStoreCall('read', { from: 1 }, FIRST_SLICE),
+				buildStoreCall(
+					'read',
+					{ from: 40 },
+					CONTINUED_SLICE.replace('http://store/policy', 'http://store/other').replace(
 						'31: ',
-						'The page changed since the last view; line numbers might differ.\n31: ',
+						'40: ',
 					),
-				},
+				),
 			],
-			[first, buildStoreCall('read', { from: 40 }, CONTINUED_SLICE), continued],
-			[first, buildStoreCall('click', { ref: 'e1' }), continued],
-			[first, { ...continued, text: CONTINUED_SLICE.replace(STORE_POLICY_TOKEN, 'absent') }],
-		])
-			expect(matchesPagingOracle(buildStoreTranscript(calls, FIRST_SLICE))).toBe(false)
+		],
+	])('refuses a stale or unearned continuation: %s', (_reason, calls) => {
+		const continued = buildStoreCall('read', { from: 31 }, CONTINUED_SLICE)
+		const transcript = buildStoreTranscript([...calls, continued], FIRST_SLICE)
+		expect(matchesStoreOracles(transcript)).toBe(true)
+		expect(findContinuedRead(transcript.calls, STORE_POLICY_TOKEN)).toBeUndefined()
+		expect(matchesPagingOracle(transcript)).toBe(false)
+	})
+	it.each([
+		['guessed line', { from: 30 }, CONTINUED_SLICE.replace('31: ', '30: '), true],
+		['non-numeric line', { from: '31' }, CONTINUED_SLICE, true],
+		['shifted window', { from: 31 }, CONTINUED_SLICE.replace('31: ', '32: '), true],
+		[
+			'shifted search window',
+			{ from: 31, search: 'token' },
+			CONTINUED_SLICE.replace('31: ', '32: '),
+			true,
+		],
+		[
+			'changed page',
+			{ from: 31 },
+			CONTINUED_SLICE.replace('http://store/policy', 'http://store/other'),
+			true,
+		],
+		['failed continuation', { from: 31 }, CONTINUED_SLICE, false],
+		[
+			'change note',
+			{ from: 31 },
+			'The page changed since the last view; line numbers might differ.\n' + CONTINUED_SLICE,
+			true,
+		],
+		['missing token', { from: 31 }, CONTINUED_SLICE.replace(STORE_POLICY_TOKEN, 'absent'), true],
+	])('refuses an invalid continuation: %s', (_reason, args, text, success) => {
+		const first = buildStoreCall('read', { from: 1 }, FIRST_SLICE)
+		const continued = { ...buildStoreCall('read', args, text), success }
+		const transcript = buildStoreTranscript([first, continued])
+		expect(matchesStoreOracles(transcript)).toBe(true)
+		expect(findContinuedRead(transcript.calls, STORE_POLICY_TOKEN)).toBeUndefined()
+		expect(matchesPagingOracle(transcript)).toBe(false)
 	})
 })
 
@@ -1214,7 +1329,7 @@ async function writeJourneyFiles(
 	try {
 		const saved = await createFileBrowserJourneyStore({ root: scratch.path }).set(EDITED_JOURNEY)
 		const runs = createFileBrowserRunStore({ root: scratch.path })
-		const slot = await runs.open(STORE_JOURNEY_NAME)
+		const slot = await runs.create(STORE_JOURNEY_NAME)
 		await runs.set({
 			format: 1,
 			id: slot.id,

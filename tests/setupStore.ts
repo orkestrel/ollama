@@ -1,4 +1,5 @@
 import type {
+	StoreDraw,
 	StoreProduct,
 	StoreServerInterface,
 	StoreCall,
@@ -1400,6 +1401,22 @@ export function buildStoreTranscript(
 }
 
 /**
+ * Builds instrument draws over the tasks and ports.
+ *
+ * @param tasks - The tasks each port runs
+ * @param ports - The fixture ports in attempt order
+ * @returns Draws carrying the page arm and each port's attempt number
+ */
+export function buildStoreDraws(
+	tasks: readonly StoreTask[],
+	ports: readonly number[],
+): readonly StoreDraw[] {
+	return ports.flatMap((port, index) =>
+		tasks.map((task) => ({ task, port, attempt: index + 1, arm: 'page' })),
+	)
+}
+
+/**
  * Reads the line a cut `read` result's footer names for the next slice.
  *
  * @param text - A tool result
@@ -1417,36 +1434,40 @@ export function extractFooterLine(text: string): number | undefined {
  *
  * @param calls - The run's calls, in order
  * @param text - The text the continued slice must contain
- * @returns The first successful `read` call whose `line` argument reads as a number equal to the
- * line an earlier successful `read` result's footer named, and whose result contains the text;
+ * @returns The first successful `read` whose numeric `from` equals both its first row and a
+ * line an earlier successful model `read` footer named under the same page header, and whose
+ * result contains the text. An action, changed page, or change note invalidates earlier footers;
  * `undefined` when no call qualifies
  */
 export function findContinuedRead(
 	calls: readonly StoreCall[],
 	text: string,
 ): StoreCall | undefined {
-	let prior: StoreCall | undefined
+	const lines = new Set<number>()
+	let header: string | undefined
 	for (const call of calls) {
-		if (call.name !== 'read' || !call.success) {
-			prior = undefined
+		if (call.name !== 'read') {
+			lines.clear()
+			header = undefined
 			continue
 		}
+		if (call.text.includes('The page changed since the last view')) lines.clear()
+		if (!call.success) continue
 		const from = call.arguments['from']
 		const first = /^([1-9]\d*): /m.exec(call.text)?.[1]
 		const page = /^page .+$/m.exec(call.text)?.[0]
+		if (page !== header) lines.clear()
+		header = page
 		if (
-			prior !== undefined &&
 			typeof from === 'number' &&
-			from === extractFooterLine(prior.text) &&
+			lines.has(from) &&
 			Number(first) === from &&
 			page !== undefined &&
-			page === /^page .+$/m.exec(prior.text)?.[0] &&
-			(call.arguments['search'] === undefined || call.arguments['search'] === '') &&
-			!call.text.includes('The page changed since the last view') &&
 			call.text.includes(text)
 		)
 			return call
-		prior = call
+		const line = extractFooterLine(call.text)
+		if (page !== undefined && line !== undefined) lines.add(line)
 	}
 	return undefined
 }

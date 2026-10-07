@@ -1,6 +1,6 @@
 import type { ContextFormat, ConversationInterface, Message } from '@orkestrel/agent'
 import type { SystemBrowser, SystemBrowserOptions } from '@orkestrel/browser/server'
-import { findSystemBrowser } from '@orkestrel/browser/server'
+import { findSystemBrowsers } from '@orkestrel/browser/server'
 import { isRecord, isString } from '@orkestrel/contract'
 import { createOllama, OLLAMA_CHAT_PATH, OllamaProvider } from '@src/core'
 import { existsSync } from 'node:fs'
@@ -237,7 +237,7 @@ export const PAGE_BROWSER_ARGS: readonly string[] = Object.freeze([
  * @throws Thrown when no candidate source resolves a browser executable.
  */
 export function requirePageBrowser(options?: SystemBrowserOptions): SystemBrowser {
-	const found = findSystemBrowser(options)
+	const found = findSystemBrowsers(options)[0]
 	if (found === undefined) {
 		throw new Error(
 			'The page proof requires a Chromium-family browser on this host and found none. ' +

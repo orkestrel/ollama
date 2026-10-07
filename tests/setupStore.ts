@@ -153,7 +153,7 @@ export const STORE_JOURNEY_PROMPT =
 	`${STORE_SYSTEM_PROMPT} ` +
 	'To record a journey, call record with its name before you act; each action after it is a step. ' +
 	'When the recorded task is done, call save with one sentence that describes it. ' +
-	'To see the saved journeys and their step ids, call journeys. ' +
+	'To see the saved journeys and their step ids, call journeys with from 1. ' +
 	'To change a journey, call edit once with every change in edits, such as [{"operation": "declare", "name": "email", "parameter": {"default": "sam@example.test"}}, {"operation": "update", "arguments": {"text": {"parameter": "email"}}, "id": "s4"}, {"operation": "remove", "id": "s5"}]. ' +
 	"To run a journey again, call replay with its name and each parameter's value under inputs."
 

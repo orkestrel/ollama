@@ -42,6 +42,7 @@ describe('OllamaJudge', () => {
 				model: JUDGE_WIRE_NOUL.model,
 				system: MICA_SYSTEM,
 				calibration: MICA_CALIBRATION,
+				options: { num_ctx: 8192, num_predict: 1, temperature: 1 },
 			}),
 		)
 		expect(result.usage).toEqual({ prompt: 138, completion: 1, total: 139 })
@@ -78,7 +79,14 @@ describe('OllamaJudge', () => {
 					{ state: 'state', questions: { valid: { form: 'noul' }, invalid: question } },
 					new AbortController().signal,
 				),
-			).rejects.toMatchObject({ code: 'QUESTION' })
+			).rejects.toMatchObject({
+				code: 'QUESTION',
+				message: expect.stringMatching(/^judge error: question invalid /),
+				cause: expect.objectContaining({
+					code: 'QUESTION',
+					message: expect.stringMatching(/^judge error: [a-z]/),
+				}),
+			})
 			expect(transport.signals).toEqual([])
 		},
 	)
@@ -119,10 +127,28 @@ describe('OllamaJudge', () => {
 	it('rejects malformed or incomplete responses and omits unavailable usage', () => {
 		const judge = new OllamaJudge({ model: 'mica', system: MICA_SYSTEM })
 		expect(() => judge.read({ ...JUDGE_RAW_NOUL, done: false }, JUDGE_NOUL_REQUEST)).toThrow(
-			JudgeError,
+			expect.objectContaining({
+				code: 'PROTOCOL',
+				message: 'judge error: question deletion mica read requires a completed response',
+				cause: expect.any(JudgeError),
+			}),
 		)
-		expect(() => judge.read({ done: true }, JUDGE_NOUL_REQUEST)).toThrow(JudgeError)
-		expect(() => judge.read(null, JUDGE_NOUL_REQUEST)).toThrow(JudgeError)
+		expect(() => judge.read({ done: true }, JUDGE_NOUL_REQUEST)).toThrow(
+			expect.objectContaining({
+				code: 'PROTOCOL',
+				message: 'judge error: question deletion missing first-position top logprobs',
+				cause: expect.any(JudgeError),
+			}),
+		)
+		expect(() => judge.read(null, JUDGE_NOUL_REQUEST)).toThrow(
+			'judge error: question deletion mica read requires a completed response',
+		)
+		expect(() =>
+			judge.read(
+				{ ...JUDGE_RAW_NOUL, logprobs: [{ top_logprobs: [{ token: 'No', logprob: NaN }] }] },
+				JUDGE_NOUL_REQUEST,
+			),
+		).toThrow('judge error: question deletion invalid or duplicate top logprob token')
 		expect(
 			judge.read({ ...JUDGE_RAW_NOUL, eval_count: undefined }, JUDGE_NOUL_REQUEST).usage,
 		).toBeUndefined()
@@ -135,7 +161,7 @@ describe('OllamaJudge', () => {
 		expect(
 			() =>
 				new OllamaJudge({ model: 'mica', system: MICA_SYSTEM, calibration: { temperature: -1 } }),
-		).toThrow(JudgeError)
+		).toThrow('judge error: calibration temperature must be finite and positive')
 		expect(
 			() =>
 				new OllamaJudge({

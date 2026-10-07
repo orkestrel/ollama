@@ -27,21 +27,21 @@ export const OLLAMA_GENERATE_PATH = '/api/generate'
 export const TOP_LOGPROBS = 20
 
 /** Bounds a Mica score question to 10 levels. */
-export const MAX_SCORE_LEVELS = 10
+export const MAX_MICA_LEVELS = 10
 
 /** Identifies the Mica prompt render revision used in judge identities. */
-export const RENDER_REVISION = 'mica-native-2026-10-07-v1'
+export const MICA_RENDER_REVISION = 'mica-native-2026-10-07-v1'
 
 /** Lists Mica's letter labels in codebook order. */
-export const OPTION_LABELS: readonly string[] = Object.freeze(
+export const MICA_OPTION_LABELS: readonly string[] = Object.freeze(
 	'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'.split(''),
 )
 
 /** Lists Mica's false and true labels in readout order. */
-export const NOUL_LABELS: readonly string[] = Object.freeze(['No', 'Yes'])
+export const MICA_NOUL_LABELS: readonly string[] = Object.freeze(['No', 'Yes'])
 
 /** Lists the control tokens escaped by Mica's native renderer. */
-export const SPECIAL_TOKENS: readonly string[] = Object.freeze([
+export const MICA_SPECIAL_TOKENS: readonly string[] = Object.freeze([
 	'<|im_start|>',
 	'<|im_end|>',
 	'<|endoftext|>',

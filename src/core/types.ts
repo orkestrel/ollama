@@ -106,7 +106,7 @@ export interface OllamaJudgeOptions extends Pick<ProviderOptions, 'timeout' | 'f
 	readonly calibration?: { readonly temperature: number }
 	readonly url?: string
 	/** Mirrors the Ollama `keep_alive` duration. Default: '5m'. */
-	readonly keepAlive?: string
+	readonly keepAlive?: string | number
 	readonly options?: Readonly<Record<string, unknown>>
 }
 
@@ -124,6 +124,6 @@ export interface WireGenerateRequest {
 	readonly stream: false
 	readonly logprobs: true
 	readonly top_logprobs: number
-	readonly keep_alive: string
+	readonly keep_alive: string | number
 	readonly options: Readonly<Record<string, unknown>>
 }

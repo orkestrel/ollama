@@ -19,7 +19,12 @@ describe('createOllamaJudge', () => {
 		const transport = createRecordingTransport(
 			createStreamingTransport([JSON.stringify(JUDGE_RAW_NOUL)]),
 		)
-		const judge = createOllamaJudge({ model: 'mica', system: MICA_SYSTEM, fetch: transport.fetch })
+		const judge = createOllamaJudge({
+			model: 'mica',
+			system: MICA_SYSTEM,
+			keepAlive: 0,
+			fetch: transport.fetch,
+		})
 		const other = createOllamaJudge({ model: 'mica', system: MICA_SYSTEM })
 		expect(judge.id).not.toBe(other.id)
 		expect(judge.name).toBe('ollama')
@@ -27,6 +32,7 @@ describe('createOllamaJudge', () => {
 		const result = await judge.ask(JUDGE_NOUL_REQUEST, new AbortController().signal)
 		expect(result.answers.deletion?.form).toBe('noul')
 		expect(transport.requests[0]?.path).toBe('/api/generate')
+		expect(transport.requests[0]?.body.keep_alive).toBe(0)
 	})
 })
 

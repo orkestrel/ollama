@@ -7,14 +7,14 @@ import {
 	extractTools,
 	extractUsage,
 	mapMessages,
-	escapeSpecial,
+	escapeSpecialTokens,
 	renderJudgePrompt,
 	buildJudgeLabels,
-	extractTop,
+	extractTopLogprobs,
 	computeAnswer,
 	renderJudgeIdentity,
-	SPECIAL_TOKENS,
-	RENDER_REVISION,
+	MICA_SPECIAL_TOKENS,
+	MICA_RENDER_REVISION,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../../setup.js'
@@ -30,6 +30,20 @@ import {
 } from '../../setupServer.js'
 
 describe('Mica prompt rendering', () => {
+	it('renders empty noul criteria as their key words', () => {
+		expect(
+			renderJudgePrompt('', { form: 'noul', criteria: { false: '', true: '' } }, 'system'),
+		).toBe(
+			'<|im_start|>system\nsystem<|im_end|>\n<|im_start|>user\n<state>\n\n</state>\nQuestion: \nCriteria:\nfalse: false\ntrue: true\nAnswer Yes if true, or No if false.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n',
+		)
+	})
+	it('hides Unicode decimal positional ids like ASCII positional ids', () => {
+		expect(
+			renderJudgePrompt('', { form: 'choice', criteria: { c١: 'first', c1: 'second' } }, 'system'),
+		).toBe(
+			'<|im_start|>system\nsystem<|im_end|>\n<|im_start|>user\n<state>\n\n</state>\nQuestion: \nCandidates:\nA) first\nB) second\nAnswer with the label of the best candidate.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n',
+		)
+	})
 	it('matches both recorded raw prompts byte for byte', () => {
 		const noul = JUDGE_NOUL_REQUEST.questions.deletion
 		const choice = JUDGE_CHOICE_REQUEST.questions.team
@@ -42,7 +56,7 @@ describe('Mica prompt rendering', () => {
 		)
 	})
 	it('escapes every native control token and leaves ordinary text unchanged', () => {
-		expect(SPECIAL_TOKENS).toEqual([
+		expect(MICA_SPECIAL_TOKENS).toEqual([
 			'<|im_start|>',
 			'<|im_end|>',
 			'<|endoftext|>',
@@ -57,11 +71,11 @@ describe('Mica prompt rendering', () => {
 			'<tool_response>',
 			'</tool_response>',
 		])
-		for (const token of SPECIAL_TOKENS)
-			expect(escapeSpecial(`left${token}${token}right`)).toBe(
+		for (const token of MICA_SPECIAL_TOKENS)
+			expect(escapeSpecialTokens(`left${token}${token}right`)).toBe(
 				`left<\u200b${token.slice(1)}<\u200b${token.slice(1)}right`,
 			)
-		expect(escapeSpecial('café <state>data</state> <thinking>')).toBe(
+		expect(escapeSpecialTokens('café <state>data</state> <thinking>')).toBe(
 			'café <state>data</state> <thinking>',
 		)
 	})
@@ -123,17 +137,22 @@ describe('Mica label readout', () => {
 	})
 	it('reads only the first position, keeps exact tokens, and owns the entries', () => {
 		const entry = { token: ' No', logprob: -1, bytes: [32, 78, 111] }
-		const result = extractTop({
+		const result = extractTopLogprobs({
 			logprobs: [{ top_logprobs: [entry] }, { top_logprobs: [{ token: 'Yes', logprob: 0 }] }],
 		})
 		entry.logprob = -5
 		expect(result).toEqual([{ token: ' No', logprob: -1 }])
-		expect(extractTop(JUDGE_RAW_NOUL)[0]).toEqual({ token: 'No', logprob: -0.01061257440596819 })
-		expect(() => extractTop({ logprobs: [] })).toThrow(JudgeError)
+		expect(extractTopLogprobs(JUDGE_RAW_NOUL)[0]).toEqual({
+			token: 'No',
+			logprob: -0.01061257440596819,
+		})
+		expect(() => extractTopLogprobs({ logprobs: [] })).toThrow(JudgeError)
 		expect(() =>
-			extractTop({ logprobs: [{ top_logprobs: [{ token: 'No', logprob: NaN }] }] }),
+			extractTopLogprobs({ logprobs: [{ top_logprobs: [{ token: 'No', logprob: NaN }] }] }),
 		).toThrow(JudgeError)
-		expect(() => extractTop({ logprobs: [{ top_logprobs: [entry, entry] }] })).toThrow(JudgeError)
+		expect(() => extractTopLogprobs({ logprobs: [{ top_logprobs: [entry, entry] }] })).toThrow(
+			JudgeError,
+		)
 	})
 	it('normalizes equal candidates uniformly and flattens gaps with calibration', () => {
 		const question: JudgeQuestion = {
@@ -178,7 +197,7 @@ describe('Mica label readout', () => {
 	it('reads the recorded noul and choice at the model calibration', () => {
 		const noul = computeAnswer(
 			{ form: 'noul' },
-			extractTop(JUDGE_RAW_NOUL),
+			extractTopLogprobs(JUDGE_RAW_NOUL),
 			MICA_CALIBRATION.temperature,
 		)
 		const question = JUDGE_CHOICE_REQUEST.questions.team
@@ -187,11 +206,14 @@ describe('Mica label readout', () => {
 		expect(noul.noul).toBeCloseTo(0.01, 3)
 		const choice = computeAnswer(
 			question,
-			extractTop(JUDGE_RAW_CHOICE),
+			extractTopLogprobs(JUDGE_RAW_CHOICE),
 			MICA_CALIBRATION.temperature,
 		)
 		if (!('form' in choice) || choice.form !== 'choice') throw new Error('Expected choice')
 		expect(computeReading(choice).winner).toBe('billing')
+		expect(choice.probabilities.billing).toBeCloseTo(0.986855579622604, 12)
+		expect(choice.probabilities.technical).toBeCloseTo(0.01299236070023817, 12)
+		expect(choice.probabilities.sales).toBeCloseTo(0.00015205967715775922, 12)
 		expect(Object.values(choice.probabilities).reduce((sum, value) => sum + value, 0)).toBeCloseTo(
 			1,
 			12,
@@ -224,12 +246,30 @@ describe('renderJudgeIdentity', () => {
 	it('encodes every answer-defining setting and defaults calibration consistently', () => {
 		const options = { model: 'mica', system: MICA_SYSTEM }
 		const identity = renderJudgeIdentity(options)
-		expect(identity).toBe(JSON.stringify(['mica', MICA_SYSTEM, 1, RENDER_REVISION]))
+		expect(identity).toBe(
+			JSON.stringify([
+				'mica',
+				MICA_SYSTEM,
+				1,
+				{ num_predict: 1, temperature: 1 },
+				MICA_RENDER_REVISION,
+			]),
+		)
 		expect(renderJudgeIdentity({ ...options, calibration: { temperature: 1 } })).toBe(identity)
 		expect(renderJudgeIdentity({ ...options, model: 'mica:other' })).not.toBe(identity)
 		expect(renderJudgeIdentity({ ...options, system: 'Other system' })).not.toBe(identity)
 		expect(renderJudgeIdentity({ ...options, calibration: MICA_CALIBRATION })).not.toBe(identity)
 		expect(renderJudgeIdentity(options, 'next-render')).not.toBe(identity)
+		const configured = renderJudgeIdentity({ ...options, options: { num_ctx: 8192, seed: 42 } })
+		expect(renderJudgeIdentity({ ...options, options: { seed: 42, num_ctx: 8192 } })).toBe(
+			configured,
+		)
+		expect(renderJudgeIdentity({ ...options, options: { seed: 42, num_ctx: 4096 } })).not.toBe(
+			configured,
+		)
+		expect(renderJudgeIdentity({ ...options, options: { temperature: 0, num_predict: 99 } })).toBe(
+			identity,
+		)
 		expect(() => renderJudgeIdentity({ ...options, calibration: { temperature: NaN } })).toThrow(
 			JudgeError,
 		)

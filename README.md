@@ -1,9 +1,7 @@
 # @orkestrel/ollama
 
-> A typed local-LLM provider for the `@orkestrel` line: the Ollama daemon's `POST /api/chat`
-> wire carried on the shared `AgentProvider` engine from `@orkestrel/agent`, with NDJSON
-> streaming, tool calls, thinking, and usage accounting narrowed off the wire through
-> `@orkestrel/contract` guards and no Ollama SDK dependency.
+> The Ollama chat provider wire on the `/api/chat` path and the raw judge wire for Mica
+> on the `/api/generate` path, with shared engines from the `@orkestrel/agent` package.
 
 Create a provider with the `createOllama` function, hand it a conversation and a
 bounding `AbortSignal`, and read the assembled `ProviderResult` the `generate`

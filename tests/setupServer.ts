@@ -87,23 +87,60 @@ export const JUDGE_CHOICE_REQUEST = Object.freeze<JudgeRequest>({
 	},
 })
 
-/** Defines the choice, noul, and score request used by the System One examples. */
+/** Defines the recorded System One request with the domain form discriminant. */
 export const JUDGE_SYSTEM_REQUEST = Object.freeze<JudgeRequest>({
-	state: 'The customer reports a bug and requests a refund. A workaround exists.',
+	state: 'Our checkout has returned 500 errors since 9am. I want a refund for today.',
 	questions: {
 		label: {
 			form: 'choice',
-			instructions: 'Which team handles this ticket?',
-			criteria: { billing: 'Payments and refunds', bug: 'Bugs and outages', account: null },
+			instructions: 'Which label fits this ticket?',
+			criteria: {
+				billing: 'Payments and refunds',
+				bug: 'Software errors',
+				account: null,
+			},
 		},
 		refund: {
 			form: 'noul',
-			instructions: 'Is a refund requested?',
-			criteria: { true: 'A refund is requested', false: 'No refund is requested' },
+			instructions: 'Does the customer ask for money back?',
+			criteria: {
+				true: 'The customer asks for a refund or for money back.',
+				false: 'The customer does not ask for money back.',
+			},
 		},
 		severity: {
 			form: 'score',
-			instructions: 'How severe is the issue?',
+			instructions: 'How severe is the reported issue?',
+			criteria: ['Cosmetic; no impact', 'Degraded, workaround exists', 'Blocking; no workaround'],
+		},
+	},
+})
+
+/** Preserves the recorded systemone-tev1-request.json wire request. */
+export const JUDGE_WIRE_SYSTEM = Object.freeze({
+	model: 'tev1:0.8b',
+	state: 'Our checkout has returned 500 errors since 9am. I want a refund for today.',
+	questions: {
+		label: {
+			type: 'choice',
+			instructions: 'Which label fits this ticket?',
+			criteria: {
+				billing: 'Payments and refunds',
+				bug: 'Software errors',
+				account: null,
+			},
+		},
+		refund: {
+			type: 'noul',
+			instructions: 'Does the customer ask for money back?',
+			criteria: {
+				true: 'The customer asks for a refund or for money back.',
+				false: 'The customer does not ask for money back.',
+			},
+		},
+		severity: {
+			type: 'score',
+			instructions: 'How severe is the reported issue?',
 			criteria: ['Cosmetic; no impact', 'Degraded, workaround exists', 'Blocking; no workaround'],
 		},
 	},

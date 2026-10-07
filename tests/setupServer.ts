@@ -980,9 +980,7 @@ ${options.document}
 		path: CONTROL_PATH,
 		async handler(request) {
 			requests.push(await readRequest(request))
-			return new Response('control', {
-				headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
-			})
+			return buildUncachedResponse('control', 'text/plain; charset=utf-8')
 		},
 	})
 	if (options.provider !== undefined) dispatcher.add(buildRelayRoute(options.provider, requests))
@@ -1577,4 +1575,18 @@ export function acceptPageAttempt(attempt: PageAttempt): boolean {
 		)
 	}
 	return attempt.outcome.tools.some((tool) => tool.call.name === PAGE_TOOL.name)
+}
+
+/**
+ * Builds a response that no cache keeps.
+ * @param body - The response text
+ * @param type - The response's media type
+ * @param status - The HTTP status. Default: 200
+ * @returns The uncached response
+ */
+export function buildUncachedResponse(body: string, type: string, status = 200): Response {
+	return new Response(body, {
+		status,
+		headers: { 'content-type': type, 'cache-control': 'no-store' },
+	})
 }

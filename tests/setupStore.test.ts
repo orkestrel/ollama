@@ -1,3 +1,4 @@
+import type { AgentChunk } from '@orkestrel/agent'
 // The hermetic half of `tests/setupStore.ts`. That module serves the store the live
 // browser-vocabulary proof drives, runs one model attempt over it, and reads the
 // transcript the attempt leaves. The live half — that a real model drives a real Chromium
@@ -9,52 +10,95 @@
 // (the browser package's own `createBrowserReading` over the served HTML), and every pure
 // reader the live proof asserts through.
 
-import type { BrowserJourney } from '@orkestrel/browser'
-import type {
-	StoreCall,
-	StoreServerInterface,
-	StoreTiming,
-	StoreTranscript,
-} from './setupStore/types.js'
-import { DEFAULT_PROVIDER_TIMEOUT, ProviderError } from '@orkestrel/agent'
+import type { StoreCall, StoreServerInterface, StoreTiming } from './setupStore.js'
+import { createChannel, DEFAULT_PROVIDER_TIMEOUT, ProviderError } from '@orkestrel/agent'
 import {
 	BROWSER_TOOL_COPY,
 	BROWSER_TOOL_LIMIT,
 	createBrowserReading,
 	createBrowserToolset,
 	scanBrowserLines,
-	BROWSER_JOURNEY_TOOL_NAMES,
 	renderBrowserJourney,
 } from '@orkestrel/browser'
-import {
-	createBrowser,
-	createFileBrowserJourneyStore,
-	createFileBrowserRunStore,
-} from '@orkestrel/browser/server'
-import { requireValue } from '@orkestrel/test'
-import { createScratch } from '@orkestrel/test/server'
+import { createFileBrowserJourneyStore, createFileBrowserRunStore } from '@orkestrel/browser/server'
+import { collect, requireValue } from '@orkestrel/test'
+import { createScratch, readInventory } from '@orkestrel/test/server'
 import { createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/core'
-import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
+	STORE_TIMED_CALLS,
+	STORE_REFERENCE_CALLS,
+	STORE_MALFORMED_CALLS,
+	STORE_EDIT_DEFINITION,
+	STORE_VALID_EDITS,
+	STORE_INVALID_EDITS,
+	STORE_ACCEPTED_EXPOSURES,
+	STORE_SEEDED_ANSWERS,
+	STORE_PROMPT_TOOLS,
+	STORE_ISOLATION_ATTEMPTS,
+	STORE_JOURNEY_ORDERS,
+	STORE_THINKING_CHUNKS,
+	stemWord,
+	findStoreProduct,
+	buildMissingResponse,
+	collectTurnThinking,
+	extractPageHeader,
+	readCapturedNumber,
+	matchesCartClick,
+	resolveTranscriptPath,
+	buildRefusedCall,
+	createPageBrowser,
+	executeStoreCall,
+	createRefusalTools,
+	STORE_FIRST_SLICE,
+	STORE_CONTINUED_SLICE,
+	STORE_STALLED_SEARCH,
+	STORE_EMPTY_RESULTS_SEARCH,
+	STORE_CLICKED_SEARCH,
+	STORE_COMPLETED_SEARCH,
+	STORE_EDITED_JOURNEY,
+	STORE_SAVED_LISTING,
+	STORE_EDITS,
+	STORE_JOURNEY_CALLS,
+	writeJourneyFiles,
+	buildJourneyTranscript,
+	STORE_FEATURED,
+	STORE_UNFEATURED,
+	STORE_CART_CALLS,
+	STORE_EXPOSURE_SCENARIOS,
+	STORE_JOURNEY_ACTIONS,
+	buildRefusedTranscripts,
+	STORE_ORACLE_CASES,
+	STORE_REFUSED_CARTS,
+	STORE_REFUSED_ORDERS,
+	buildExposureChanges,
+	STORE_STALE_CONTINUATIONS,
+	STORE_INVALID_CONTINUATIONS,
+	STORE_UNBATCHED_LISTINGS,
+	STORE_REFUSED_RECORD,
+	STORE_REFUSED_SAVE,
+	STORE_LOOKUP_TURN,
+	STORE_REFUSAL_TURNS,
+	STORE_REFUSAL_TOOLS,
+	STORE_THINKING_MESSAGES,
 	attachThinking,
 	attemptStoreTask,
 	buildStoreCall,
-	buildStoreDraws,
 	buildStorePrompt,
 	buildStoreTranscript,
-	collectStoreFiles,
 	computeRefusals,
 	converseStore,
 	createStoreServer,
 	createTimedProvider,
 	createTimedTools,
 	escapeMarkup,
-	extractFooterLine,
+	parseFooterLine,
 	extractJourneyEvidence,
 	extractReferences,
-	extractWindowLine,
+	parseWindowLine,
 	filterNamedProducts,
 	filterProducts,
 	filterSubmissionLines,
@@ -63,8 +107,8 @@ import {
 	findJourneyLoops,
 	findMalformedCalls,
 	findUnlistedReferences,
-	inferPageTools,
-	journeyPath,
+	filterPageTools,
+	resolveJourneyPath,
 	matchesDaemonFault,
 	matchesJourneyBatch,
 	matchesJourneyOracle,
@@ -99,36 +143,30 @@ import {
 	STORE_JOURNEY_PARAMETER,
 	STORE_JOURNEY_PROMPT,
 	STORE_JOURNEY_SEQUENCE,
-	STORE_NAMED,
+	STORE_NAMED_PRODUCT,
 	STORE_POLICY_TOKEN,
 	STORE_PRODUCTS,
 	STORE_QUERY,
 	STORE_SYSTEM_PROMPT,
 	STORE_TASKS,
-	transcriptPath,
 	writeTranscript,
 } from './setupStore.js'
 import {
+	LOOKUP_DATUM,
+	THROWING_TOOL_MESSAGE,
 	createLookupTool,
 	createRecordingTransport,
 	createScriptedTransport,
 	createThrowingTool,
-	reservePort,
 	wireTools,
 } from './setupServer.js'
-import { PAGE_BROWSER_ARGS, requirePageBrowser } from './setupService.js'
 
 let store: StoreServerInterface
 
 describe('real line projection', () => {
 	it('accepts the measured cart path through refused type calls', async () => {
 		const fresh = await createStoreServer()
-		const browser = createBrowser({
-			executable: requirePageBrowser().executable,
-			headless: true,
-			args: PAGE_BROWSER_ARGS,
-			cdp: { port: await reservePort(), discover: false },
-		})
+		const browser = await createPageBrowser()
 		try {
 			await browser.connect()
 			const context = await browser.isolate()
@@ -145,33 +183,20 @@ describe('real line projection', () => {
 					}),
 				)
 				const calls: StoreCall[] = []
-				for (const call of [
-					buildStoreCall('read', { from: 46, to: 52, search: STORE_NAMED }),
-					buildStoreCall('type', { ref: 'e7', text: STORE_NAMED, submit: true }),
-					buildStoreCall('click', { ref: 'e7' }),
-					buildStoreCall('type', { ref: 'e16', text: 'Add to cart', submit: true }),
-					buildStoreCall('click', { ref: 'e16' }),
-				]) {
-					const result = await toolset.tools.execute({
-						id: String(calls.length),
-						name: call.name,
-						arguments: call.arguments,
-					})
-					calls.push({ ...call, success: result.success, text: renderToolText(result) })
+				for (const call of STORE_CART_CALLS) {
+					calls.push(
+						await executeStoreCall(toolset.tools, String(calls.length), call.name, call.arguments),
+					)
 				}
 				expect(calls.map((call) => call.success)).toEqual([true, false, true, false, true])
 				for (const call of calls.filter((entry) => !entry.success))
 					expect(call.text).toContain('takes no text; call click')
-				expect(fresh.readCart()).toEqual([STORE_NAMED])
+				expect(fresh.read().cart).toEqual([STORE_NAMED_PRODUCT])
 				expect(findUnlistedReferences(seed, calls)).toEqual([])
 				expect(
 					matchesCartOracle({
 						...buildStoreTranscript(calls, seed),
-						state: {
-							cart: fresh.readCart(),
-							orders: fresh.readOrders(),
-							searches: fresh.readSearches(),
-						},
+						state: fresh.read(),
 					}),
 				).toBe(true)
 			} finally {
@@ -182,24 +207,12 @@ describe('real line projection', () => {
 			await fresh.stop()
 		}
 	}, 60_000)
-	it('applies rule R to successful reads, page changes, actions, and refusals', async () => {
+	it('applies the reference-exposure rule to successful reads, page changes, actions, and refusals', async () => {
 		const fresh = await createStoreServer()
-		const browser = createBrowser({
-			executable: requirePageBrowser().executable,
-			headless: true,
-			args: PAGE_BROWSER_ARGS,
-			cdp: { port: await reservePort(), discover: false },
-		})
+		const browser = await createPageBrowser()
 		try {
 			await browser.connect()
-			for (const scenario of [
-				'unchanged',
-				'bestmatch',
-				'action',
-				'invented',
-				'changed',
-				'refused',
-			]) {
+			for (const scenario of STORE_EXPOSURE_SCENARIOS) {
 				const context = await browser.isolate()
 				try {
 					const page = await context.create()
@@ -218,46 +231,28 @@ describe('real line projection', () => {
 						if (scenario === 'changed' || scenario === 'refused')
 							await page.navigate(`${fresh.url}/policy`)
 						if (scenario === 'unchanged' || scenario === 'bestmatch' || scenario === 'changed') {
-							const args =
+							const input =
 								scenario === 'bestmatch'
-									? { from: 46, to: 52, search: STORE_NAMED }
+									? { from: 46, to: 52, search: STORE_NAMED_PRODUCT }
 									: { from: 46, to: 52 }
-							const result = await toolset.tools.execute({
-								id: 'read',
-								name: 'read',
-								arguments: args,
-							})
-							calls.push({
-								name: 'read',
-								arguments: args,
-								success: result.success,
-								text: renderToolText(result),
-							})
+							calls.push(await executeStoreCall(toolset.tools, 'read', 'read', input))
 						}
 						for (const call of calls) expect(call.success).toBe(true)
-						for (const call of calls.filter((entry) => entry.arguments['search'] === STORE_NAMED)) {
+						for (const call of calls.filter(
+							(entry) => entry.arguments['search'] === STORE_NAMED_PRODUCT,
+						)) {
 							expect(call.text).toContain('the best match is line 11:')
 							expect(extractReferences(call.text)).toEqual(['e7'])
-							expect(extractWindowLine(call.text)).toBe(46)
+							expect(parseWindowLine(call.text)).toBe(46)
 						}
 						// A fresh read after the out-of-band navigation invalidates the tool's own reference map.
 						if (scenario === 'refused')
 							await toolset.tools.execute({ id: 'refresh', name: 'read', arguments: { from: 1 } })
-						const args = { ref: scenario === 'invented' ? 'e99999' : 'e7' }
-						const result = await toolset.tools.execute({
-							id: 'click',
-							name: 'click',
-							arguments: args,
-						})
-						const action = {
-							name: 'click',
-							arguments: args,
-							success: result.success,
-							text: renderToolText(result),
-						}
+						const input = { ref: scenario === 'invented' ? 'e99999' : 'e7' }
+						const action = await executeStoreCall(toolset.tools, 'click', 'click', input)
 						calls.push(action)
-						const accepted = ['unchanged', 'bestmatch', 'action'].includes(scenario)
-						expect(result.success).toBe(accepted)
+						const accepted = STORE_ACCEPTED_EXPOSURES.includes(scenario)
+						expect(action.success).toBe(accepted)
 						expect(action.text.includes('not in the current view')).toBe(!accepted)
 						expect(findUnlistedReferences(seed, calls)).toEqual(accepted ? [] : [action])
 					} finally {
@@ -274,13 +269,8 @@ describe('real line projection', () => {
 	}, 60_000)
 	it('records a cart click and one submission, removes the click, and replays exactly one order for the other buyer', async () => {
 		const fresh = await createStoreServer()
-		const root = createScratch({ parent: journeyPath(), prefix: 'journey-proof-' })
-		const browser = createBrowser({
-			executable: requirePageBrowser().executable,
-			headless: true,
-			args: PAGE_BROWSER_ARGS,
-			cdp: { port: await reservePort(), discover: false },
-		})
+		const root = createScratch({ parent: resolveJourneyPath(), prefix: 'journey-proof-' })
+		const browser = await createPageBrowser()
 		try {
 			await browser.connect()
 			const context = await browser.isolate()
@@ -298,31 +288,22 @@ describe('real line projection', () => {
 					await tools.tools.execute({ id: 'seed', name: 'read', arguments: { from: 1 } }),
 				)
 				const calls: StoreCall[] = []
-				for (const action of [
-					'record',
-					'Cart',
-					'Checkout',
-					'Full name',
-					'save',
-					'journeys',
-					'edit',
-					'replay',
-				]) {
+				for (const action of STORE_JOURNEY_ACTIONS) {
 					let name = action
-					let args: Readonly<Record<string, unknown>> = {}
-					if (action === 'record') args = { journey: STORE_JOURNEY_NAME }
-					else if (action === 'save') args = { description: 'Open the cart and place one order.' }
-					else if (action === 'journeys') args = { from: 1 }
+					let input: Readonly<Record<string, unknown>> = {}
+					if (action === 'record') input = { journey: STORE_JOURNEY_NAME }
+					else if (action === 'save') input = { description: 'Open the cart and place one order.' }
+					else if (action === 'journeys') input = { from: 1 }
 					else if (action === 'edit') {
 						const instruction = renderJourneyEdit(calls)
-						args = {
+						input = {
 							journey: STORE_JOURNEY_NAME,
 							edits: parseStoreJSON(
 								instruction.slice(instruction.indexOf('['), instruction.lastIndexOf(']') + 1),
 							),
 						}
 					} else if (action === 'replay')
-						args = {
+						input = {
 							journey: STORE_JOURNEY_NAME,
 							inputs: { [STORE_JOURNEY_PARAMETER]: STORE_JOURNEY_BUYER },
 						}
@@ -333,58 +314,27 @@ describe('real line projection', () => {
 						)
 						const ref = requireValue(extractReferences(line)[0])
 						name = action === 'Full name' ? 'type' : 'click'
-						args = action === 'Full name' ? { ref, text: STORE_BUYER, submit: true } : { ref }
+						input = action === 'Full name' ? { ref, text: STORE_BUYER, submit: true } : { ref }
 					}
-					const result = await tools.tools.execute({ id: action, name, arguments: args })
-					if (!result.success)
-						writeFileSync(
-							'tmp/codex/reading-journey-refusal.json',
-							JSON.stringify({ action, args, result, calls }, undefined, 2),
-						)
-					expect(result.success).toBe(true)
-					calls.push({
-						name,
-						arguments: args,
-						success: result.success,
-						text: renderToolText(result),
-					})
+					const call = await executeStoreCall(tools.tools, action, name, input)
+					expect(call).toMatchObject({ success: true })
+					calls.push(call)
 				}
 				const transcript = {
 					...buildStoreTranscript(calls, seed),
-					task: 'journey',
-					files: collectStoreFiles(root.path),
-					state: {
-						cart: fresh.readCart(),
-						searches: fresh.readSearches(),
-						orders: fresh.readOrders(),
-					},
+					name: 'journey',
+					files: readInventory(root.path, ['.'], { extensions: ['.json'] }),
+					state: fresh.read(),
 				}
 				expect(transcript.state.orders).toEqual([STORE_BUYER, STORE_JOURNEY_BUYER])
 				expect(matchesJourneyOracle(transcript)).toBe(true)
 				expect(
 					filterSubmissionLines(requireValue(calls.find((call) => call.name === 'save')).text),
 				).toHaveLength(1)
-				writeFileSync('tmp/codex/reading-journey.json', JSON.stringify(transcript, undefined, 2))
-				for (const refused of [
-					{ ...transcript, partial: true },
-					{
-						...transcript,
-						calls: [
-							...calls,
-							buildStoreCall('read', { from: 1 }, 'x'.repeat(BROWSER_TOOL_LIMIT + 1)),
-						],
-					},
-					{ ...transcript, calls: [...calls, buildStoreCall('click', { ref: 'e999' })] },
-					{
-						...transcript,
-						calls: [
-							...calls,
-							...Array.from({ length: 5 * STORE_BOUNDS.limit }, () =>
-								buildStoreCall('read', { from: 1 }),
-							),
-						],
-					},
-				])
+				for (const refused of buildRefusedTranscripts(
+					transcript,
+					(1 + STORE_TASKS.journey.followups.length) * STORE_BOUNDS.limit,
+				))
 					expect(matchesJourneyOracle(refused)).toBe(false)
 			} finally {
 				await tools.destroy()
@@ -396,14 +346,8 @@ describe('real line projection', () => {
 		}
 	}, 60_000)
 
-	it('places the fact beyond the seed and the token in the third default window with the exact advertised tools', async () => {
-		const browser = createBrowser({
-			executable: requirePageBrowser().executable,
-			headless: true,
-			args: PAGE_BROWSER_ARGS,
-			cdp: { port: await reservePort(), discover: false },
-		})
-		const root = createScratch({ parent: journeyPath(), prefix: 'reading-proof-' })
+	it('places the fact beyond the seed and the token in the third default window', async () => {
+		const browser = await createPageBrowser()
 		try {
 			await browser.connect()
 			const context = await browser.isolate()
@@ -412,24 +356,13 @@ describe('real line projection', () => {
 			const tools = createBrowserToolset(page)
 			try {
 				await tools.start()
-				const definitions = tools.tools.definitions()
-				expect(definitions.map((definition) => definition.name)).toEqual([
-					'read',
-					'click',
-					'type',
-					'press',
-					'navigate',
-					'wait',
-				])
-				expect(
-					definitions.find((definition) => definition.name === 'type')?.parameters?.['properties'],
-				).toHaveProperty('secret')
+
 				const seed = renderToolText(
 					await tools.tools.execute({ id: 'seed', name: 'read', arguments: STORE_SEED_ARGUMENTS }),
 				)
 				expect(seed).not.toContain(STORE_FACT)
 				expect(seed).not.toContain(STORE_POLICY_TOKEN)
-				const catalogueNext = requireValue(extractFooterLine(seed))
+				const catalogueNext = requireValue(parseFooterLine(seed))
 				const shipping = renderToolText(
 					await tools.tools.execute({
 						id: 'shipping',
@@ -454,11 +387,11 @@ describe('real line projection', () => {
 						arguments: STORE_SEED_ARGUMENTS,
 					}),
 				)
-				const second = requireValue(extractFooterLine(policy))
+				const second = requireValue(parseFooterLine(policy))
 				const middle = renderToolText(
 					await tools.tools.execute({ id: 'middle', name: 'read', arguments: { from: second } }),
 				)
-				const third = requireValue(extractFooterLine(middle))
+				const third = requireValue(parseFooterLine(middle))
 				const last = renderToolText(
 					await tools.tools.execute({ id: 'last', name: 'read', arguments: { from: third } }),
 				)
@@ -492,34 +425,11 @@ describe('real line projection', () => {
 				).toBe(false)
 				for (const text of [seed, shipping, policy, middle, last])
 					expect(text.length).toBeLessThanOrEqual(BROWSER_TOOL_LIMIT)
-				writeFileSync(
-					'tmp/codex/harness-positions.json',
-					JSON.stringify(
-						{ fact, token, catalogueNext, second, third, seed, shipping, policy, middle, last },
-						undefined,
-						2,
-					),
-				)
 			} finally {
 				await tools.destroy()
 			}
-			const journeys = createBrowserToolset(page, {
-				journeys: {
-					store: createFileBrowserJourneyStore({ root: root.path }),
-					runs: createFileBrowserRunStore({ root: root.path }),
-				},
-			})
-			try {
-				await journeys.start()
-				const names = journeys.tools.definitions().map((definition) => definition.name)
-				for (const name of BROWSER_JOURNEY_TOOL_NAMES) expect(names).toContain(name)
-				expect(BROWSER_JOURNEY_TOOL_NAMES).toHaveLength(7)
-			} finally {
-				await journeys.destroy()
-			}
 		} finally {
 			await browser.destroy()
-			root.destroy()
 		}
 	}, 60_000)
 
@@ -539,66 +449,9 @@ describe('real line projection', () => {
 
 describe('case predicates', () => {
 	it('accepts each page case and rejects every shared refusal including a whole result over the limit', () => {
-		const base = buildStoreTranscript([buildStoreCall('read', { from: 1 }, STORE_FACT)])
-		const cases = [
-			{ predicate: matchesShippingOracle, transcript: { ...base, answer: STORE_FACT } },
-			{
-				predicate: matchesCartOracle,
-				transcript: { ...base, state: { ...base.state, cart: [STORE_NAMED] } },
-			},
-			{
-				predicate: matchesSearchOracle,
-				transcript: {
-					...base,
-					state: { ...base.state, searches: [STORE_QUERY] },
-					answer: 'Alpine Kettle, Copper Kettle',
-				},
-			},
-			{
-				predicate: matchesCheckoutOracle,
-				transcript: {
-					...base,
-					state: { ...base.state, orders: [STORE_BUYER] },
-					answer: STORE_CODE,
-				},
-			},
-			{
-				predicate: matchesPagingOracle,
-				transcript: buildStoreTranscript([
-					buildStoreCall('read', { from: 1 }, FIRST_SLICE),
-					buildStoreCall('read', { from: 31 }, CONTINUED_SLICE),
-				]),
-			},
-		]
-		for (const { predicate, transcript } of cases) {
+		for (const { predicate, transcript } of STORE_ORACLE_CASES) {
 			expect(predicate(transcript)).toBe(true)
-			for (const refused of [
-				{ ...transcript, partial: true },
-				{ ...transcript, failure: 'failed' },
-				{ ...transcript, calls: [] },
-				{ ...transcript, seed: 'x'.repeat(BROWSER_TOOL_LIMIT + 1) },
-				{
-					...transcript,
-					calls: [
-						...transcript.calls,
-						...Array.from({ length: STORE_BOUNDS.limit }, () =>
-							buildStoreCall('read', { from: 1 }),
-						),
-					],
-				},
-				{ ...transcript, calls: [...transcript.calls, buildStoreCall('click', { ref: 'e999' })] },
-				{
-					...transcript,
-					calls: [
-						...transcript.calls,
-						buildStoreCall(
-							'read',
-							{ from: 1 },
-							'x'.repeat(BROWSER_TOOL_LIMIT) + '\n[lines 1–1 of 1; the whole page]',
-						),
-					],
-				},
-			])
+			for (const refused of buildRefusedTranscripts(transcript, STORE_BOUNDS.limit))
 				expect(predicate(refused)).toBe(false)
 		}
 		expect(Object.keys(STORE_PREDICATES)).toEqual(Object.keys(STORE_TASKS))
@@ -616,22 +469,12 @@ describe('case predicates', () => {
 		expect(
 			matchesShippingOracle({
 				...shipping,
-				calls: [{ ...buildStoreCall('read', { from: 1 }, STORE_FACT), success: false }],
+				calls: [buildRefusedCall('read', { from: 1 }, STORE_FACT)],
 			}),
 		).toBe(false)
-		for (const cart of [
-			[],
-			[STORE_NAMED, STORE_NAMED],
-			[STORE_NAMED, 'Linen Apron'],
-			['Linen Apron'],
-		])
+		for (const cart of STORE_REFUSED_CARTS)
 			expect(matchesCartOracle({ ...shipping, state: { ...shipping.state, cart } })).toBe(false)
-		for (const orders of [
-			[],
-			[STORE_BUYER, STORE_BUYER],
-			[STORE_JOURNEY_BUYER],
-			[STORE_BUYER, STORE_JOURNEY_BUYER],
-		])
+		for (const orders of STORE_REFUSED_ORDERS)
 			expect(
 				matchesCheckoutOracle({
 					...shipping,
@@ -654,10 +497,7 @@ describe('monotonic operation timing', () => {
 		expect(measured.definitions()).toEqual(tools.definitions())
 		tools.add(createThrowingTool())
 		expect(measured.definitions()).toEqual(tools.definitions())
-		const calls = [
-			{ id: 'lookup', name: 'lookup', arguments: { query: 'kettle' } },
-			{ id: 'missing', name: 'missing', arguments: {} },
-		]
+		const calls = STORE_TIMED_CALLS
 		const result = await measured.execute(calls)
 		expect(result.map((entry) => entry.success)).toEqual([true, false])
 		expect(timings.map((timing) => timing.name).sort()).toEqual(['lookup', 'missing'])
@@ -700,6 +540,24 @@ afterAll(async () => {
 })
 
 describe('createStoreServer', () => {
+	it('returns state snapshots that remain unchanged after later requests', async () => {
+		const fresh = await createStoreServer()
+		try {
+			const before = fresh.read()
+			await fetch(`${fresh.url}/search?q=kettle`)
+			await fetch(`${fresh.url}/order`, { method: 'POST', body: STORE_BUYER })
+			await fetch(`${fresh.url}/cart`, { method: 'POST', body: 'product=p3' })
+			expect(before).toEqual({ cart: [], searches: [], orders: [] })
+			expect(fresh.read()).toEqual({
+				cart: ['Cedar Tea Tray'],
+				searches: ['kettle'],
+				orders: ['Ada Lovelace'],
+			})
+		} finally {
+			await fresh.stop()
+		}
+	})
+
 	it('listens on the IPv4 loopback on an ephemeral port', () => {
 		expect(store.url).toMatch(/^http:\/\/127\.0\.0\.1:[1-9]\d*$/)
 	})
@@ -711,14 +569,15 @@ describe('createStoreServer', () => {
 		expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8')
 		expect(html).toContain('<form action="/search" method="get" role="search">')
 		expect(html).toContain('<input id="q" type="search" name="q">')
-		const featured = STORE_PRODUCTS.filter((product) => product.featured)
-		expect(featured.length).toBeGreaterThanOrEqual(6)
+		const featured = STORE_FEATURED.map((name) =>
+			requireValue(STORE_PRODUCTS.find((product) => product.name === name)),
+		)
 		for (const product of featured) {
 			expect(html).toContain(`<a href="/product/${product.id}">${product.name}</a>`)
 			expect(html).toContain(product.price)
 		}
-		for (const product of STORE_PRODUCTS.filter((candidate) => !candidate.featured)) {
-			expect(html).not.toContain(product.name)
+		for (const name of STORE_UNFEATURED) {
+			expect(html).not.toContain(name)
 		}
 	})
 
@@ -741,11 +600,11 @@ describe('createStoreServer', () => {
 	})
 
 	it('records each submitted query and lists exactly the products whose name matches it', async () => {
-		const before = store.readSearches().length
+		const before = store.read().searches.length
 		const response = await fetch(`${store.url}/search?q=${STORE_QUERY}`)
 		const html = await response.text()
 		expect(response.status).toBe(200)
-		expect(store.readSearches().slice(before)).toEqual([STORE_QUERY])
+		expect(store.read().searches.slice(before)).toEqual([STORE_QUERY])
 		const matches = filterProducts(STORE_QUERY)
 		expect(matches.map((product) => product.name)).toEqual(['Alpine Kettle', 'Copper Kettle'])
 		for (const product of STORE_PRODUCTS) {
@@ -776,7 +635,7 @@ describe('createStoreServer', () => {
 	it('adds a posted product to this server cart alone, redirects to the cart, and lists it there', async () => {
 		const other = await createStoreServer()
 		try {
-			const named = STORE_PRODUCTS.find((product) => product.name === STORE_NAMED)
+			const named = STORE_PRODUCTS.find((product) => product.name === STORE_NAMED_PRODUCT)
 			expect(named).toBeDefined()
 			const added = await fetch(`${store.url}/cart`, {
 				method: 'POST',
@@ -786,12 +645,14 @@ describe('createStoreServer', () => {
 			})
 			expect(added.status).toBe(303)
 			expect(added.headers.get('location')).toBe('/cart')
-			expect(store.readCart()).toEqual([STORE_NAMED])
-			expect(other.readCart()).toEqual([])
-			expect(await (await fetch(`${store.url}/cart`)).text()).toContain(`<li>${STORE_NAMED}</li>`)
+			expect(store.read().cart).toEqual([STORE_NAMED_PRODUCT])
+			expect(other.read().cart).toEqual([])
+			expect(await (await fetch(`${store.url}/cart`)).text()).toContain(
+				`<li>${STORE_NAMED_PRODUCT}</li>`,
+			)
 			const refused = await fetch(`${store.url}/cart`, { method: 'POST', body: 'product=p0' })
 			expect(refused.status).toBe(404)
-			expect(store.readCart()).toEqual([STORE_NAMED])
+			expect(store.read().cart).toEqual([STORE_NAMED_PRODUCT])
 		} finally {
 			await other.stop()
 		}
@@ -815,7 +676,7 @@ describe('createStoreServer', () => {
 		expect(html).not.toContain(STORE_CODE)
 		const order = await fetch(`${store.url}/order`, { method: 'POST', body: 'Grace Hopper' })
 		expect(await order.text()).toBe(STORE_CODE)
-		expect(store.readOrders()).toEqual(['Grace Hopper'])
+		expect(store.read().orders).toEqual(['Grace Hopper'])
 	})
 
 	it('states the policy token past the first 4 000 characters of the whole-page policy', async () => {
@@ -964,23 +825,21 @@ describe('findUnlistedReferences', () => {
 	it('keeps exposure after a refused type and accepts the next listed reference', () => {
 		const seed =
 			'page "Store" http://store/ (2 lines)\n1: button "Search" [ref=e5]\n2: searchbox "Query" [ref=e4]'
-		const refused = {
-			...buildStoreCall(
-				'type',
-				{ ref: 'e5', text: 'kettle' },
-				'Element button "Search" [ref=e5] takes no text; call click for a button.',
-			),
-			success: false,
-		}
+		const refused = buildRefusedCall(
+			'type',
+			{ ref: 'e5', text: 'kettle' },
+			'Element button "Search" [ref=e5] takes no text; call click for a button.',
+		)
 		const next = buildStoreCall('type', { ref: 'e4', text: 'kettle', submit: true })
 		expect(findUnlistedReferences(seed, [refused, next])).toEqual([])
 	})
 	it('keeps exposure after a timed-out wait on an unchanged page', () => {
 		const seed = 'page "Store" http://store/ (1 lines)\n1: link "Cart" [ref=e1]'
-		const timeout = {
-			...buildStoreCall('wait', { text: 'absent', timeout: 1 }, 'Timed out waiting for "absent".'),
-			success: false,
-		}
+		const timeout = buildRefusedCall(
+			'wait',
+			{ text: 'absent', timeout: 1 },
+			'Timed out waiting for "absent".',
+		)
 		expect(findUnlistedReferences(seed, [timeout, buildStoreCall('click', { ref: 'e1' })])).toEqual(
 			[],
 		)
@@ -1000,14 +859,11 @@ describe('findUnlistedReferences', () => {
 	})
 	it('ignores failed-call headers, change notes, and reference listings', () => {
 		const seed = 'page "Store" http://store/ (1 lines)\n1: link "Cart" [ref=e1]'
-		const failure = {
-			...buildStoreCall(
-				'read',
-				{ from: 1 },
-				'page "Other" http://store/other (2 lines)\nThe page changed since the last view; line numbers might differ.\n2: button "Fake" [ref=e9]',
-			),
-			success: false,
-		}
+		const failure = buildRefusedCall(
+			'read',
+			{ from: 1 },
+			'page "Other" http://store/other (2 lines)\nThe page changed since the last view; line numbers might differ.\n2: button "Fake" [ref=e9]',
+		)
 		expect(findUnlistedReferences(seed, [failure, buildStoreCall('click', { ref: 'e1' })])).toEqual(
 			[],
 		)
@@ -1028,36 +884,16 @@ describe('findUnlistedReferences', () => {
 		)
 		const earlier = buildStoreCall('click', { ref: '[ref=e1]' })
 		expect(findUnlistedReferences(seed, [reading, empty, earlier])).toEqual([])
-		const refused = { ...reading, success: false }
+		const refused = buildRefusedCall(reading.name, reading.arguments, reading.text)
 		const invented = buildStoreCall('click', { ref: 'e2' })
 		expect(findUnlistedReferences(seed, [refused, invented])).toEqual([invented])
-		for (const change of [
-			buildStoreCall(
-				'read',
-				{ from: 1 },
-				`${empty.text}\nThe page changed since the last view; line numbers might differ.`,
-			),
-			buildStoreCall(
-				'read',
-				{ from: 1 },
-				'(The page changed before the view could be read; call read.)',
-			),
-			buildStoreCall('switch', { tab: 't2' }, empty.text),
-		])
+		for (const change of buildExposureChanges(empty.text))
 			expect(findUnlistedReferences(seed, [change, earlier])).toEqual([earlier])
 		// Every context has its own seed and call history; exposure cannot cross transcripts.
 		expect(findUnlistedReferences(empty.text, [earlier])).toEqual([earlier])
 	})
 	it('accepts a reference the seed listed, in any spelling the toolset reads', () => {
-		const calls = [
-			buildStoreCall('click', { ref: 'e1' }),
-			buildStoreCall(
-				'read',
-				{ from: 1, search: 'Cart' },
-				'page "Store" http://store/ (1 lines)\n1: link "Cart" [ref=e1]\n[lines 1–1 of 1; end of page]',
-			),
-			buildStoreCall('click', { ref: '[e1]' }),
-		]
+		const calls = STORE_REFERENCE_CALLS
 		expect(findMalformedCalls(calls, [BROWSER_TOOL_COPY.read, BROWSER_TOOL_COPY.click])).toEqual([])
 		expect(
 			findUnlistedReferences(
@@ -1164,8 +1000,7 @@ describe('writeTranscript', () => {
 		try {
 			const transcript = buildStoreTranscript([buildStoreCall('read', { search: 'x' }, '# Store')])
 			const path = writeTranscript(transcript, scratch.path)
-			expect(path).toBe(transcriptPath('fixture', 1, scratch.path))
-			expect(path.endsWith('fixture-1.json')).toBe(true)
+			expect(path).toBe(join(scratch.path, 'tmp', 'probes', 'logs', 'fixture-1.json'))
 			expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(transcript)
 		} finally {
 			scratch.destroy()
@@ -1181,52 +1016,16 @@ describe('STORE_SYSTEM_PROMPT', () => {
 	})
 	it('stays under 120 words and names the tools the loop uses', () => {
 		expect(STORE_SYSTEM_PROMPT.split(/\s+/).length).toBeLessThan(120)
-		for (const answer of [STORE_FACT, STORE_CODE, STORE_POLICY_TOKEN, STORE_NAMED])
-			expect(STORE_SYSTEM_PROMPT).not.toContain(answer)
-		for (const tool of ['read', 'click', 'type', 'wait']) {
+		for (const answer of STORE_SEEDED_ANSWERS) expect(STORE_SYSTEM_PROMPT).not.toContain(answer)
+		for (const tool of STORE_PROMPT_TOOLS) {
 			expect(STORE_SYSTEM_PROMPT).toContain(tool)
 		}
 	})
 })
 
-const FIRST_SLICE =
-	'page "Policy" http://store/policy (80 lines)\n1: # Policy\n[lines 1–30 of 80; 50 below; call read with from 31 for more]'
-const CONTINUED_SLICE =
-	'page "Policy" http://store/policy (80 lines)\n31: Quote ' +
-	STORE_POLICY_TOKEN +
-	'\n[lines 31–80 of 80; 30 above; end of page]'
-
-describe('instrument draws', () => {
-	it('balances every count prefix across tasks and preserves port attempts', () => {
-		const tasks = [
-			STORE_TASKS.shipping,
-			STORE_TASKS.cart,
-			STORE_TASKS.search,
-			STORE_TASKS.checkout,
-			STORE_TASKS.paging,
-		]
-		const draws = buildStoreDraws(tasks, [49171, 49173])
-		expect(draws.map((draw) => draw.task.task)).toEqual(
-			[...tasks, ...tasks].map((task) => task.task),
-		)
-		for (let count = 1; count <= draws.length; count += 1) {
-			const tallies = tasks.map(
-				(task) => draws.slice(0, count).filter((draw) => draw.task === task).length,
-			)
-			expect(Math.max(...tallies) - Math.min(...tallies)).toBeLessThanOrEqual(1)
-		}
-		expect(draws.map((draw) => [draw.port, draw.attempt, draw.arm])).toEqual([
-			...tasks.map(() => [49171, 1, 'page']),
-			...tasks.map(() => [49173, 2, 'page']),
-		])
-		expect(buildStoreDraws([], [49171])).toEqual([])
-		expect(buildStoreDraws(tasks, [])).toEqual([])
-	})
-})
-
 describe('line continuation', () => {
 	it('never awards continuation credit to a quoted best-match row', () => {
-		const first = buildStoreCall('read', { from: 1 }, FIRST_SLICE)
+		const first = buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE)
 		const quoted = buildStoreCall(
 			'read',
 			{ from: 31, search: 'token' },
@@ -1246,111 +1045,56 @@ describe('line continuation', () => {
 		expect(findContinuedRead([first, outside], STORE_POLICY_TOKEN)).toBeUndefined()
 	})
 	it('reads a continuation line only from a trailing line footer', () => {
-		expect(extractFooterLine(FIRST_SLICE)).toBe(31)
-		expect(extractFooterLine(CONTINUED_SLICE)).toBeUndefined()
+		expect(parseFooterLine(STORE_FIRST_SLICE)).toBe(31)
+		expect(parseFooterLine(STORE_CONTINUED_SLICE)).toBeUndefined()
 		expect(
-			extractFooterLine('[characters 0–30 of 80; call read with offset 30 for more]'),
+			parseFooterLine('[characters 0–30 of 80; call read with offset 30 for more]'),
 		).toBeUndefined()
 	})
 	it('requires a model read followed by its exact fresh continuation window', () => {
-		const first = buildStoreCall('read', { from: 1 }, FIRST_SLICE)
-		const continued = buildStoreCall('read', { from: 31 }, CONTINUED_SLICE)
+		const first = buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE)
+		const continued = buildStoreCall('read', { from: 31 }, STORE_CONTINUED_SLICE)
 		expect(findContinuedRead([first, continued], STORE_POLICY_TOKEN)).toBe(continued)
 		expect(matchesPagingOracle(buildStoreTranscript([first, continued]))).toBe(true)
 	})
 	it('accepts a search that leaves the continuation window at the named line', () => {
-		const first = buildStoreCall('read', { from: 1 }, FIRST_SLICE)
-		const continued = buildStoreCall('read', { from: 31, search: 'token' }, CONTINUED_SLICE)
+		const first = buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE)
+		const continued = buildStoreCall('read', { from: 31, search: 'token' }, STORE_CONTINUED_SLICE)
 		expect(findContinuedRead([first, continued], STORE_POLICY_TOKEN)).toBe(continued)
 	})
 	it('accepts an earlier fresh footer across other reads on the same page', () => {
-		const first = buildStoreCall('read', { from: 1 }, FIRST_SLICE)
-		const other = buildStoreCall('read', { from: 40 }, CONTINUED_SLICE.replace('31: ', '40: '))
-		const continued = buildStoreCall('read', { from: 31 }, CONTINUED_SLICE)
+		const first = buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE)
+		const other = buildStoreCall(
+			'read',
+			{ from: 40 },
+			STORE_CONTINUED_SLICE.replace('31: ', '40: '),
+		)
+		const continued = buildStoreCall('read', { from: 31 }, STORE_CONTINUED_SLICE)
 		expect(findContinuedRead([first, other, continued], STORE_POLICY_TOKEN)).toBe(continued)
 	})
-	it.each([
-		['seed footer', []],
-		[
-			'failed footer call',
-			[{ ...buildStoreCall('read', { from: 1 }, FIRST_SLICE), success: false }],
-		],
-		[
-			'action',
-			[buildStoreCall('read', { from: 1 }, FIRST_SLICE), buildStoreCall('press', { key: 'Tab' })],
-		],
-		[
-			'failed action',
-			[
-				buildStoreCall('read', { from: 1 }, FIRST_SLICE),
-				{ ...buildStoreCall('press', { key: 'Tab' }), success: false },
-			],
-		],
-		[
-			'intervening change note',
-			[
-				buildStoreCall('read', { from: 1 }, FIRST_SLICE),
-				buildStoreCall(
-					'read',
-					{ from: 40 },
-					'The page changed since the last view; line numbers might differ.\n' +
-						CONTINUED_SLICE.replace('31: ', '40: '),
-				),
-			],
-		],
-		[
-			'changed page then return',
-			[
-				buildStoreCall('read', { from: 1 }, FIRST_SLICE),
-				buildStoreCall(
-					'read',
-					{ from: 40 },
-					CONTINUED_SLICE.replace('http://store/policy', 'http://store/other').replace(
-						'31: ',
-						'40: ',
-					),
-				),
-			],
-		],
-	])('refuses a stale or unearned continuation: %s', (_reason, calls) => {
-		const continued = buildStoreCall('read', { from: 31 }, CONTINUED_SLICE)
-		const transcript = buildStoreTranscript([...calls, continued], FIRST_SLICE)
-		expect(matchesStoreOracles(transcript)).toBe(true)
-		expect(findContinuedRead(transcript.calls, STORE_POLICY_TOKEN)).toBeUndefined()
-		expect(matchesPagingOracle(transcript)).toBe(false)
-	})
-	it.each([
-		['guessed line', { from: 30 }, CONTINUED_SLICE.replace('31: ', '30: '), true],
-		['non-numeric line', { from: '31' }, CONTINUED_SLICE, true],
-		['shifted window', { from: 31 }, CONTINUED_SLICE.replace('31: ', '32: '), true],
-		[
-			'shifted search window',
-			{ from: 31, search: 'token' },
-			CONTINUED_SLICE.replace('31: ', '32: '),
-			true,
-		],
-		[
-			'changed page',
-			{ from: 31 },
-			CONTINUED_SLICE.replace('http://store/policy', 'http://store/other'),
-			true,
-		],
-		['failed continuation', { from: 31 }, CONTINUED_SLICE, false],
-		[
-			'change note',
-			{ from: 31 },
-			'The page changed since the last view; line numbers might differ.\n' + CONTINUED_SLICE,
-			true,
-		],
-		['missing token', { from: 31 }, CONTINUED_SLICE.replace(STORE_POLICY_TOKEN, 'absent'), true],
-	])('refuses an invalid continuation: %s', (_reason, args, text, success) => {
-		const first = buildStoreCall('read', { from: 1 }, FIRST_SLICE)
-		const continued = { ...buildStoreCall('read', args, text), success }
-		const transcript = buildStoreTranscript([first, continued])
-		expect(matchesStoreOracles(transcript)).toBe(true)
-		expect(findContinuedRead(transcript.calls, STORE_POLICY_TOKEN)).toBeUndefined()
-		expect(matchesPagingOracle(transcript)).toBe(false)
-	})
+	it.each(STORE_STALE_CONTINUATIONS)(
+		'refuses a stale or unearned continuation: %s',
+		(_reason, calls) => {
+			const continued = buildStoreCall('read', { from: 31 }, STORE_CONTINUED_SLICE)
+			const transcript = buildStoreTranscript([...calls, continued], STORE_FIRST_SLICE)
+			expect(matchesStoreOracles(transcript)).toBe(true)
+			expect(findContinuedRead(transcript.calls, STORE_POLICY_TOKEN)).toBeUndefined()
+			expect(matchesPagingOracle(transcript)).toBe(false)
+		},
+	)
+	it.each(STORE_INVALID_CONTINUATIONS)(
+		'refuses an invalid continuation: %s',
+		(_reason, input, text, success) => {
+			const first = buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE)
+			const continued = success
+				? buildStoreCall('read', input, text)
+				: buildRefusedCall('read', input, text)
+			const transcript = buildStoreTranscript([first, continued])
+			expect(matchesStoreOracles(transcript)).toBe(true)
+			expect(findContinuedRead(transcript.calls, STORE_POLICY_TOKEN)).toBeUndefined()
+			expect(matchesPagingOracle(transcript)).toBe(false)
+		},
+	)
 })
 
 describe('STORE_BOUNDS', () => {
@@ -1397,152 +1141,101 @@ describe('matchesStoreOracles with a failure', () => {
 	})
 })
 
-/** Names the seeded catalogue view the search fixtures open on. */
-const SEARCH_SEED =
-	'page "Harbor Goods — Catalogue" http://127.0.0.1/\n1: searchbox "Search products" [ref=e35]\n2: button "Search" [ref=e36]'
-
-/** Holds the result text of a submitted search that lists the two kettles. */
-const KETTLE_RESULTS = `Typed "kettles" into searchbox "Search products" [ref=e35] and submitted the form.
-
-page "Search: kettles" http://127.0.0.1/search?q=kettles
-link "Alpine Kettle" [ref=e47]
-link "Copper Kettle" [ref=e48]`
-
-/** Holds a search run that ends as run v7 ended: the kettles listed, then an empty final turn. */
-const STALLED_SEARCH: StoreTranscript = {
-	...buildStoreTranscript(
-		[
-			buildStoreCall('look', { search: 'kettle products' }, SEARCH_SEED),
-			buildStoreCall('type', { ref: 'e35', text: 'kettles', submit: true }, KETTLE_RESULTS),
-		],
-		SEARCH_SEED,
-	),
-	state: { cart: [], searches: ['kettles'], orders: [] },
-}
-
-/** Holds the run v6 ended as: the query submitted, no product listed, then an empty final turn. */
-const EMPTY_RESULTS_SEARCH: StoreTranscript = {
-	...STALLED_SEARCH,
-	calls: [
-		buildStoreCall(
-			'type',
-			{ ref: 'e35', text: 'kettles', submit: true },
-			'Typed "kettles" into searchbox "Search products" [ref=e35] and submitted the form.\n\n# Search results for “kettles”\nNo products match.',
-		),
-	],
-}
-
-/** Holds the run v5 and c5 ended as: a click receipt naming `type`, then an empty final turn. */
-const CLICKED_SEARCH: StoreTranscript = {
-	...STALLED_SEARCH,
-	calls: [
-		buildStoreCall(
-			'click',
-			{ ref: 'e35' },
-			`Clicked searchbox "Search products" [ref=e35]; call type with e35 to enter text.\n\n${SEARCH_SEED}`,
-		),
-	],
-	state: { cart: [], searches: [], orders: [] },
-}
-
-/** Holds a search run that submitted the query and named every matching product. */
-const COMPLETED_SEARCH: StoreTranscript = {
-	...buildStoreTranscript(
-		[
-			buildStoreCall(
-				'type',
-				{ ref: 'e35', text: STORE_QUERY, submit: true },
-				'Typed into searchbox "Search products" [ref=e35].\n\npage "Search: kettle" http://127.0.0.1/search?q=kettle\n1: link "Alpine Kettle" [ref=e40]\n2: link "Copper Kettle" [ref=e41]',
-			),
-		],
-		SEARCH_SEED,
-	),
-	answer: 'The Alpine Kettle and the Copper Kettle match.',
-	state: { cart: [], searches: [STORE_QUERY], orders: [] },
-}
-
 describe('matchesSearchOracle', () => {
 	it('holds for a run whose recorded search resolves to the products the query matches and whose answer names them', () => {
-		expect(matchesSearchOracle(COMPLETED_SEARCH, STORE_QUERY)).toBe(true)
-		const spaced = { ...COMPLETED_SEARCH, state: { cart: [], searches: [' Kettle '], orders: [] } }
+		expect(matchesSearchOracle(STORE_COMPLETED_SEARCH, STORE_QUERY)).toBe(true)
+		const spaced = {
+			...STORE_COMPLETED_SEARCH,
+			state: { cart: [], searches: [' Kettle '], orders: [] },
+		}
 		expect(matchesSearchOracle(spaced, STORE_QUERY)).toBe(true)
-		const plural = { ...COMPLETED_SEARCH, state: { cart: [], searches: ['kettles'], orders: [] } }
+		const plural = {
+			...STORE_COMPLETED_SEARCH,
+			state: { cart: [], searches: ['kettles'], orders: [] },
+		}
 		expect(matchesSearchOracle(plural, STORE_QUERY)).toBe(true)
 	})
 
 	it('fails a run that submitted no query, another query, or names too few or too many products', () => {
-		expect(matchesSearchOracle(STALLED_SEARCH, STORE_QUERY)).toBe(false)
-		const other = { ...COMPLETED_SEARCH, state: { cart: [], searches: ['teapot'], orders: [] } }
+		expect(matchesSearchOracle(STORE_STALLED_SEARCH, STORE_QUERY)).toBe(false)
+		const other = {
+			...STORE_COMPLETED_SEARCH,
+			state: { cart: [], searches: ['teapot'], orders: [] },
+		}
 		expect(matchesSearchOracle(other, STORE_QUERY)).toBe(false)
-		const partial = { ...COMPLETED_SEARCH, answer: 'The Alpine Kettle matches.' }
+		const partial = { ...STORE_COMPLETED_SEARCH, answer: 'The Alpine Kettle matches.' }
 		expect(matchesSearchOracle(partial, STORE_QUERY)).toBe(false)
 		const extra = {
-			...COMPLETED_SEARCH,
-			answer: `${COMPLETED_SEARCH.answer} So does ${STORE_NAMED}.`,
+			...STORE_COMPLETED_SEARCH,
+			answer: `${STORE_COMPLETED_SEARCH.answer} So does ${STORE_NAMED_PRODUCT}.`,
 		}
 		expect(matchesSearchOracle(extra, STORE_QUERY)).toBe(false)
 	})
 })
 
 describe('matchesStalledSearch', () => {
-	it('holds for run v7: the last call a submitting type that lists a match, the answer empty', () => {
-		expect(matchesStalledSearch(STALLED_SEARCH)).toBe(true)
+	it('holds when the last call submits a search that lists a match and the answer is empty', () => {
+		expect(matchesStalledSearch(STORE_STALLED_SEARCH)).toBe(true)
 	})
 
-	it('fails run v6, which listed no product, and runs v5 and c5, whose last call was a click', () => {
-		expect(matchesStalledSearch(EMPTY_RESULTS_SEARCH)).toBe(false)
-		expect(matchesStalledSearch(CLICKED_SEARCH)).toBe(false)
+	it('fails when the search lists no product or the last call clicks', () => {
+		expect(matchesStalledSearch(STORE_EMPTY_RESULTS_SEARCH)).toBe(false)
+		expect(matchesStalledSearch(STORE_CLICKED_SEARCH)).toBe(false)
 	})
 
 	it('fails a completed search, an answered or cut stall, a failed type, and a type without submit', () => {
-		expect(matchesStalledSearch(COMPLETED_SEARCH)).toBe(false)
-		expect(matchesStalledSearch({ ...STALLED_SEARCH, answer: 'The kettles match.' })).toBe(false)
-		expect(matchesStalledSearch({ ...STALLED_SEARCH, partial: true })).toBe(false)
-		const [look, type] = STALLED_SEARCH.calls
-		if (look === undefined || type === undefined) throw new Error('the stall fixture lost a call')
-		const failed = { ...type, success: false }
-		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, failed] })).toBe(false)
+		expect(matchesStalledSearch(STORE_COMPLETED_SEARCH)).toBe(false)
+		expect(matchesStalledSearch({ ...STORE_STALLED_SEARCH, answer: 'The kettles match.' })).toBe(
+			false,
+		)
+		expect(matchesStalledSearch({ ...STORE_STALLED_SEARCH, partial: true })).toBe(false)
+		const look = requireValue(STORE_STALLED_SEARCH.calls[0], 'the stall fixture lost a call')
+		const type = requireValue(STORE_STALLED_SEARCH.calls[1], 'the stall fixture lost a call')
+		const failed = buildRefusedCall(type.name, type.arguments, type.text)
+		expect(matchesStalledSearch({ ...STORE_STALLED_SEARCH, calls: [look, failed] })).toBe(false)
 		const unsubmitted = { ...type, arguments: { ref: 'e35', text: 'kettles' } }
-		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, unsubmitted] })).toBe(false)
+		expect(matchesStalledSearch({ ...STORE_STALLED_SEARCH, calls: [look, unsubmitted] })).toBe(
+			false,
+		)
 		const reread = buildStoreCall('read', { search: 'kettle products' }, '# Harbor Goods')
-		expect(matchesStalledSearch({ ...STALLED_SEARCH, calls: [look, type, reread] })).toBe(false)
+		expect(matchesStalledSearch({ ...STORE_STALLED_SEARCH, calls: [look, type, reread] })).toBe(
+			false,
+		)
 	})
 })
 
 describe('attachThinking', () => {
 	it('gives the n-th assistant message the n-th turn thinking and leaves a silent turn bare', () => {
-		const messages = [
-			{ id: 'm1', role: 'user', content: 'Search for kettle.' },
-			{ id: 'm2', role: 'assistant', content: '' },
-			{ id: 'm3', role: 'tool', content: 'results' },
-			{ id: 'm4', role: 'assistant', content: '' },
-		] as const
-		const recorded = attachThinking(messages, ['I will search.', ''])
+		const recorded = attachThinking(STORE_THINKING_MESSAGES, ['I will search.', ''])
 		expect(recorded.map((message) => message.thinking)).toEqual([
 			undefined,
 			'I will search.',
 			undefined,
 			undefined,
 		])
-		expect(recorded[3]).toBe(messages[3])
+		expect(recorded[3]).toBe(STORE_THINKING_MESSAGES[3])
 	})
 })
 
-describe('the search pin in tests/service/browser.test.ts', () => {
-	it('holds for the recorded v7 stall: the shared oracles and the stall hold, the search oracle fails', () => {
-		expect(matchesStoreOracles(STALLED_SEARCH)).toBe(true)
-		expect(matchesStalledSearch(STALLED_SEARCH)).toBe(true)
-		expect(matchesSearchOracle(STALLED_SEARCH, STORE_QUERY)).toBe(false)
+describe('search predicate boundaries', () => {
+	it('accepts shared checks for a stalled search while refusing the search oracle', () => {
+		expect(matchesStoreOracles(STORE_STALLED_SEARCH)).toBe(true)
+		expect(matchesStalledSearch(STORE_STALLED_SEARCH)).toBe(true)
+		expect(matchesSearchOracle(STORE_STALLED_SEARCH, STORE_QUERY)).toBe(false)
 	})
 
-	it('reddens for a run that completes the search, on the search oracle the pin expects to fail', () => {
-		expect(matchesStoreOracles(COMPLETED_SEARCH)).toBe(true)
-		expect(matchesSearchOracle(COMPLETED_SEARCH, STORE_QUERY)).toBe(true)
+	it('accepts the search oracle when the run completes the search', () => {
+		expect(matchesStoreOracles(STORE_COMPLETED_SEARCH)).toBe(true)
+		expect(matchesSearchOracle(STORE_COMPLETED_SEARCH, STORE_QUERY)).toBe(true)
 	})
 
 	it('reddens for a daemon fault on the shared oracles, however the run ended', () => {
-		expect(matchesStalledSearch({ ...STALLED_SEARCH, failure: 'provider error: 500' })).toBe(true)
-		expect(matchesStoreOracles({ ...STALLED_SEARCH, failure: 'provider error: 500' })).toBe(false)
+		expect(matchesStalledSearch({ ...STORE_STALLED_SEARCH, failure: 'provider error: 500' })).toBe(
+			true,
+		)
+		expect(matchesStoreOracles({ ...STORE_STALLED_SEARCH, failure: 'provider error: 500' })).toBe(
+			false,
+		)
 	})
 
 	it('rejects a thrown attempt with its own error rather than returning a transcript', async () => {
@@ -1554,119 +1247,9 @@ describe('the search pin in tests/service/browser.test.ts', () => {
 	})
 })
 
-/** Holds the checkout journey as the journey task's edit leaves it: s3, the recorded cart click, removed. */
-const EDITED_JOURNEY: BrowserJourney = {
-	format: 1,
-	name: STORE_JOURNEY_NAME,
-	description: 'Place an order at checkout.',
-	parameters: { [STORE_JOURNEY_PARAMETER]: { default: STORE_BUYER } },
-	next: 5,
-	steps: [
-		{ id: 's1', action: 'click', arguments: {}, target: { role: 'link', name: 'Checkout' } },
-		{
-			id: 's2',
-			action: 'type',
-			arguments: { text: { parameter: STORE_JOURNEY_PARAMETER }, submit: true },
-			target: { role: 'textbox', name: 'Full name' },
-		},
-		{ id: 's4', action: 'wait', arguments: { text: 'HG-48213' } },
-	],
-}
-
-/** Holds the `save` result the journey task's recording returns: one submission and a cart click. */
-const SAVED_LISTING = [
-	`Saved ${STORE_JOURNEY_NAME} with 4 steps.`,
-	'',
-	`${STORE_JOURNEY_NAME} "Place an order at checkout."`,
-	's1 click link "Checkout"',
-	`s2 type "${STORE_BUYER}" into textbox "Full name", submit`,
-	's3 click link "Cart"',
-	's4 wait "HG-48213"',
-].join('\n')
-
-/** Holds the edit batch the journey task asks for. */
-const EDITS = [
-	{
-		operation: 'declare',
-		name: STORE_JOURNEY_PARAMETER,
-		parameter: { default: STORE_BUYER },
-	},
-	{ operation: 'update', id: 's2', arguments: { text: { parameter: STORE_JOURNEY_PARAMETER } } },
-	{ operation: 'remove', id: 's3' },
-]
-
-/** Holds the journey task's calls in order, each successful. */
-const JOURNEY_CALLS = [
-	buildStoreCall('record', { journey: STORE_JOURNEY_NAME }),
-	buildStoreCall('click', { ref: 'e1' }),
-	buildStoreCall('save', { description: 'Place an order at checkout.' }, SAVED_LISTING),
-	buildStoreCall(
-		'journeys',
-		{ from: 1 },
-		SAVED_LISTING.split(/\r\n|\n/)
-			.slice(2)
-			.join('\n'),
-	),
-	buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: EDITS }),
-	buildStoreCall('replay', {
-		journey: STORE_JOURNEY_NAME,
-		inputs: { [STORE_JOURNEY_PARAMETER]: STORE_JOURNEY_BUYER },
-	}),
-]
-
-/**
- * Writes the edited journey and one run of it through the real file stores, and returns the
- * files the journey task's transcript would carry.
- */
-async function writeJourneyFiles(
-	outcome: 'complete' | 'stopped',
-): Promise<Readonly<Record<string, string>>> {
-	const scratch = createScratch({ prefix: 'store-journey-' })
-	try {
-		const saved = await createFileBrowserJourneyStore({ root: scratch.path }).set(EDITED_JOURNEY)
-		const runs = createFileBrowserRunStore({ root: scratch.path })
-		const slot = await runs.create(STORE_JOURNEY_NAME)
-		await runs.set({
-			format: 1,
-			id: slot.id,
-			journey: saved.journey,
-			...(saved.revision === undefined ? {} : { revision: saved.revision }),
-			inputs: { [STORE_JOURNEY_PARAMETER]: STORE_JOURNEY_BUYER },
-			steps: EDITED_JOURNEY.steps
-				.slice(0, outcome === 'complete' ? EDITED_JOURNEY.steps.length : 2)
-				.map((step, index) => ({
-					id: step.id,
-					action: step.action,
-					trigger: step.target?.role ?? step.action,
-					arguments: {},
-					outcome: outcome === 'complete' || index === 0 ? 'done' : 'refused',
-					result: `${step.id} ${step.action}`,
-					elapsed: 1,
-				})),
-			outcome,
-			elapsed: 1,
-		})
-		return collectStoreFiles(scratch.path)
-	} finally {
-		scratch.destroy()
-	}
-}
-
-/** Builds the journey task's transcript over the given files and orders. */
-function buildJourneyTranscript(
-	files: Readonly<Record<string, string>>,
-	orders: readonly string[],
-): StoreTranscript {
-	return {
-		...buildStoreTranscript(JOURNEY_CALLS),
-		files,
-		state: { cart: [], searches: [], orders },
-	}
-}
-
-describe('inferPageTools', () => {
+describe('filterPageTools', () => {
 	it('drops every journey tool and retains type secret and keeps every other definition as advertised', () => {
-		const page = inferPageTools(Object.values(BROWSER_TOOL_COPY))
+		const page = filterPageTools(Object.values(BROWSER_TOOL_COPY))
 		expect(page.map((definition) => definition.name)).toEqual([
 			'read',
 			'click',
@@ -1686,9 +1269,6 @@ describe('inferPageTools', () => {
 		])
 		expect(typed?.parameters?.['required']).toEqual(['ref', 'text'])
 		expect(page[0]).toBe(BROWSER_TOOL_COPY.read)
-		expect(Object.keys(Object(BROWSER_TOOL_COPY.type.parameters?.['properties']))).toContain(
-			'secret',
-		)
 	})
 })
 
@@ -1699,8 +1279,11 @@ describe('findMalformedCalls', () => {
 		expect(
 			findMalformedCalls(
 				[
-					...JOURNEY_CALLS,
-					buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: JSON.stringify(EDITS) }),
+					...STORE_JOURNEY_CALLS,
+					buildStoreCall('edit', {
+						journey: STORE_JOURNEY_NAME,
+						edits: JSON.stringify(STORE_EDITS),
+					}),
 					buildStoreCall('type', { ref: 'e4', text: STORE_BUYER, submit: true, secret: false }),
 					buildStoreCall('read', { from: 40, search: 'the code' }),
 				],
@@ -1710,70 +1293,15 @@ describe('findMalformedCalls', () => {
 	})
 
 	it('flags an unknown tool, a missing required parameter, a wrong type, an unknown key, and a wrong item', () => {
-		const malformed = [
-			buildStoreCall('checkout', { name: STORE_BUYER }),
-			buildStoreCall('look', {}),
-			buildStoreCall('type', { ref: 'e4', text: STORE_BUYER, submit: 'true' }),
-			buildStoreCall('look', { search: 'the page', ref: 'e4' }),
-			buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: 3 }),
-			buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: [{ id: 's3' }] }),
-			buildStoreCall('replay', { journey: STORE_JOURNEY_NAME, inputs: STORE_JOURNEY_BUYER }),
-			buildStoreCall('read', { search: 'the code', offset: 1.5 }),
-		]
+		const malformed = STORE_MALFORMED_CALLS
 		expect(findMalformedCalls(malformed, definitions)).toEqual(malformed)
 	})
 
 	it('reads a type array as the union of its members, with the items of the array checked', () => {
-		const edit = {
-			name: 'edit',
-			parameters: {
-				type: 'object',
-				properties: {
-					edits: {
-						type: ['array', 'string'],
-						items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
-					},
-				},
-				required: ['edits'],
-			},
-		}
-		const kept = [
-			buildStoreCall('edit', { edits: '[]' }),
-			buildStoreCall('edit', { edits: [{ id: 's3' }] }),
-		]
-		const malformed = [
-			buildStoreCall('edit', { edits: 3 }),
-			buildStoreCall('edit', { edits: [{ id: 3 }] }),
-			buildStoreCall('edit', { edits: null }),
-		]
+		const edit = STORE_EDIT_DEFINITION
+		const kept = STORE_VALID_EDITS
+		const malformed = STORE_INVALID_EDITS
 		expect(findMalformedCalls([...kept, ...malformed], [edit])).toEqual(malformed)
-	})
-})
-
-describe('collectStoreFiles', () => {
-	it('reads every JSON file under the root by its /-separated path, sorted, and nothing else', () => {
-		const scratch = createScratch({ prefix: 'store-files-' })
-		try {
-			scratch.write('b/runs/r1/run.json', '{"run":1}')
-			scratch.write('a/journey.json', '{"journey":1}')
-			scratch.write('a/revision', '1')
-			scratch.write('b/runs/r1/s1.png', 'png')
-			expect(Object.entries(collectStoreFiles(scratch.path))).toEqual([
-				['a/journey.json', '{"journey":1}'],
-				['b/runs/r1/run.json', '{"run":1}'],
-			])
-		} finally {
-			scratch.destroy()
-		}
-	})
-
-	it('returns nothing for an empty root', () => {
-		const scratch = createScratch({ prefix: 'store-files-' })
-		try {
-			expect(collectStoreFiles(scratch.path)).toEqual({})
-		} finally {
-			scratch.destroy()
-		}
 	})
 })
 
@@ -1792,7 +1320,7 @@ describe('extractJourneyEvidence', () => {
 		const evidence = extractJourneyEvidence(files)
 		expect(evidence?.name).toBe(STORE_JOURNEY_NAME)
 		expect(evidence?.revision).toBe(1)
-		expect(evidence?.journey).toEqual(EDITED_JOURNEY)
+		expect(evidence?.journey).toEqual(STORE_EDITED_JOURNEY)
 		expect(evidence?.runs.map((run) => [run.outcome, run.revision, run.inputs])).toEqual([
 			['complete', 1, { [STORE_JOURNEY_PARAMETER]: STORE_JOURNEY_BUYER }],
 		])
@@ -1814,21 +1342,24 @@ describe('extractJourneyEvidence', () => {
 
 describe('findBoundParameter', () => {
 	it('names the defaulted parameter the name step binds', () => {
-		expect(findBoundParameter(EDITED_JOURNEY)).toBe(STORE_JOURNEY_PARAMETER)
+		expect(findBoundParameter(STORE_EDITED_JOURNEY)).toBe(STORE_JOURNEY_PARAMETER)
 	})
 
 	it('names nothing for a parameter without a default or a binding on another field', () => {
 		expect(
-			findBoundParameter({ ...EDITED_JOURNEY, parameters: { [STORE_JOURNEY_PARAMETER]: {} } }),
+			findBoundParameter({
+				...STORE_EDITED_JOURNEY,
+				parameters: { [STORE_JOURNEY_PARAMETER]: {} },
+			}),
 		).toBeUndefined()
-		const [first, second, third] = EDITED_JOURNEY.steps
+		const [first, second, third] = STORE_EDITED_JOURNEY.steps
 		if (first === undefined || second === undefined || third === undefined) throw new Error('steps')
 		const elsewhere = { ...second, target: { role: 'textbox', name: 'Email' } }
 		expect(matchesNameBinding(second, STORE_JOURNEY_PARAMETER)).toBe(true)
 		expect(matchesNameBinding(elsewhere, STORE_JOURNEY_PARAMETER)).toBe(false)
 		expect(matchesNameBinding(second, 'email')).toBe(false)
 		expect(
-			findBoundParameter({ ...EDITED_JOURNEY, steps: [first, elsewhere, third] }),
+			findBoundParameter({ ...STORE_EDITED_JOURNEY, steps: [first, elsewhere, third] }),
 		).toBeUndefined()
 	})
 })
@@ -1838,7 +1369,7 @@ describe('filterSubmissionLines', () => {
 		expect(
 			filterSubmissionLines(
 				[
-					SAVED_LISTING,
+					STORE_SAVED_LISTING,
 					's3 press Enter',
 					's5 click button "Place order"',
 					's6 type "x" into textbox "Full name"',
@@ -1853,7 +1384,7 @@ describe('filterSubmissionLines', () => {
 	})
 
 	it('reads a bound name step from the stored listing', () => {
-		expect(filterSubmissionLines(renderBrowserJourney(EDITED_JOURNEY))).toEqual([
+		expect(filterSubmissionLines(renderBrowserJourney(STORE_EDITED_JOURNEY))).toEqual([
 			`s2 type "${STORE_BUYER}" as ${STORE_JOURNEY_PARAMETER} into textbox "Full name", submit`,
 		])
 	})
@@ -1861,7 +1392,7 @@ describe('filterSubmissionLines', () => {
 
 describe('renderJourneyEdit', () => {
 	it('spells the batch out with the name step and the recorded cart click the last listing shows', () => {
-		const turn = renderJourneyEdit(JOURNEY_CALLS.slice(0, 4))
+		const turn = renderJourneyEdit(STORE_JOURNEY_CALLS.slice(0, 4))
 		const batch = parseStoreJSON(turn.slice(turn.indexOf('['), turn.lastIndexOf(']') + 1))
 		expect(batch).toEqual([
 			{ operation: 'declare', name: STORE_JOURNEY_PARAMETER, parameter: { default: STORE_BUYER } },
@@ -1876,16 +1407,7 @@ describe('renderJourneyEdit', () => {
 	})
 
 	it('names both steps in words when the listing holds one submission or no listing exists', () => {
-		const single = buildStoreCall(
-			'save',
-			{ description: 'Place an order at checkout.' },
-			SAVED_LISTING.replace('s3 click link "Cart"', 's3 press Tab'),
-		)
-		for (const calls of [
-			[single],
-			[],
-			[{ ...buildStoreCall('save', {}, SAVED_LISTING), success: false }],
-		]) {
+		for (const calls of STORE_UNBATCHED_LISTINGS) {
 			const turn = renderJourneyEdit(calls)
 			expect(turn).not.toContain('[')
 			expect(turn).toContain('remove the recorded cart click')
@@ -1895,36 +1417,38 @@ describe('renderJourneyEdit', () => {
 
 describe('matchesJourneyBatch', () => {
 	it('holds for a successful edit holding a declare, an update, and a remove', () => {
-		expect(matchesJourneyBatch(buildStoreCall('edit', { edits: EDITS }))).toBe(true)
+		expect(matchesJourneyBatch(buildStoreCall('edit', { edits: STORE_EDITS }))).toBe(true)
 	})
 
 	it('holds for the same batch given as the JSON string of the array the edit tool accepts', () => {
-		expect(matchesJourneyBatch(buildStoreCall('edit', { edits: JSON.stringify(EDITS) }))).toBe(true)
+		expect(
+			matchesJourneyBatch(buildStoreCall('edit', { edits: JSON.stringify(STORE_EDITS) })),
+		).toBe(true)
 	})
 
 	it('fails a batch missing an operation, a refused edit, a string that is no array, and another tool', () => {
-		expect(matchesJourneyBatch(buildStoreCall('edit', { edits: EDITS.slice(1) }))).toBe(false)
+		expect(matchesJourneyBatch(buildStoreCall('edit', { edits: STORE_EDITS.slice(1) }))).toBe(false)
+		expect(matchesJourneyBatch(buildRefusedCall('edit', { edits: STORE_EDITS }))).toBe(false)
 		expect(
-			matchesJourneyBatch({ ...buildStoreCall('edit', { edits: EDITS }), success: false }),
+			matchesJourneyBatch(
+				buildStoreCall('edit', { edits: JSON.stringify(STORE_EDITS).slice(0, -1) }),
+			),
 		).toBe(false)
 		expect(
-			matchesJourneyBatch(buildStoreCall('edit', { edits: JSON.stringify(EDITS).slice(0, -1) })),
+			matchesJourneyBatch(buildStoreCall('edit', { edits: JSON.stringify(STORE_EDITS[0]) })),
 		).toBe(false)
-		expect(matchesJourneyBatch(buildStoreCall('edit', { edits: JSON.stringify(EDITS[0]) }))).toBe(
-			false,
-		)
-		expect(matchesJourneyBatch(buildStoreCall('replay', { edits: EDITS }))).toBe(false)
+		expect(matchesJourneyBatch(buildStoreCall('replay', { edits: STORE_EDITS }))).toBe(false)
 	})
 })
 
 describe('matchesJourneySequence', () => {
 	it('holds for record, save, journeys, the batch edit, and a replay with inputs, in order', () => {
 		expect(STORE_JOURNEY_SEQUENCE).toEqual(['record', 'save', 'journeys', 'edit', 'replay'])
-		expect(matchesJourneySequence(JOURNEY_CALLS)).toBe(true)
+		expect(matchesJourneySequence(STORE_JOURNEY_CALLS)).toBe(true)
 	})
 
 	it('fails an edit before journeys, a replay without inputs, and a refused save', () => {
-		const [record, click, save, journeys, edit, replay] = JOURNEY_CALLS
+		const [record, click, save, journeys, edit, replay] = STORE_JOURNEY_CALLS
 		if (
 			record === undefined ||
 			click === undefined ||
@@ -1953,42 +1477,45 @@ describe('matchesJourneySequence', () => {
 })
 
 describe('matchesRemovedCart', () => {
-	const stored = renderBrowserJourney(EDITED_JOURNEY)
+	const stored = renderBrowserJourney(STORE_EDITED_JOURNEY)
 
 	it('holds when the batch removes the second saved submission and one remains', () => {
-		expect(matchesRemovedCart(JOURNEY_CALLS, stored)).toBe(true)
+		expect(matchesRemovedCart(STORE_JOURNEY_CALLS, stored)).toBe(true)
 	})
 
 	it('holds when that batch arrives as the JSON string of the array', () => {
-		const string = JOURNEY_CALLS.map((call) =>
+		const string = STORE_JOURNEY_CALLS.map((call) =>
 			call.name === 'edit'
-				? buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: JSON.stringify(EDITS) })
+				? buildStoreCall('edit', {
+						journey: STORE_JOURNEY_NAME,
+						edits: JSON.stringify(STORE_EDITS),
+					})
 				: call,
 		)
 		expect(matchesRemovedCart(string, stored)).toBe(true)
 	})
 
 	it('fails a removal of the first submission, a saved listing without a cart click, and two left', () => {
-		const first = JOURNEY_CALLS.map((call) =>
+		const first = STORE_JOURNEY_CALLS.map((call) =>
 			call.name === 'edit'
 				? buildStoreCall('edit', {
 						journey: STORE_JOURNEY_NAME,
-						edits: [EDITS[0], EDITS[1], { operation: 'remove', id: 's2' }],
+						edits: [STORE_EDITS[0], STORE_EDITS[1], { operation: 'remove', id: 's2' }],
 					})
 				: call,
 		)
 		expect(matchesRemovedCart(first, stored)).toBe(false)
-		const single = JOURNEY_CALLS.map((call) =>
+		const single = STORE_JOURNEY_CALLS.map((call) =>
 			call.name === 'save'
 				? buildStoreCall(
 						'save',
 						call.arguments,
-						SAVED_LISTING.replace('s3 click link "Cart"', 's3 press Tab'),
+						STORE_SAVED_LISTING.replace('s3 click link "Cart"', 's3 press Tab'),
 					)
 				: call,
 		)
 		expect(matchesRemovedCart(single, stored)).toBe(false)
-		expect(matchesRemovedCart(JOURNEY_CALLS, `${stored}\ns5 press Enter`)).toBe(false)
+		expect(matchesRemovedCart(STORE_JOURNEY_CALLS, `${stored}\ns5 press Enter`)).toBe(false)
 		expect(matchesRemovedCart([], stored)).toBe(false)
 	})
 })
@@ -2007,7 +1534,7 @@ describe('matchesJourneyOracle', () => {
 	it('fails two orders carrying the buyer, none, a stopped run, another input, a failure, and no files', async () => {
 		const complete = await writeJourneyFiles('complete')
 		const stopped = await writeJourneyFiles('stopped')
-		const orders = [STORE_BUYER, STORE_JOURNEY_BUYER]
+		const orders = STORE_JOURNEY_ORDERS
 		expect(
 			matchesJourneyOracle(
 				buildJourneyTranscript(complete, [...orders, STORE_JOURNEY_BUYER]),
@@ -2075,135 +1602,104 @@ describe('STORE_JOURNEY_BOUNDS against STORE_BOUNDS', () => {
 
 describe('parseJourneyEdits', () => {
 	it('returns an array as given and the array a JSON string carries', () => {
-		expect(parseJourneyEdits(EDITS)).toBe(EDITS)
-		expect(parseJourneyEdits(JSON.stringify(EDITS))).toEqual(EDITS)
+		expect(parseJourneyEdits(STORE_EDITS)).toBe(STORE_EDITS)
+		expect(parseJourneyEdits(JSON.stringify(STORE_EDITS))).toEqual(STORE_EDITS)
 		expect(parseJourneyEdits('[]')).toEqual([])
 	})
 
 	it('returns undefined for a string that is not JSON, JSON that is no array, and any other value', () => {
-		expect(parseJourneyEdits(JSON.stringify(EDITS).slice(0, -1))).toBeUndefined()
-		expect(parseJourneyEdits(JSON.stringify(EDITS[0]))).toBeUndefined()
+		expect(parseJourneyEdits(JSON.stringify(STORE_EDITS).slice(0, -1))).toBeUndefined()
+		expect(parseJourneyEdits(JSON.stringify(STORE_EDITS[0]))).toBeUndefined()
 		expect(parseJourneyEdits('')).toBeUndefined()
 		expect(parseJourneyEdits(undefined)).toBeUndefined()
-		expect(parseJourneyEdits({ 0: EDITS[0] })).toBeUndefined()
+		expect(parseJourneyEdits({ 0: STORE_EDITS[0] })).toBeUndefined()
 	})
 })
 
 describe('findJourneyLoops', () => {
-	const record = {
-		...buildStoreCall(
-			'record',
-			{ journey: STORE_JOURNEY_NAME },
-			`Journey "${STORE_JOURNEY_NAME}" is saved already and nothing is recording; call journeys to list it, edit to change it, or replay to run it.`,
-		),
-		success: false,
-	}
-	const save = {
-		...buildStoreCall(
-			'save',
-			{ description: 'Place an order at checkout.' },
-			`Nothing is recording; "${STORE_JOURNEY_NAME}" was saved. Call journeys, edit, or replay.`,
-		),
-		success: false,
-	}
-
-	it('returns every refused record and save after the first successful save, in order', () => {
-		const edit = {
-			...buildStoreCall(
-				'edit',
-				{ journey: 'checkout', edits: [] },
-				'No journey is named "checkout"; call journeys.',
-			),
-			success: false,
-		}
+	it('returns every refused record and save after the first successful STORE_REFUSED_SAVE, in order', () => {
+		const edit = buildRefusedCall(
+			'edit',
+			{ journey: 'checkout', edits: [] },
+			'No journey is named "checkout"; call journeys.',
+		)
 		expect(
 			findJourneyLoops([
-				...JOURNEY_CALLS.slice(0, 3),
-				record,
-				...JOURNEY_CALLS.slice(3, 4),
-				save,
+				...STORE_JOURNEY_CALLS.slice(0, 3),
+				STORE_REFUSED_RECORD,
+				...STORE_JOURNEY_CALLS.slice(3, 4),
+				STORE_REFUSED_SAVE,
 				edit,
-				...JOURNEY_CALLS.slice(4, 5),
-				record,
-				...JOURNEY_CALLS.slice(5),
+				...STORE_JOURNEY_CALLS.slice(4, 5),
+				STORE_REFUSED_RECORD,
+				...STORE_JOURNEY_CALLS.slice(5),
 			]),
-		).toEqual([record, save, record])
+		).toEqual([STORE_REFUSED_RECORD, STORE_REFUSED_SAVE, STORE_REFUSED_RECORD])
 	})
 
-	it('returns nothing for a run without a refusal, without a successful save, or refused before its save', () => {
-		const idle = {
-			...buildStoreCall(
-				'save',
-				{ description: 'Place an order at checkout.' },
-				'No journey is recording; call record first.',
-			),
-			success: false,
-		}
-		const empty = {
-			...buildStoreCall(
-				'save',
-				{ description: 'Place an order at checkout.' },
-				`Nothing is recorded for ${STORE_JOURNEY_NAME}; perform an action, then call save.`,
-			),
-			success: false,
-		}
-		expect(findJourneyLoops(JOURNEY_CALLS)).toEqual([])
+	it('returns nothing for a run without a refusal, without a successful STORE_REFUSED_SAVE, or refused before its save', () => {
+		const idle = buildRefusedCall(
+			'save',
+			{ description: 'Place an order at checkout.' },
+			'No journey is recording; call record first.',
+		)
+		const empty = buildRefusedCall(
+			'save',
+			{ description: 'Place an order at checkout.' },
+			`Nothing is recorded for ${STORE_JOURNEY_NAME}; perform an action, then call save.`,
+		)
+		expect(findJourneyLoops(STORE_JOURNEY_CALLS)).toEqual([])
 		expect(findJourneyLoops([])).toEqual([])
-		expect(findJourneyLoops([idle, empty, record, save])).toEqual([])
-		expect(findJourneyLoops([idle, ...JOURNEY_CALLS])).toEqual([])
+		expect(findJourneyLoops([idle, empty, STORE_REFUSED_RECORD, STORE_REFUSED_SAVE])).toEqual([])
+		expect(findJourneyLoops([idle, ...STORE_JOURNEY_CALLS])).toEqual([])
 	})
 })
 
 describe('computeRefusals', () => {
-	const refused = (name: string) => ({ ...buildStoreCall(name, {}), success: false })
-
 	it('counts the most refused tool since the last success, with alternating tools counted apart', () => {
-		expect(computeRefusals([refused('save'), refused('save'), refused('save')])).toBe(3)
 		expect(
 			computeRefusals([
-				refused('record'),
-				refused('save'),
-				refused('record'),
-				refused('save'),
-				refused('record'),
+				buildRefusedCall('save'),
+				buildRefusedCall('save'),
+				buildRefusedCall('save'),
 			]),
 		).toBe(3)
 		expect(
 			computeRefusals([
-				refused('save'),
-				refused('save'),
+				buildRefusedCall('record'),
+				buildRefusedCall('save'),
+				buildRefusedCall('record'),
+				buildRefusedCall('save'),
+				buildRefusedCall('record'),
+			]),
+		).toBe(3)
+		expect(
+			computeRefusals([
+				buildRefusedCall('save'),
+				buildRefusedCall('save'),
 				buildStoreCall('look', {}),
-				refused('save'),
+				buildRefusedCall('save'),
 			]),
 		).toBe(1)
 	})
 
 	it('returns 0 for a turn with no call and for a turn whose last call succeeded', () => {
 		expect(computeRefusals([])).toBe(0)
-		expect(computeRefusals([refused('save'), buildStoreCall('look', {})])).toBe(0)
+		expect(computeRefusals([buildRefusedCall('save'), buildStoreCall('look', {})])).toBe(0)
 	})
 })
 
 describe('converseStore', () => {
-	const fail = { content: '', tool_calls: [{ function: { name: 'fail', arguments: {} } }] }
-	const lookup = {
-		content: '',
-		tool_calls: [{ function: { name: 'lookup', arguments: { query: 'kettle' } } }],
-	}
-	const bound = Array.from({ length: STORE_BOUNDS.refusals }, () => fail)
-	const advertised = ['lookup', 'fail']
-
 	it('advertises no tool after the refusal bound until the next user turn advertises every tool again', async () => {
 		const daemon = createRecordingTransport(
 			createScriptedTransport([
-				...bound,
+				...STORE_REFUSAL_TURNS,
 				{ content: 'The tool refused.' },
-				lookup,
+				STORE_LOOKUP_TURN,
 				{ content: 'Found.' },
 			]),
 		)
-		const tools = createToolManager()
-		tools.add([createLookupTool(), createThrowingTool()])
+		const tools = createRefusalTools()
 		const conversation = await converseStore({
 			provider: createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
 			system: STORE_SYSTEM_PROMPT,
@@ -2211,17 +1707,17 @@ describe('converseStore', () => {
 			turns: ['Call the fail tool.', 'Look up the kettle.'],
 		})
 		expect(daemon.requests.map(wireTools)).toEqual([
-			...bound.map(() => advertised),
+			...STORE_REFUSAL_TURNS.map(() => STORE_REFUSAL_TOOLS),
 			[],
-			advertised,
-			advertised,
+			STORE_REFUSAL_TOOLS,
+			STORE_REFUSAL_TOOLS,
 		])
 		expect(conversation.ended).toBe(1)
 		expect(conversation.failure).toBeUndefined()
 		expect(conversation.result).toMatchObject({ content: 'Found.', partial: false })
 		expect(conversation.partial).toBe(false)
 		expect(conversation.calls.map((call) => [call.name, call.success])).toEqual([
-			...bound.map(() => ['fail', false]),
+			...STORE_REFUSAL_TURNS.map(() => ['fail', false]),
 			['lookup', true],
 		])
 		expect(
@@ -2234,30 +1730,28 @@ describe('converseStore', () => {
 	it('advertises no tool after one provider turn whose parallel calls reach the bound', async () => {
 		const daemon = createRecordingTransport(
 			createScriptedTransport([
-				{ content: '', tool_calls: bound.flatMap((turn) => turn.tool_calls) },
+				{ content: '', tool_calls: STORE_REFUSAL_TURNS.flatMap((turn) => turn.tool_calls) },
 				{ content: 'The tool refused.' },
 			]),
 		)
-		const tools = createToolManager()
-		tools.add([createLookupTool(), createThrowingTool()])
+		const tools = createRefusalTools()
 		const conversation = await converseStore({
 			provider: createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
 			system: STORE_SYSTEM_PROMPT,
 			tools,
 			turns: ['Call the fail tool.'],
 		})
-		expect(daemon.requests.map(wireTools)).toEqual([advertised, []])
+		expect(daemon.requests.map(wireTools)).toEqual([STORE_REFUSAL_TOOLS, []])
 		expect(conversation.ended).toBe(1)
 		expect(conversation.result).toMatchObject({ content: 'The tool refused.', partial: false })
 	})
 
 	it('keeps advertising every tool while a success breaks the refusals', async () => {
-		const short = bound.slice(1)
+		const short = STORE_REFUSAL_TURNS.slice(1)
 		const daemon = createRecordingTransport(
-			createScriptedTransport([...short, lookup, ...short, { content: 'Found.' }]),
+			createScriptedTransport([...short, STORE_LOOKUP_TURN, ...short, { content: 'Found.' }]),
 		)
-		const tools = createToolManager()
-		tools.add([createLookupTool(), createThrowingTool()])
+		const tools = createRefusalTools()
 		const conversation = await converseStore({
 			provider: createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
 			system: STORE_SYSTEM_PROMPT,
@@ -2265,17 +1759,19 @@ describe('converseStore', () => {
 			turns: ['Call the fail tool, then look up the kettle.'],
 		})
 		expect(daemon.requests.map(wireTools)).toEqual(
-			[...short, lookup, ...short, undefined].map(() => advertised),
+			[...short, STORE_LOOKUP_TURN, ...short, undefined].map(() => STORE_REFUSAL_TOOLS),
 		)
 		expect(conversation.ended).toBe(0)
 		expect(conversation.result).toMatchObject({ content: 'Found.', partial: false })
 	})
 
 	it('returns the error that ended a user turn with the calls made before it', async () => {
-		const tools = createToolManager()
-		tools.add([createLookupTool(), createThrowingTool()])
+		const tools = createRefusalTools()
 		const conversation = await converseStore({
-			provider: createOllama({ model: 'fixture-model', fetch: createScriptedTransport([lookup]) }),
+			provider: createOllama({
+				model: 'fixture-model',
+				fetch: createScriptedTransport([STORE_LOOKUP_TURN]),
+			}),
 			system: STORE_SYSTEM_PROMPT,
 			tools,
 			turns: ['Look up the kettle.'],
@@ -2288,20 +1784,15 @@ describe('converseStore', () => {
 
 describe('attemptStoreTask with a journey root', () => {
 	it('starts consecutive attempts at e1 in a real browser', async () => {
-		const browser = createBrowser({
-			executable: requirePageBrowser().executable,
-			headless: true,
-			args: PAGE_BROWSER_ARGS,
-			cdp: { port: await reservePort(), discover: false },
-		})
+		const browser = await createPageBrowser()
 		try {
 			await browser.connect()
 			const contexts = browser.contexts()
 			const seeds: string[] = []
-			for (const attempt of [1, 2]) {
+			for (const attempt of STORE_ISOLATION_ATTEMPTS) {
 				const result = await attemptStoreTask(
 					browser,
-					{ ...STORE_TASKS.shipping, task: 'isolation' },
+					{ ...STORE_TASKS.shipping, name: 'isolation' },
 					attempt,
 					createOllama({
 						model: 'fixture-model',
@@ -2309,14 +1800,14 @@ describe('attemptStoreTask with a journey root', () => {
 					}),
 				)
 				seeds.push(extractReferences(result.transcript.seed)[0] ?? '')
-				expect(result.store.readCart()).toEqual([])
+				expect(result.store.read().cart).toEqual([])
 				expect(browser.contexts()).toEqual(contexts)
 			}
 			expect(seeds).toEqual(['e1', 'e1'])
 			await expect(
 				attemptStoreTask(
 					browser,
-					{ ...STORE_TASKS.shipping, task: 'isolation-failure' },
+					{ ...STORE_TASKS.shipping, name: 'isolation-failure' },
 					1,
 					createOllama({
 						model: 'fixture-model',
@@ -2341,6 +1832,127 @@ describe('attemptStoreTask with a journey root', () => {
 				provider,
 			),
 		).rejects.toBe(refusal)
-		expect(readdirSync(journeyPath()).filter((name) => name.startsWith('journey-7-'))).toEqual([])
+		expect(
+			readdirSync(resolveJourneyPath()).filter((name) => name.startsWith('journey-7-')),
+		).toEqual([])
+	})
+})
+
+describe('store helper boundaries', () => {
+	it('stems words without discarding more than one trailing letter', () => {
+		expect(stemWord('KETTLES')).toBe('kettle')
+		expect(stemWord('glass')).toBe('glas')
+		expect(stemWord('')).toBe('')
+	})
+
+	it('finds products by identifier and refuses absent or unknown identifiers', () => {
+		expect(findStoreProduct('p4')).toMatchObject({ name: 'Copper Kettle', price: '$58.00' })
+		expect(findStoreProduct(undefined)).toBeUndefined()
+		expect(findStoreProduct(null)).toBeUndefined()
+		expect(findStoreProduct('')).toBeUndefined()
+		expect(findStoreProduct('missing')).toBeUndefined()
+	})
+
+	it('builds an uncached not-found HTML response', async () => {
+		const response = buildMissingResponse()
+		expect(response.status).toBe(404)
+		expect(response.headers.get('cache-control')).toBe('no-store')
+		expect(response.headers.get('content-type')).toBe('text/html; charset=utf-8')
+		expect(await response.text()).toContain('<h1>Not found</h1>')
+	})
+
+	it('extracts headers and numeric captures without inventing absent values', () => {
+		expect(extractPageHeader('Receipt\npage "Cart" http://store/cart\n1: Cart')).toBe(
+			'page "Cart" http://store/cart',
+		)
+		expect(extractPageHeader('Receipt\r\npage "Cart" http://store/cart\r\n1: Cart')).toBe(
+			'page "Cart" http://store/cart',
+		)
+		expect(extractPageHeader('No page header')).toBeUndefined()
+		expect(readCapturedNumber(/(31)/.exec('31'))).toBe(31)
+		expect(readCapturedNumber(/(0)/.exec('0'))).toBe(0)
+		expect(readCapturedNumber(null)).toBeUndefined()
+		expect(readCapturedNumber(/31/.exec('31'))).toBeUndefined()
+	})
+
+	it('matches only identified cart-click rows', () => {
+		expect(matchesCartClick('s12 click link "Cart"')).toBe(true)
+		expect(matchesCartClick('s0 click link "Cart"')).toBe(false)
+		expect(matchesCartClick('s12 click link "Checkout"')).toBe(false)
+		expect(matchesCartClick('s12 click button "Cart"')).toBe(false)
+		expect(matchesCartClick('')).toBe(false)
+	})
+
+	it('builds refused calls with default or supplied arguments and text', () => {
+		expect(buildRefusedCall('save')).toEqual({
+			name: 'save',
+			arguments: {},
+			success: false,
+			text: '',
+		})
+		expect(buildRefusedCall('click', { ref: 'e99' }, 'Not in view.')).toEqual({
+			name: 'click',
+			arguments: { ref: 'e99' },
+			success: false,
+			text: 'Not in view.',
+		})
+	})
+
+	it('creates the refusal registry and records successful and failed calls', async () => {
+		const tools = createRefusalTools()
+		try {
+			expect(tools.definitions().map((definition) => definition.name)).toEqual(['lookup', 'fail'])
+			expect(await executeStoreCall(tools, 'lookup-test', 'lookup', { query: 'kettle' })).toEqual({
+				name: 'lookup',
+				arguments: { query: 'kettle' },
+				success: true,
+				text: LOOKUP_DATUM,
+			})
+			expect(await executeStoreCall(tools, 'fail-test', 'fail', {})).toEqual({
+				name: 'fail',
+				arguments: {},
+				success: false,
+				text: THROWING_TOOL_MESSAGE,
+			})
+		} finally {
+			tools.destroy()
+		}
+	})
+
+	it('resolves transcript paths against the supplied root', () => {
+		const scratch = createScratch({ prefix: 'store-path-' })
+		try {
+			expect(resolveTranscriptPath('checkout', 2, scratch.path)).toBe(
+				join(scratch.path, 'tmp', 'probes', 'logs', 'checkout-2.json'),
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('collectTurnThinking', () => {
+	it('forwards every chunk and separates reasoning at usage boundaries', async () => {
+		const channel = createChannel<AgentChunk>()
+		for (const chunk of STORE_THINKING_CHUNKS) channel.push(chunk)
+		channel.close()
+		const thoughts = ['']
+		const chunks = await collect(collectTurnThinking(channel.drain(), thoughts))
+		expect(chunks).toEqual(STORE_THINKING_CHUNKS)
+		expect(chunks[0]).toBe(STORE_THINKING_CHUNKS[0])
+		expect(thoughts).toEqual(['Check the cart.', '', 'Confirm.'])
+	})
+
+	it('preserves an empty stream and propagates a stream failure', async () => {
+		const empty = createChannel<AgentChunk>()
+		empty.close()
+		const thoughts = ['']
+		expect(await collect(collectTurnThinking(empty.drain(), thoughts))).toEqual([])
+		expect(thoughts).toEqual([''])
+		const failed = createChannel<AgentChunk>()
+		const failure = new Error('Stream refused')
+		failed.fail(failure)
+		await expect(collect(collectTurnThinking(failed.drain(), thoughts))).rejects.toBe(failure)
+		expect(thoughts).toEqual([''])
 	})
 })

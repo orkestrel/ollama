@@ -36,6 +36,7 @@ import {
 	boundPageAttempt,
 	buildImportMap,
 	buildRelayRoute,
+	buildUncachedResponse,
 	CONTROL_PATH,
 	createPageFixture,
 	createRecordingProxy,
@@ -1345,5 +1346,20 @@ describe('the page outcome guards', () => {
 		expect(isPageControl({ status: '200', text: 'control' })).toBe(false)
 		expect(isPageGeneration({ name: 'ollama', content: 'hi' })).toBe(true)
 		expect(isPageGeneration({ name: 'ollama' })).toBe(false)
+	})
+})
+
+describe('buildUncachedResponse', () => {
+	it('preserves the body and media type with the default or explicit status', async () => {
+		const normal = buildUncachedResponse('control', 'text/plain; charset=utf-8')
+		expect(normal.status).toBe(200)
+		expect(normal.headers.get('cache-control')).toBe('no-store')
+		expect(normal.headers.get('content-type')).toBe('text/plain; charset=utf-8')
+		expect(await normal.text()).toBe('control')
+		const missing = buildUncachedResponse('<h1>Not found</h1>', 'text/html; charset=utf-8', 404)
+		expect(missing.status).toBe(404)
+		expect(missing.headers.get('cache-control')).toBe('no-store')
+		expect(missing.headers.get('content-type')).toBe('text/html; charset=utf-8')
+		expect(await missing.text()).toBe('<h1>Not found</h1>')
 	})
 })

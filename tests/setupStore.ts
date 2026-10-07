@@ -1,20 +1,17 @@
 import type {
-	StoreDraw,
-	StoreProduct,
-	StoreServerInterface,
-	StoreCall,
-	StoreTiming,
-	StoreMessage,
-	StoreTranscript,
-	StoreRunOptions,
-	StoreConversationOptions,
-	StoreConversation,
-	StoreTask,
-	StoreAttempt,
-	StoreJourneyEvidence,
-} from './setupStore/types.js'
-import type { AgentResult, Message, ProviderInterface, ScopeInterface } from '@orkestrel/agent'
-import type { BrowserJourney, BrowserJourneyStep } from '@orkestrel/browser'
+	AgentChunk,
+	AgentStreamInterface,
+	AgentResult,
+	Message,
+	ProviderInterface,
+	ScopeInterface,
+} from '@orkestrel/agent'
+import type {
+	BrowserJourney,
+	BrowserJourneyStep,
+	BrowserPageInterface,
+	BrowserRun,
+} from '@orkestrel/browser'
 import type { BrowserInterface } from '@orkestrel/browser/server'
 import type { TokenUsage } from '@orkestrel/budget'
 import type {
@@ -38,15 +35,234 @@ import {
 	renderBrowserJourney,
 	validateBrowserToolArguments,
 } from '@orkestrel/browser'
-import { createFileBrowserJourneyStore, createFileBrowserRunStore } from '@orkestrel/browser/server'
+import {
+	createBrowser,
+	createFileBrowserJourneyStore,
+	createFileBrowserRunStore,
+} from '@orkestrel/browser/server'
 import { createContract, isRecord, schemaToShape } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
-import { createScratch } from '@orkestrel/test/server'
+import { createScratch, readInventory } from '@orkestrel/test/server'
 import { createToolManager } from '@orkestrel/tool'
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, join, relative, sep } from 'node:path'
-import { describeFailure, driveAgent, rootToPath, WORKSPACE_ROOT } from './setupServer.js'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import {
+	buildUncachedResponse,
+	createLookupTool,
+	createThrowingTool,
+	describeFailure,
+	driveAgent,
+	reservePort,
+	rootToPath,
+	WORKSPACE_ROOT,
+} from './setupServer.js'
+import { PAGE_BROWSER_ARGS, requirePageBrowser } from './setupService.js'
+
+/** Represents one product the store fixture sells. */
+export interface StoreProduct {
+	/** The path segment of the product's page, such as the `p4` identifier. */
+	readonly id: string
+	/** The name every page shows for the product. */
+	readonly name: string
+	/** The price with its currency sign, such as the `$58.00` price. */
+	readonly price: string
+	/** The sentence the catalogue and the product page show under the name. */
+	readonly blurb: string
+	/** True if the catalogue lists the product; false if only a search finds it. */
+	readonly featured: boolean
+}
+
+/** Represents what a store recorded by the end of one run. */
+export interface StoreState {
+	/** The names of the products in the cart, in the order they were added. */
+	readonly cart: readonly string[]
+	/** Every submitted query, in submission order. */
+	readonly searches: readonly string[]
+	/** Every name a checkout submitted, in submission order. */
+	readonly orders: readonly string[]
+}
+
+/** Represents a running store fixture and the state its pages changed. */
+export interface StoreServerInterface {
+	/** The loopback origin the store answers on, such as the `http://127.0.0.1:54321` origin. */
+	readonly url: string
+	/** Returns copies of the cart, submitted searches, and checkout names in submission order. */
+	read(): StoreState
+	/** Stops the server and releases its port. */
+	stop(): Promise<void>
+}
+
+/** Records an operation's monotonic start and end in milliseconds. */
+export interface StoreTiming {
+	readonly operation: 'seed' | 'generation' | 'tool' | 'reload'
+	readonly name: string
+	readonly start: number
+	readonly end: number
+}
+
+/** Represents one tool call a store run dispatched, as the transcript records it. */
+export interface StoreCall {
+	/** The called tool's name. */
+	readonly name: string
+	/** The arguments the model supplied. */
+	readonly arguments: Readonly<Record<string, unknown>>
+	/** True if the tool returned a value; false if it failed. */
+	readonly success: boolean
+	/** The result text the model received, or the failure's message. */
+	readonly text: string
+}
+
+/** Represents one conversation message as the transcript records it: the message and its thinking. */
+export interface StoreMessage extends Message {
+	/** The reasoning the provider separated from the answer; absent when the turn surfaced none. */
+	readonly thinking?: string
+}
+
+/**
+ * Builds a user turn from the calls a run made so far.
+ * @param calls - The run's preceding calls
+ * @returns The next user turn's text
+ */
+export type StoreTurnFunction = (calls: readonly StoreCall[]) => string
+
+/** Represents one user turn: its text, or a function of the calls made so far that returns it. */
+export type StoreTurn = string | StoreTurnFunction
+
+/** Represents one live store name: the transcript name, the prompt, and the start path. */
+export interface StoreTask {
+	/** True if the toolset can record journeys; false for page tools alone. Default: false. */
+	readonly recordable?: boolean
+	/** The name the transcript files carry. */
+	readonly name: string
+	/** The task the first user turn states. */
+	readonly prompt: string
+	/** The store path the page opens first. */
+	readonly path: string
+	/** The text whose presence in the final answer the transcript notes. Default: no note. */
+	readonly mention?: string | undefined
+	/** The system prompt. Default: {@link STORE_SYSTEM_PROMPT}. */
+	readonly system?: string | undefined
+	/** The user turns after the first, each sent when the model ends the previous one. Default: none. */
+	readonly followups?: readonly StoreTurn[] | undefined
+	/** The most tool calls one user turn allows. Default: `STORE_BOUNDS.limit` value. */
+	readonly limit?: number | undefined
+}
+
+/** Represents the record one store run leaves, which the proof's assertions read. */
+export interface StoreTranscript {
+	/** The task's name, which also names the transcript file. */
+	readonly name: string
+	/** The attempt number, counted from 1. */
+	readonly attempt: number
+	/** The system prompt the agent ran with. */
+	readonly system: string
+	/** The `read` result the first user turn carries. */
+	readonly seed: string
+	/** The task the first user turn states. */
+	readonly prompt: string
+	/** Every conversation message after the run, in order; an assistant message carries its turn's thinking. */
+	readonly messages: readonly StoreMessage[]
+	/** Every tool call the run dispatched, in order, with its result text. */
+	readonly calls: readonly StoreCall[]
+	/** The run's final answer. */
+	readonly answer: string
+	/** True if a deadline or limit cut the run short; false otherwise. */
+	readonly partial: boolean
+	/** The token usage summed over the run's provider calls, when the provider reported it. */
+	readonly usage: TokenUsage | undefined
+	/** The token usage each provider call reported, in turn order. */
+	readonly usages: readonly TokenUsage[]
+	/** The run's wall time in milliseconds, from the seeded `read` call to the final answer. */
+	readonly elapsed: number
+	/** What the store recorded when the run ended: the cart, the searches, and the orders. */
+	readonly state: StoreState
+	/** The message of the error that ended the run early, such as a provider error; absent otherwise. */
+	readonly failure: string | undefined
+	/**
+	 * True if the final answer contains the task's `mention` text, false if it does not; absent for a
+	 * task with no `mention` text. The proof records it and never asserts it.
+	 */
+	readonly mentioned: boolean | undefined
+	/** The monotonic intervals around the seed, generations, and tool calls. */
+	readonly timings: readonly StoreTiming[]
+	/** How many calls {@link findMalformedCalls} reads as malformed against the advertised tools. */
+	readonly violations: number
+	/** How many `record` calls and `save` calls {@link findJourneyLoops} reads as refused after a save. */
+	readonly loops: number
+	/** How many user turns reached the `STORE_BOUNDS.refusals` bound and went on with no tool advertised. */
+	readonly ended: number
+	/** Each JSON file the journey stores wrote under the run's root, by its `/`-separated path. */
+	readonly files: Readonly<Record<string, string>>
+}
+
+/** Represents what {@link executeStoreTask} takes. */
+export interface StoreRunOptions extends StoreTask {
+	/** The attempt number, counted from 1. */
+	readonly attempt: number
+	/** The model the agent runs. */
+	readonly provider: ProviderInterface
+	/** The page the toolset drives. */
+	readonly page: BrowserPageInterface
+	/** The store the page opens. */
+	readonly store: StoreServerInterface
+	/** The existing directory the journey stores keep their files under. */
+	readonly root: string
+}
+
+/** Represents what {@link converseStore} takes. */
+export interface StoreConversationOptions {
+	/** The model the agent runs. */
+	readonly provider: ProviderInterface
+	/** The system prompt the agent runs with. */
+	readonly system: string
+	/** The tools the agent advertises and dispatches. */
+	readonly tools: ToolManagerInterface
+	/** The user turns, in order, each sent when the model ends the previous one. */
+	readonly turns: readonly StoreTurn[]
+	/** The most tool calls one user turn allows. Default: `STORE_BOUNDS.limit` value. */
+	readonly limit?: number | undefined
+}
+
+/** Represents what one store conversation leaves. */
+export interface StoreConversation {
+	/** The monotonic generation and tool intervals. */
+	readonly timings: readonly StoreTiming[]
+	/** Every conversation message, in order; an assistant message carries its turn's thinking. */
+	readonly messages: readonly StoreMessage[]
+	/** Every tool call the agent dispatched, in order, with its result text. */
+	readonly calls: readonly StoreCall[]
+	/** The token usage each provider call reported, in turn order. */
+	readonly usages: readonly TokenUsage[]
+	/** The last user turn's result; `undefined` value when a user turn ended with an error. */
+	readonly result: AgentResult | undefined
+	/** True if a deadline or the turn limit cut a user turn short; false otherwise. */
+	readonly partial: boolean
+	/** How many user turns reached the `STORE_BOUNDS.refusals` bound and went on with no tool advertised. */
+	readonly ended: number
+	/** The error a user turn ended with; `undefined` value when every user turn settled. */
+	readonly failure: unknown
+}
+
+/** Represents one finished attempt: its transcript and the store it ran against, stopped. */
+export interface StoreAttempt {
+	/** The attempt's transcript. */
+	readonly transcript: StoreTranscript
+	/** The store the attempt ran against, whose readers still answer after it stopped. */
+	readonly store: StoreServerInterface
+}
+
+/** Represents the journey one run saved and the runs of it, as the file stores wrote them. */
+export interface StoreJourneyEvidence {
+	/** The journey's name, which is its directory under the root. */
+	readonly name: string
+	/** The revision `journey.json` carries. */
+	readonly revision: number | undefined
+	/** The journey `journey.json` carries. */
+	readonly journey: BrowserJourney
+	/** Each `runs/<id>/run.json` of the journey that parses as a run, in path order. */
+	readonly runs: readonly BrowserRun[]
+}
 
 /** Lists the products the store fixture sells, in catalogue order; search reaches every one. */
 export const STORE_PRODUCTS: readonly StoreProduct[] = Object.freeze([
@@ -146,7 +362,7 @@ export const STORE_SYSTEM_PROMPT =
  * Names the system prompt the journey task gives the model: {@link STORE_SYSTEM_PROMPT} followed
  * by one sentence for each journey tool.
  *
- * @remarks The store prompt stays as the five page tasks and the browser guide read it, so the
+ * @remarks The store prompt stays as the page tasks and the browser guide read it, so the
  * journey sentences extend a copy rather than the prompt those tasks run with.
  */
 export const STORE_JOURNEY_PROMPT =
@@ -161,7 +377,7 @@ export const STORE_JOURNEY_PROMPT =
  * Escapes the characters HTML text and attribute values treat as markup.
  *
  * @param text - The text to embed in a served page
- * @returns The text with `&`, `<`, `>`, and `"` replaced by their entities
+ * @returns The text with ampersands, angle brackets, and quotation marks escaped as entities
  */
 export function escapeMarkup(text: string): string {
 	return text
@@ -174,8 +390,8 @@ export function escapeMarkup(text: string): string {
 /**
  * Returns the products whose name carries every word of the query.
  *
- * A word matches when, lower-cased and with one trailing `s` removed, it is a prefix of some
- * name word treated the same way, so `kettles` finds `Alpine Kettle`.
+ * A word matches when, lower-cased and with one trailing `s` letter removed, it is a prefix of some
+ * name word treated the same way, so the `kettles` query finds the `Alpine Kettle` product.
  *
  * @param query - The submitted search text
  * @returns The matching products in catalogue order; empty for a blank query
@@ -184,10 +400,10 @@ export function filterProducts(query: string): readonly StoreProduct[] {
 	const words = query
 		.split(/\s+/)
 		.filter((word) => word !== '')
-		.map((word) => word.toLowerCase().replace(/s$/, ''))
+		.map(stemWord)
 	if (words.length === 0) return []
 	return STORE_PRODUCTS.filter((product) => {
-		const nameWords = product.name.split(/\s+/).map((word) => word.toLowerCase().replace(/s$/, ''))
+		const nameWords = product.name.split(/\s+/).map(stemWord)
 		return words.every((word) => nameWords.some((nameWord) => nameWord.startsWith(word)))
 	})
 }
@@ -196,8 +412,8 @@ export function filterProducts(query: string): readonly StoreProduct[] {
  * Renders one complete store page around its main content.
  *
  * @param title - The document title
- * @param main - The markup inside `<main>`
- * @param script - Markup appended after `<main>`, such as a `<script>` element; defaults to none
+ * @param main - The markup inside the `<main>` element
+ * @param script - Markup appended after the `<main>` element, such as a `<script>` element. Default: an empty string
  * @returns The HTML document
  */
 export function renderStorePage(title: string, main: string, script = ''): string {
@@ -229,7 +445,7 @@ ${script}
  * Renders the product rows the catalogue and the search results list.
  *
  * @param products - The products to list
- * @returns A `<ul>` whose items link each product by name and show its price
+ * @returns A `<ul>` element whose items link each product by name and show its price
  */
 export function renderProductList(products: readonly StoreProduct[]): string {
 	const rows = products.map(
@@ -586,26 +802,21 @@ export function renderPolicy(): string {
  * Builds an HTML response that no cache keeps.
  *
  * @param html - The document to serve
- * @param status - The HTTP status; defaults to `200`
+ * @param status - The HTTP status. Default: 200
  * @returns The response
  */
 export function buildPageResponse(html: string, status = 200): Response {
-	return new Response(html, {
-		status,
-		headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
-	})
+	return buildUncachedResponse(html, 'text/html; charset=utf-8', status)
 }
 
 /**
  * Starts the store fixture on an ephemeral loopback port.
  *
- * @param port - The fixed instrument port; defaults to an ephemeral port
+ * @param port - The port supplied through the instrument seam. Default: 0, an ephemeral port
  * @returns The running store, its origin, and readers over the cart, searches, and orders
- * @remarks The store serves the catalogue at `/`, results at `GET /search?q=`, each product at
- * `/product/:id`, the cart at `/cart` (a `POST` adds the posted `product` and redirects back to
- * the cart), the checkout at `/checkout`, the order endpoint its script posts to at `POST /order`,
- * and the shipping policy at `/policy`. The cart, the searches, and the orders are state of this
- * server instance alone.
+ * @remarks The catalogue, search, product, cart, checkout, order, and policy routes share only
+ * this server instance's state. Cart additions redirect to the cart; checkout records the buyer.
+ * The returned reader copies each state collection, so later requests cannot change an earlier reading.
  */
 export async function createStoreServer(port = 0): Promise<StoreServerInterface> {
 	const cart: string[] = []
@@ -626,9 +837,8 @@ export async function createStoreServer(port = 0): Promise<StoreServerInterface>
 		method: 'GET',
 		path: '/product/:id',
 		handler(_request, context) {
-			const product = STORE_PRODUCTS.find((candidate) => candidate.id === context.params.id)
-			if (product === undefined)
-				return buildPageResponse(renderStorePage('Not found', '<h1>Not found</h1>'), 404)
+			const product = findStoreProduct(context.params.id)
+			if (product === undefined) return buildMissingResponse()
 			return buildPageResponse(renderProduct(product))
 		},
 	})
@@ -642,9 +852,8 @@ export async function createStoreServer(port = 0): Promise<StoreServerInterface>
 		path: '/cart',
 		async handler(request) {
 			const id = new URLSearchParams(await request.text()).get('product')
-			const product = STORE_PRODUCTS.find((candidate) => candidate.id === id)
-			if (product === undefined)
-				return buildPageResponse(renderStorePage('Not found', '<h1>Not found</h1>'), 404)
+			const product = findStoreProduct(id)
+			if (product === undefined) return buildMissingResponse()
 			cart.push(product.name)
 			return new Response(null, { status: 303, headers: { location: '/cart' } })
 		},
@@ -659,9 +868,7 @@ export async function createStoreServer(port = 0): Promise<StoreServerInterface>
 		path: '/order',
 		async handler(request) {
 			orders.push(await request.text())
-			return new Response(STORE_CODE, {
-				headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
-			})
+			return buildUncachedResponse(STORE_CODE, 'text/plain; charset=utf-8')
 		},
 	})
 	dispatcher.add({
@@ -673,9 +880,7 @@ export async function createStoreServer(port = 0): Promise<StoreServerInterface>
 	const bound = await server.start()
 	return {
 		url: `http://127.0.0.1:${bound}`,
-		readCart: () => [...cart],
-		readSearches: () => [...searches],
-		readOrders: () => [...orders],
+		read: () => ({ cart: [...cart], searches: [...searches], orders: [...orders] }),
 		stop: () => server.stop(),
 	}
 }
@@ -687,28 +892,15 @@ export async function createStoreServer(port = 0): Promise<StoreServerInterface>
 // takes from that transcript. The live half is `tests/service/browser.test.ts`.
 
 /**
- * Cites the reading that makes the live browser-vocabulary proof inapplicable on a host.
- *
- * @remarks The proof passes it to a conditional skip whose condition is the daemon's
- * `/api/tags` reading, so the skip names the mechanism rather than the host.
- */
-export const OLLAMA_ABSENT_REASON =
-	'GET /api/tags on the configured Ollama daemon did not answer or did not list the configured model, so no model can drive the browser tools'
-
-/**
  * Names the deadlines, attempt counts, and model settings the live store proof takes; deadlines
  * in milliseconds.
  *
- * @remarks `run` is the agent's wall-clock deadline for one attempt. `single` bounds a task
- * that passes on its first attempt: one run plus the browser page and the seeded `read`.
- * `attempts` runs fit in `budget`, and `retry` bounds the case that spends them, so a retry
- * ends on its attempt count rather than on its budget. Journey tasks advertise the expanded
- * vocabulary; `context` is
- * the window every attempt's model takes instead. `turn` bounds one model turn, above the
- * provider's 120 s default because a turn over the grown prompt outlasts it on a contended host.
- * `refusals` ends a turn whose model keeps calling a tool the toolset refuses: one refusal can be an
- * argument the model corrects and a second a retry, and a third shows the model is not acting on
- * the refusal's text, which names the call to make instead.
+ * @remarks The `run` key bounds an attempt; the `single` key also allows page setup and the
+ * seeded `read` call. The `attempts` key's runs fit in the `budget` allowance, and the
+ * `retry` deadline allows cleanup. The `context` key supplies the model's token window.
+ * The `turn` deadline exceeds the provider's 120 s default because a journey prompt can
+ * take longer on a contended host. The `refusals` bound stops repeated unsuccessful calls
+ * from spending the entire turn after the tool has explained how to proceed.
  */
 export const STORE_BOUNDS = Object.freeze({
 	/** The agent's deadline for one attempt. */
@@ -717,15 +909,14 @@ export const STORE_BOUNDS = Object.freeze({
 	single: 540_000,
 	/** How many attempts a retried task spends. */
 	attempts: 3,
-	/** The elapsed-time budget a retried task gives `retryUntil`. */
+	/** The elapsed-time budget a retried task gives the `retryUntil` function. */
 	budget: 1_620_000,
 	/** The deadline a retried case allows. */
 	retry: 1_680_000,
 	/** The most tool-iteration turns one attempt allows. */
 	limit: 8,
 	/**
-	 * The Ollama `num_predict` cap each model turn takes, above `TOOL_LOOP_OPTIONS.num_predict`
-	 * because a 64-token cap cut the model's narration before its tool call.
+	 * The Ollama `num_predict` cap leaves room for the model's narration before its tool call.
 	 */
 	predict: 256,
 	/** The Ollama `num_ctx` window each attempt's model takes, in tokens. */
@@ -744,14 +935,13 @@ export const STORE_BOUNDS = Object.freeze({
  * The task spends `STORE_BOUNDS.attempts` attempts and takes every other setting from
  * {@link STORE_BOUNDS}.
  *
- * @remarks The journey task sends five user turns in one conversation, recording the form task's
- * flow, then saving, listing, editing, and replaying it, and each user turn runs under
- * `STORE_BOUNDS.run` and `STORE_BOUNDS.limit`, so one attempt takes at most `run`.
+ * @remarks The journey task sends its prompt and each followup as user turns in one conversation.
+ * Each turn takes the `STORE_BOUNDS.run` deadline and `STORE_BOUNDS.limit` call allowance.
  */
 export const STORE_JOURNEY_BOUNDS = Object.freeze({
-	/** The longest one attempt takes: five user turns at `STORE_BOUNDS.run` each. */
+	/** The attempt deadline allows the `STORE_BOUNDS.run` duration for each journey user turn. */
 	run: 2_400_000,
-	/** The elapsed-time budget the retried task gives `retryUntil`. */
+	/** The elapsed-time budget the retried task gives the `retryUntil` function. */
 	budget: 7_200_000,
 	/** The deadline the retried case allows. */
 	retry: 7_260_000,
@@ -818,7 +1008,7 @@ export function createTimedTools(
  * @param tools - The live registry
  * @param call - The model's call
  * @param timings - The owned recorder
- * @param context - The execution context
+ * @param context - The execution context. Default: none
  * @returns The unchanged tool result
  */
 export async function executeTimedTool(
@@ -850,7 +1040,7 @@ export function renderToolText(result: ToolResult): string {
  * Pairs each assistant message with the thinking its turn surfaced.
  *
  * @param messages - The conversation's messages, in order
- * @param thoughts - The thinking each provider turn surfaced, in turn order; `''` for a silent turn
+ * @param thoughts - The thinking each provider turn surfaced, in turn order; `''` string for a silent turn
  * @returns The same messages; the n-th assistant message carries the n-th turn's thinking when it
  * is not empty
  */
@@ -883,7 +1073,7 @@ export function buildStorePrompt(prompt: string, seed: string): string {
 	return `${prompt}\n\nThe browser's first read of the page:\n${seed}`
 }
 
-/** Names the scope a user turn takes after `STORE_BOUNDS.refusals`: it advertises no tool. */
+/** Names the scope a user turn takes after the `STORE_BOUNDS.refusals` bound: it advertises no tool. */
 export const STORE_ANSWER_SCOPE: ScopeInterface = createScope({ name: 'answer', tools: [] })
 
 /**
@@ -891,7 +1081,7 @@ export const STORE_ANSWER_SCOPE: ScopeInterface = createScope({ name: 'answer', 
  *
  * @param calls - The calls of one user turn, in order
  * @returns The largest number of calls one tool name has among the calls after the last
- * successful one; `0` when the last call succeeded or no call was made
+ * successful one; zero when the last call succeeded or no call was made
  * @remarks A refusal of another tool keeps the count, so a model alternating two refused tools
  * reaches the bound as a model repeating one does.
  */
@@ -909,8 +1099,8 @@ export function computeRefusals(calls: readonly StoreCall[]): number {
  * @param options - The model, the system prompt, the tools, and the user turns
  * @returns The messages, the calls, the usage, the last turn's result, and the error a turn
  * ended with
- * @remarks The agent runs `STORE_BOUNDS.limit` tool turns under `STORE_BOUNDS.run` per user turn.
- * When one tool's refusals since the turn's last successful call reach `STORE_BOUNDS.refusals`
+ * @remarks The agent runs `STORE_BOUNDS.limit` tool turns under `STORE_BOUNDS.run` deadline per user turn.
+ * When one tool's refusals since the turn's last successful call reach `STORE_BOUNDS.refusals` bound
  * (see {@link computeRefusals}), the agent's context takes {@link STORE_ANSWER_SCOPE}, so the
  * next provider turn advertises no tool and the model answers after the refusal it last read;
  * every user turn starts with no scope and its own count. An error ends the conversation and is
@@ -959,19 +1149,13 @@ export async function converseStore(options: StoreConversationOptions): Promise<
 				content: typeof turn === 'string' ? turn : turn(calls),
 			})
 			const stream = agent.stream()
-			// The usage chunk closes a provider turn, so the thinking between two of them is one turn's.
-			const tapped: typeof stream = {
-				events: (async function* () {
-					for await (const chunk of stream.events) {
-						if (chunk.category === 'think') thoughts[thoughts.length - 1] += chunk.content
-						else if (chunk.category === 'usage') thoughts.push('')
-						yield chunk
-					}
-				})(),
-				result: stream.result,
-				abort: (reason) => stream.abort(reason),
-			}
-			result = (await driveAgent(tapped)).result
+			result = (
+				await driveAgent({
+					events: collectTurnThinking(stream.events, thoughts),
+					result: stream.result,
+					abort: (reason) => stream.abort(reason),
+				})
+			).result
 			partial ||= result.partial
 		}
 	} catch (error) {
@@ -995,23 +1179,23 @@ export async function converseStore(options: StoreConversationOptions): Promise<
  *
  * @param options - The task, the attempt, the start path, the model, the page, the store, and
  * the journey root
- * @returns The run's transcript, also written to {@link transcriptPath}
+ * @returns The run's transcript, also written to {@link resolveTranscriptPath}
  * @remarks The page opens the start path, the toolset registers into a fresh tool manager with
- * optional journey tools over file stores under `options.root`, and the first user turn carries the
+ * optional journey tools over file stores under `options.root` directory, and the first user turn carries the
  * toolset's own `read` result. Journey tools are registered only when requested.
  * The transcript records monotonic seed, generation, and tool intervals and the JSON files
  * under the root. The answer is the last user turn's.
  * A run the agent ends with an error still writes its transcript, carrying the error's message
- * as `failure`. A daemon fault (see {@link matchesDaemonFault}) then returns
+ * as `failure` field. A daemon fault (see {@link matchesDaemonFault}) then returns
  * that transcript as a failed attempt, so an attempt loop spends it like any unmet oracle; every
  * other error is rethrown. The toolset is destroyed after the run, whether or not the run
  * succeeded; the page, the store, and the root stay the caller's.
  */
-export async function runStoreTask(options: StoreRunOptions): Promise<StoreTranscript> {
+export async function executeStoreTask(options: StoreRunOptions): Promise<StoreTranscript> {
 	await options.page.navigate(`${options.store.url}${options.path}`)
 	const toolset = createBrowserToolset(options.page, {
 		tools: createToolManager(),
-		...(options.journeys
+		...(options.recordable
 			? {
 					journeys: {
 						store: createFileBrowserJourneyStore({ root: options.root }),
@@ -1048,7 +1232,7 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 		const elapsed = performance.now() - started
 		const definitions = toolset.tools.definitions()
 		const transcript: StoreTranscript = {
-			task: options.task,
+			name: options.name,
 			attempt: options.attempt,
 			system,
 			seed,
@@ -1057,17 +1241,10 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 			calls,
 			answer: result?.content ?? '',
 			partial: result === undefined || conversation.partial,
-			usage: conversation.usages.reduce<TokenUsage | undefined>(
-				(sum, turn) => sumUsage(sum, turn),
-				undefined,
-			),
-			turns: conversation.usages,
+			usage: conversation.usages.reduce<TokenUsage | undefined>(sumUsage, undefined),
+			usages: conversation.usages,
 			elapsed,
-			state: {
-				cart: options.store.readCart(),
-				searches: options.store.readSearches(),
-				orders: options.store.readOrders(),
-			},
+			state: options.store.read(),
 			failure: result === undefined ? describeFailure(conversation.failure) : undefined,
 			mentioned:
 				options.mention === undefined
@@ -1077,7 +1254,7 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 			violations: findMalformedCalls(calls, definitions).length,
 			loops: findJourneyLoops(calls).length,
 			ended: conversation.ended,
-			files: collectStoreFiles(options.root),
+			files: readInventory(options.root, ['.'], { extensions: ['.json'] }),
 		}
 		writeTranscript(transcript)
 		if (result === undefined && !matchesDaemonFault(conversation.failure)) {
@@ -1092,31 +1269,31 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 /**
  * Returns the path a store run's transcript is written to.
  *
- * @param task - The task's name
+ * @param name - The task's name
  * @param attempt - The attempt number
- * @param root - The workspace root; defaults to {@link WORKSPACE_ROOT}
- * @returns `tmp/probes/logs/<task>-<attempt>.json` under the root
+ * @param root - The workspace root. Default: {@link WORKSPACE_ROOT}
+ * @returns The `tmp/probes/logs/<name>-<attempt>.json` path under the root
  */
-export function transcriptPath(
-	task: string,
+export function resolveTranscriptPath(
+	name: string,
 	attempt: number,
 	root: URL | string = WORKSPACE_ROOT,
 ): string {
-	return join(rootToPath(root), 'tmp', 'probes', 'logs', `${task}-${attempt}.json`)
+	return join(rootToPath(root), 'tmp', 'probes', 'logs', `${name}-${attempt}.json`)
 }
 
 /**
  * Writes a store run's transcript as indented JSON, creating its folder.
  *
  * @param transcript - The transcript to write
- * @param root - The workspace root; defaults to {@link WORKSPACE_ROOT}
+ * @param root - The workspace root. Default: {@link WORKSPACE_ROOT}
  * @returns The path written
  */
 export function writeTranscript(
 	transcript: StoreTranscript,
 	root: URL | string = WORKSPACE_ROOT,
 ): string {
-	const path = transcriptPath(transcript.task, transcript.attempt, root)
+	const path = resolveTranscriptPath(transcript.name, transcript.attempt, root)
 	mkdirSync(dirname(path), { recursive: true })
 	writeFileSync(path, `${JSON.stringify(transcript, undefined, '\t')}\n`)
 	return path
@@ -1149,7 +1326,7 @@ export function findUnlistedReferences(
 	calls: readonly StoreCall[],
 ): readonly StoreCall[] {
 	const listed = new Set(extractReferences(seed))
-	let header = /^page .+$/m.exec(seed)?.[0]
+	let header = extractPageHeader(seed)
 	const unlisted: StoreCall[] = []
 	for (const call of calls) {
 		const argument = call.arguments['ref']
@@ -1163,7 +1340,7 @@ export function findUnlistedReferences(
 				unlisted.push(call)
 		}
 		if (!call.success) continue
-		const page = /^page .+$/m.exec(call.text)?.[0]
+		const page = extractPageHeader(call.text)
 		if (
 			BROWSER_JOURNEY_ACTIONS.some((name) => name === call.name) ||
 			call.name === 'replay' ||
@@ -1182,7 +1359,7 @@ export function findUnlistedReferences(
  * Splits a tool result into its body and the footer the toolset's bound appends.
  *
  * @param text - A tool result
- * @returns The body and the trailing `[lines …]` footer line; the footer is `''` when the
+ * @returns The body and the trailing `[lines …]` footer line; the footer is `''` string when the
  * result carries none
  */
 export function splitResultFooter(text: string): readonly [body: string, footer: string] {
@@ -1217,7 +1394,7 @@ export function filterNamedProducts(answer: string): readonly StoreProduct[] {
 }
 
 /** Names the product the click task asks the model to add to the cart. */
-export const STORE_NAMED = 'Cedar Tea Tray'
+export const STORE_NAMED_PRODUCT = 'Cedar Tea Tray'
 
 /** Names the query the search task asks the model to submit. */
 export const STORE_QUERY = 'kettle'
@@ -1235,47 +1412,51 @@ export const STORE_JOURNEY_PARAMETER = 'buyer'
 export const STORE_JOURNEY_BUYER = 'Grace Hopper'
 
 /** Lists the live store tasks the browser-vocabulary proof runs, keyed by task name. */
-export const STORE_TASKS = Object.freeze({
-	shipping: { task: 'shipping', prompt: 'What is the shipping cutoff time?', path: '/' },
-	cart: { task: 'cart', prompt: `Add the ${STORE_NAMED} to the cart.`, path: '/' },
+export const STORE_TASKS: Readonly<
+	Record<'shipping' | 'cart' | 'search' | 'checkout' | 'paging', StoreTask> & {
+		readonly journey: StoreTask & { readonly followups: readonly StoreTurn[] }
+	}
+> = Object.freeze({
+	shipping: { name: 'shipping', prompt: 'What is the shipping cutoff time?', path: '/' },
+	cart: { name: 'cart', prompt: `Add the ${STORE_NAMED_PRODUCT} to the cart.`, path: '/' },
 	search: {
-		task: 'search',
+		name: 'search',
 		prompt: `Search for ${STORE_QUERY} and tell me which products match.`,
 		path: '/',
 	},
 	checkout: {
-		task: 'checkout',
+		name: 'checkout',
 		prompt: `Complete checkout with the name ${STORE_BUYER} and report the confirmation code.`,
 		path: '/',
 	},
 	paging: {
-		task: 'paging',
+		name: 'paging',
 		prompt: 'Find the policy token on the shipping policy page.',
 		path: '/policy',
 		mention: STORE_POLICY_TOKEN,
 	},
 	journey: {
-		journeys: true,
-		task: 'journey',
+		recordable: true,
+		name: 'journey',
 		prompt: `Record a journey named ${STORE_JOURNEY_NAME}, then open the cart before you complete checkout with the name ${STORE_BUYER} and report the confirmation code.`,
-		followups: [
+		followups: Object.freeze([
 			'Save the journey.',
 			'List the saved journeys.',
 			renderJourneyEdit,
 			`Replay ${STORE_JOURNEY_NAME} with the input ${STORE_JOURNEY_PARAMETER} set to ${STORE_JOURNEY_BUYER}.`,
-		],
+		]),
 		path: '/',
 		system: STORE_JOURNEY_PROMPT,
 	},
-} satisfies Readonly<Record<string, StoreTask>>)
+})
 
 /**
  * Returns the directory every store attempt allocates its journey root under.
  *
- * @param root - The workspace root; defaults to {@link WORKSPACE_ROOT}
- * @returns `tmp/browsers` under the root
+ * @param root - The workspace root. Default: {@link WORKSPACE_ROOT}
+ * @returns The `tmp/browsers` directory under the root
  */
-export function journeyPath(root: URL | string = WORKSPACE_ROOT): string {
+export function resolveJourneyPath(root: URL | string = WORKSPACE_ROOT): string {
 	return join(rootToPath(root), 'tmp', 'browsers')
 }
 
@@ -1284,33 +1465,33 @@ export function journeyPath(root: URL | string = WORKSPACE_ROOT): string {
  * a fresh journey root, then releases the context, store, and root.
  *
  * @param browser - The connected browser's `isolate` member, which creates the attempt's context
- * @param task - The task to run
+ * @param name - The task to execute
  * @param attempt - The attempt number, counted from 1
  * @param provider - The model the agent runs
- * @param port - The fixed instrument port; defaults to an ephemeral port
+ * @param port - The port supplied through the instrument seam. Default: 0, an ephemeral port
  * @returns The transcript and the stopped store, whose cart, searches, and orders stay readable
- * @throws Rethrown from the page's creation or from {@link runStoreTask}, after the store stops
- * @remarks The journey root is a scratch directory under {@link journeyPath}, removed after the
+ * @throws Thrown when acquiring resources or executing the task fails; acquired resources are released first
+ * @remarks The journey root is a scratch directory under {@link resolveJourneyPath}, removed after the
  * run; the transcript keeps the JSON files the run wrote there.
  */
 export async function attemptStoreTask(
 	browser: Pick<BrowserInterface, 'isolate'>,
-	task: StoreTask,
+	name: StoreTask,
 	attempt: number,
 	provider: ProviderInterface,
 	port = 0,
 ): Promise<StoreAttempt> {
-	const parent = journeyPath()
+	const parent = resolveJourneyPath()
 	mkdirSync(parent, { recursive: true })
-	const root = createScratch({ parent, prefix: `${task.task}-${attempt}-` })
+	const root = createScratch({ parent, prefix: `${name.name}-${attempt}-` })
 	try {
 		const store = await createStoreServer(port)
 		try {
 			const context = await browser.isolate()
 			try {
 				const page = await context.create()
-				const transcript = await runStoreTask({
-					...task,
+				const transcript = await executeStoreTask({
+					...name,
 					attempt,
 					provider,
 					page,
@@ -1333,7 +1514,7 @@ export async function attemptStoreTask(
  * Checks whether a thrown value is the daemon failing a model turn.
  *
  * @param failure - The value a store run's agent threw
- * @returns True if it is a `ProviderError` carrying an HTTP status from 500 through 599, such as
+ * @returns True if it is a `ProviderError` instance carrying an HTTP status from 500 through 599, such as
  * Ollama's 500 for a tool call it cannot parse; false otherwise
  */
 export function matchesDaemonFault(failure: unknown): boolean {
@@ -1350,8 +1531,9 @@ export function matchesDaemonFault(failure: unknown): boolean {
  * Checks whether a transcript holds the oracles every store task shares.
  *
  * @param transcript - The run's transcript
- * @returns True if the run ended without a failure, made at least one and at most
- * `STORE_BOUNDS.limit` tool calls, named only references in the results since the page last changed, and received
+ * @param limit - The maximum permitted tool-call count. Default: the `STORE_BOUNDS.limit` value
+ * @returns True if the run ended without a failure, made at least one and at most the
+ * `limit` parameter's number of tool calls, named only references in the results since the page last changed, and received
  * no whole result over `BROWSER_TOOL_LIMIT` characters; false otherwise
  */
 export function matchesStoreOracles(
@@ -1373,23 +1555,23 @@ export function matchesStoreOracles(
  * Builds a recorded store call with inert defaults.
  *
  * @param name - The called tool's name
- * @param args - The call's arguments
- * @param text - The result text; defaults to `''`
+ * @param input - The call's arguments
+ * @param text - The result text. Default: an empty string
  * @returns A successful call carrying the text
  */
 export function buildStoreCall(
 	name: string,
-	args: Readonly<Record<string, unknown>>,
+	input: Readonly<Record<string, unknown>>,
 	text = '',
 ): StoreCall {
-	return { name, arguments: args, success: true, text }
+	return { name, arguments: input, success: true, text }
 }
 
 /**
  * Builds a store transcript with inert defaults around the given calls.
  *
  * @param calls - The run's calls
- * @param seed - The seeded view; defaults to one row listing `e1`
+ * @param seed - The seeded view. Default: a row listing the `e1` reference
  * @returns A finished, complete transcript of the `fixture` task's first attempt
  */
 export function buildStoreTranscript(
@@ -1397,7 +1579,7 @@ export function buildStoreTranscript(
 	seed = '1: link "Catalogue" [ref=e1]',
 ): StoreTranscript {
 	return {
-		task: 'fixture',
+		name: 'fixture',
 		attempt: 1,
 		system: STORE_SYSTEM_PROMPT,
 		seed,
@@ -1407,7 +1589,7 @@ export function buildStoreTranscript(
 		answer: '',
 		partial: false,
 		usage: undefined,
-		turns: [],
+		usages: [],
 		elapsed: 0,
 		state: { cart: [], searches: [], orders: [] },
 		failure: undefined,
@@ -1421,41 +1603,23 @@ export function buildStoreTranscript(
 }
 
 /**
- * Builds instrument draws over the tasks and ports.
- *
- * @param tasks - The tasks each port runs
- * @param ports - The fixture ports in attempt order
- * @returns Draws carrying the page arm and each port's attempt number
- */
-export function buildStoreDraws(
-	tasks: readonly StoreTask[],
-	ports: readonly number[],
-): readonly StoreDraw[] {
-	return ports.flatMap((port, index) =>
-		tasks.map((task) => ({ task, port, attempt: index + 1, arm: 'page' })),
-	)
-}
-
-/**
  * Reads the line a cut `read` result's footer names for the next slice.
  *
  * @param text - A tool result
  * @returns The line in a trailing `[lines …; call read with from N for more]` footer;
- * `undefined` when the result carries no such footer
+ * `undefined` value when the result carries no such footer
  */
-export function extractFooterLine(text: string): number | undefined {
-	const match = /\[lines [^\n]*; call read with from (\d+) for more\]$/.exec(text)
-	return match?.[1] === undefined ? undefined : Number(match[1])
+export function parseFooterLine(text: string): number | undefined {
+	return readCapturedNumber(/\[lines [^\n]*; call read with from (\d+) for more\]$/.exec(text))
 }
 
 /**
  * Extracts the first row of the returned window, excluding a quoted best-match row.
  * @param text - A page result, including its header and footer
- * @returns The window's first line number; `undefined` when the window contains no rows
+ * @returns The window's first line number; `undefined` value when the window contains no rows
  */
-export function extractWindowLine(text: string): number | undefined {
-	const match = /^([1-9]\d*): /.exec(extractWindowText(text))
-	return match?.[1] === undefined ? undefined : Number(match[1])
+export function parseWindowLine(text: string): number | undefined {
+	return readCapturedNumber(/^([1-9]\d*): /.exec(extractWindowText(text)))
 }
 
 /**
@@ -1481,15 +1645,15 @@ export function extractWindowText(text: string): string {
 }
 
 /**
- * Finds the first `read` that continued at the line an earlier `read` footer named and whose
+ * Finds the first `read` call that continued at the line an earlier `read` footer named and whose
  * slice contains the given text.
  *
  * @param calls - The run's calls, in order
  * @param text - The text the continued slice must contain
- * @returns The first successful `read` whose numeric `from` equals both its first row and a
+ * @returns The first successful `read` call whose numeric `from` equals both its first row and a
  * line an earlier successful model `read` footer named under the same page header, and whose
  * result contains the text. An action, changed page, or change note invalidates earlier footers;
- * `undefined` when no call qualifies
+ * `undefined` value when no call qualifies
  */
 export function findContinuedRead(
 	calls: readonly StoreCall[],
@@ -1503,11 +1667,11 @@ export function findContinuedRead(
 			header = undefined
 			continue
 		}
-		if (call.text.includes('The page changed since the last view')) lines.clear()
+		if (call.text.includes(BROWSER_READ_CHANGED_NOTE)) lines.clear()
 		if (!call.success) continue
 		const from = call.arguments['from']
-		const first = extractWindowLine(call.text)
-		const page = /^page .+$/m.exec(call.text)?.[0]
+		const first = parseWindowLine(call.text)
+		const page = extractPageHeader(call.text)
 		if (page !== header) lines.clear()
 		header = page
 		if (
@@ -1518,19 +1682,19 @@ export function findContinuedRead(
 			extractWindowText(call.text).includes(text)
 		)
 			return call
-		const line = extractFooterLine(call.text)
+		const line = parseFooterLine(call.text)
 		if (page !== undefined && line !== undefined) lines.add(line)
 	}
 	return undefined
 }
 
 /**
- * Checks whether a paging run holds its oracle: the shared oracles and a continued `read`.
+ * Checks whether a paging run holds its oracle: the shared oracles and a continued `read` call.
  *
  * @param transcript - The run's transcript
- * @param token - The text the continued slice must contain
+ * @param token - The text the continued slice must contain. Default: {@link STORE_POLICY_TOKEN}
  * @returns True if {@link matchesStoreOracles} holds and {@link findContinuedRead} finds a
- * `read` continued at a footer's line whose slice contains the token; false otherwise. The
+ * `read` call continued at a footer's line whose slice contains the token; false otherwise. The
  * final answer is not read: whether it names the token is the transcript's `mentioned` note.
  */
 export function matchesPagingOracle(
@@ -1566,7 +1730,7 @@ export function matchesCartOracle(transcript: StoreTranscript): boolean {
 	return (
 		matchesStoreOracles(transcript) &&
 		transcript.state.cart.length === 1 &&
-		transcript.state.cart[0] === STORE_NAMED
+		transcript.state.cart[0] === STORE_NAMED_PRODUCT
 	)
 }
 
@@ -1603,9 +1767,9 @@ export function matchesProducts(
  * task's products and the answer names exactly those products.
  *
  * @param transcript - The run's transcript
- * @param query - The query the task asks the model to submit
+ * @param query - The query the task asks the model to submit. Default: {@link STORE_QUERY}
  * @returns True if a recorded search resolves through {@link filterProducts} to the same products
- * as the query (so `kettles` counts for `kettle`), and {@link filterNamedProducts} reads from the
+ * as the query (so the `kettles` query counts for the `kettle` query), and {@link filterNamedProducts} reads from the
  * answer exactly the products {@link filterProducts} matches for the query; false otherwise
  */
 export function matchesSearchOracle(transcript: StoreTranscript, query = STORE_QUERY): boolean {
@@ -1619,17 +1783,15 @@ export function matchesSearchOracle(transcript: StoreTranscript, query = STORE_Q
 }
 
 /**
- * Names a diagnosed stall for a failure message: the model completes the search and stops before
+ * Checks whether a search run stalled: the model completed the search and stopped before
  * answering.
  *
  * @param transcript - The run's transcript
- * @returns True if the last call is a successful `type` with `submit` whose result lists at least
+ * @returns True if the last call is a successful `type` call with the `submit` flag whose result lists at least
  * one product {@link filterProducts} matches for the typed text, and the run settled with an
  * empty answer; false otherwise
- * @remarks Run v7 typed `kettles`, received the two kettles, and ended with an empty turn. Run v6
- * typed the same query, received no products, and ended empty too, so it does not hold. Runs v5
- * and c5 ended empty after a `click` receipt naming `type`; that earlier stall is deleted because
- * U14c and C7 let the model reach `type`.
+ * @remarks A submitted search that lists a matching product and ends with an empty answer
+ * is a stall; a search that lists no matching product is not.
  */
 export function matchesStalledSearch(transcript: StoreTranscript): boolean {
 	const last = transcript.calls.at(-1)
@@ -1654,7 +1816,7 @@ export function matchesStalledSearch(transcript: StoreTranscript): boolean {
  * @param definitions - The tool definitions a toolset with journeys advertises
  * @returns The definitions without journey tools, retaining every page parameter
  */
-export function inferPageTools(definitions: readonly ToolDefinition[]): readonly ToolDefinition[] {
+export function filterPageTools(definitions: readonly ToolDefinition[]): readonly ToolDefinition[] {
 	return definitions.filter(
 		(definition) => !BROWSER_JOURNEY_TOOL_NAMES.some((name) => name === definition.name),
 	)
@@ -1666,8 +1828,8 @@ export function inferPageTools(definitions: readonly ToolDefinition[]): readonly
  * @param calls - The run's calls, in order
  * @param definitions - The tools the run advertised
  * @returns The calls whose name no definition carries, whose arguments fail the definition's JSON
- * Schema read through `@orkestrel/contract`, or that carry a parameter the definition does not
- * advertise, as `validateBrowserToolArguments` refuses it
+ * Schema read through the `@orkestrel/contract` package, or that carry a parameter the definition does not
+ * advertise, as the `validateBrowserToolArguments` function refuses it
  */
 export function findMalformedCalls(
 	calls: readonly StoreCall[],
@@ -1692,30 +1854,10 @@ export function findMalformedCalls(
 }
 
 /**
- * Reads every JSON file under a directory.
- *
- * @param root - The directory to walk
- * @returns Each `.json` file's text by its path under the root, `/`-separated and sorted
- */
-export function collectStoreFiles(root: string): Readonly<Record<string, string>> {
-	const paths = readdirSync(root, { recursive: true, withFileTypes: true })
-		.filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-		.map((entry) => join(entry.parentPath, entry.name))
-	return Object.fromEntries(
-		paths
-			.map((path): readonly [string, string] => [
-				relative(root, path).split(sep).join('/'),
-				readFileSync(path, 'utf8'),
-			])
-			.sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
-	)
-}
-
-/**
  * Parses JSON text.
  *
  * @param text - The text to parse
- * @returns The parsed value; `undefined` for text that is not JSON
+ * @returns The parsed value; `undefined` value for text that is not JSON
  */
 export function parseStoreJSON(text: string): unknown {
 	try {
@@ -1730,8 +1872,8 @@ export function parseStoreJSON(text: string): unknown {
  * Extracts the one saved journey and its runs from the files a run left.
  *
  * @param files - A transcript's files, by path under the journey root
- * @returns The journey, its revision, and its runs; `undefined` when the files hold no
- * `journey.json`, more than one, or one that does not parse as a stored journey
+ * @returns The journey, its revision, and its runs; `undefined` value when the files hold no
+ * `journey.json` file, more than one, or one that does not parse as a stored journey
  */
 export function extractJourneyEvidence(
 	files: Readonly<Record<string, string>>,
@@ -1762,8 +1904,8 @@ export function extractJourneyEvidence(
  * Finds the parameter the checkout's name step binds.
  *
  * @param journey - The journey to read
- * @returns The name of the declared parameter that carries a default and that the `text` of a
- * `type` step into {@link STORE_NAME_FIELD} binds; `undefined` when none does
+ * @returns The name of the declared parameter that carries a default and that the `text` argument of a
+ * `type` step into {@link STORE_NAME_FIELD} binds; `undefined` value when none does
  */
 export function findBoundParameter(journey: BrowserJourney): string | undefined {
 	return Object.keys(journey.parameters).find(
@@ -1778,7 +1920,7 @@ export function findBoundParameter(journey: BrowserJourney): string | undefined 
  *
  * @param step - The step to read
  * @param parameter - The parameter's name
- * @returns True if the step is a `type` into {@link STORE_NAME_FIELD} whose `text` binds the
+ * @returns True if the step is a `type` step into {@link STORE_NAME_FIELD} whose `text` argument binds the
  * parameter; false otherwise
  */
 export function matchesNameBinding(step: BrowserJourneyStep, parameter: string): boolean {
@@ -1794,8 +1936,8 @@ export function matchesNameBinding(step: BrowserJourneyStep, parameter: string):
 /**
  * Lists the step lines of a journey listing that submit the checkout.
  *
- * @param listing - A `save`, `journeys`, or `edit` result, or a `renderBrowserJourney` listing
- * @returns Each line, in order, that types with `submit`, presses Enter, or clicks
+ * @param listing - A result from the save, journeys, or edit tool, or a rendered journey
+ * @returns Each line, in order, that types with the `submit` flag, presses Enter, or clicks
  * {@link STORE_ORDER_BUTTON}
  */
 export function filterSubmissionLines(listing: string): readonly string[] {
@@ -1830,9 +1972,7 @@ export function renderJourneyEdit(calls: readonly StoreCall[]): string {
 	const name = extractJourneyLines(listing).find(
 		(line) => /^s[1-9]\d* type /.test(line) && line.includes(` into textbox "${STORE_NAME_FIELD}"`),
 	)
-	const second = extractJourneyLines(listing).find((line) =>
-		/^s[1-9]\d* click link "Cart"$/.test(line),
-	)
+	const second = extractJourneyLines(listing).find(matchesCartClick)
 	if (name === undefined || second === undefined) {
 		return (
 			`Edit ${STORE_JOURNEY_NAME} in one call: declare the parameter ${STORE_JOURNEY_PARAMETER} with the default ${STORE_BUYER}, ` +
@@ -1852,7 +1992,7 @@ export function renderJourneyEdit(calls: readonly StoreCall[]): string {
  * Parses an `edit` call's `edits` argument the way the `edit` tool reads it.
  *
  * @param value - The argument as the model sent it
- * @returns The array as given, or the array a JSON string carries; `undefined` for a string that
+ * @returns The array as given, or the array a JSON string carries; `undefined` value for a string that
  * is not JSON, JSON that is not an array, and any other value
  */
 export function parseJourneyEdits(value: unknown): readonly unknown[] | undefined {
@@ -1861,11 +2001,11 @@ export function parseJourneyEdits(value: unknown): readonly unknown[] | undefine
 }
 
 /**
- * Checks whether a call is a successful `edit` holding a `declare`, an `update`, and a `remove`.
+ * Checks whether a call is a successful `edit` call holding a declaration, an update, and a removal.
  *
  * @param call - The call to read
- * @returns True if the call is a successful `edit` whose `edits`, read through
- * {@link parseJourneyEdits}, hold all three operations; false otherwise
+ * @returns True if the call is a successful `edit` call whose `edits` argument, read through
+ * {@link parseJourneyEdits}, holds a declaration, an update, and a removal; false otherwise
  */
 export function matchesJourneyBatch(call: StoreCall): boolean {
 	const edits = parseJourneyEdits(call.arguments['edits'])
@@ -1875,13 +2015,13 @@ export function matchesJourneyBatch(call: StoreCall): boolean {
 }
 
 /**
- * Returns the refused `record` and `save` calls that follow a run's first successful `save`.
+ * Returns the refused `record` calls and `save` calls that follow a run's first successful `save` call.
  *
  * @param calls - The run's calls, in order
- * @returns Each unsuccessful `record` or `save` call after the first successful `save`, in order;
- * empty when no `save` succeeded
- * @remarks After a save, the toolset's refusals of `record` and `save` name `journeys`, `edit`,
- * and `replay` as the next call, so the count is how often the model looped past them.
+ * @returns Each unsuccessful `record` call or `save` call after the first successful `save` call, in order;
+ * empty when no `save` call succeeded
+ * @remarks After a save, refusals direct the model to list, edit, or replay the journey.
+ * Later refused record and save calls measure whether the model followed that direction.
  */
 export function findJourneyLoops(calls: readonly StoreCall[]): readonly StoreCall[] {
 	const saved = calls.findIndex((call) => call.success && call.name === 'save')
@@ -1905,8 +2045,8 @@ export const STORE_JOURNEY_SEQUENCE: readonly string[] = Object.freeze([
  *
  * @param calls - The run's calls, in order
  * @returns True if a successful call of each {@link STORE_JOURNEY_SEQUENCE} tool follows the
- * previous one, the `edit` one {@link matchesJourneyBatch} holds for and the `replay` one carrying
- * `inputs`; false otherwise
+ * previous one, the `edit` call {@link matchesJourneyBatch} holds for and the `replay` call carrying
+ * `inputs` argument; false otherwise
  */
 export function matchesJourneySequence(calls: readonly StoreCall[]): boolean {
 	let index = -1
@@ -1940,13 +2080,11 @@ export function matchesRemovedCart(calls: readonly StoreCall[], listing: string)
 		.slice(0, Math.max(index, 0))
 		.findLast((call) => call.success && call.name === 'save')
 	if (saved === undefined || edits === undefined) return false
-	const later = extractJourneyLines(saved.text).filter((line) =>
-		/^s[1-9]\d* click link "Cart"$/.test(line),
-	)
+	const later = extractJourneyLines(saved.text).filter(matchesCartClick)
 	return (
 		filterSubmissionLines(saved.text).length === 1 &&
 		filterSubmissionLines(listing).length === 1 &&
-		!extractJourneyLines(listing).some((line) => /^s[1-9]\d* click link "Cart"$/.test(line)) &&
+		!extractJourneyLines(listing).some(matchesCartClick) &&
 		edits.some(
 			(edit) =>
 				isRecord(edit) &&
@@ -1960,7 +2098,7 @@ export function matchesRemovedCart(calls: readonly StoreCall[], listing: string)
  * Checks whether a journey run holds its oracle.
  *
  * @param transcript - The run's transcript
- * @param buyer - The input the replay must carry
+ * @param buyer - The input the replay must carry. Default: {@link STORE_JOURNEY_BUYER}
  * @returns True if the run ended without a failure, {@link matchesJourneySequence} holds, the files
  * hold one saved journey whose name step binds a defaulted parameter, {@link matchesRemovedCart}
  * holds for it, a run of its stored revision completed with the buyer as that parameter's input,
@@ -2006,3 +2144,740 @@ export const STORE_PREDICATES: Readonly<Record<string, (transcript: StoreTranscr
 		paging: matchesPagingOracle,
 		journey: matchesJourneyOracle,
 	})
+
+/**
+ * Normalizes a search word for prefix matching.
+ * @param word - The word to lowercase and strip of one trailing letter s
+ * @returns The normalized search stem
+ */
+export function stemWord(word: string): string {
+	return word.toLowerCase().replace(/s$/, '')
+}
+
+/**
+ * Finds a fixture product by its path identifier.
+ * @param id - The requested identifier, or an absent form or route value
+ * @returns The product, or undefined when the identifier is absent or unknown
+ */
+export function findStoreProduct(id: string | null | undefined): StoreProduct | undefined {
+	return STORE_PRODUCTS.find((product) => product.id === id)
+}
+
+/**
+ * Builds the uncached response for an unknown product.
+ * @returns The not-found HTML response with HTTP status 404
+ */
+export function buildMissingResponse(): Response {
+	return buildPageResponse(renderStorePage('Not found', '<h1>Not found</h1>'), 404)
+}
+
+/**
+ * Collects reasoning into the owned recorder while forwarding every stream chunk.
+ * @param events - The agent's stream of chunks
+ * @param thoughts - The owned reasoning recorder, initialized with an empty string
+ * @returns The unchanged chunks in their original order
+ * @remarks Each usage chunk starts the next provider turn's reasoning slot.
+ */
+export async function* collectTurnThinking(
+	events: AgentStreamInterface['events'],
+	thoughts: string[],
+): AsyncGenerator<AgentChunk> {
+	for await (const chunk of events) {
+		if (chunk.category === 'think') thoughts[thoughts.length - 1] += chunk.content
+		else if (chunk.category === 'usage') thoughts.push('')
+		yield chunk
+	}
+}
+
+/**
+ * Extracts a page header from a browser result.
+ * @param text - The result to inspect
+ * @returns The header line, or undefined when the result has none
+ */
+export function extractPageHeader(text: string): string | undefined {
+	return /^page .+$/m.exec(text)?.[0]
+}
+
+/**
+ * Reads a number from a regular expression's first capture.
+ * @param match - The expression's result
+ * @returns The converted capture, or undefined when the capture is absent
+ */
+export function readCapturedNumber(match: RegExpExecArray | null): number | undefined {
+	return match?.[1] === undefined ? undefined : Number(match[1])
+}
+
+/**
+ * Checks whether a journey row clicks the cart link.
+ * @param line - The unnumbered journey row
+ * @returns True if the row clicks the Cart link; false otherwise
+ */
+export function matchesCartClick(line: string): boolean {
+	return /^s[1-9]\d* click link "Cart"$/.test(line)
+}
+
+/**
+ * Builds a refused store call.
+ * @param name - The called tool's name
+ * @param input - The call's arguments. Default: an empty record
+ * @param text - The refusal message. Default: an empty string
+ * @returns The unsuccessful call and its recorded refusal
+ */
+export function buildRefusedCall(
+	name: string,
+	input: Readonly<Record<string, unknown>> = {},
+	text = '',
+): StoreCall {
+	return { ...buildStoreCall(name, input, text), success: false }
+}
+
+/**
+ * Executes a tool call and records the result the model receives.
+ * @param tools - The registry that dispatches the call
+ * @param id - The call identifier
+ * @param name - The called tool's name
+ * @param input - The call's arguments
+ * @returns The recorded call, including its success state and rendered result
+ */
+export async function executeStoreCall(
+	tools: ToolManagerInterface,
+	id: string,
+	name: string,
+	input: Readonly<Record<string, unknown>>,
+): Promise<StoreCall> {
+	const result = await tools.execute({ id, name, arguments: input })
+	return { name, arguments: input, success: result.success, text: renderToolText(result) }
+}
+
+/**
+ * Creates a registry with the lookup and refusing tools.
+ * @returns The populated registry, owned by the caller
+ */
+export function createRefusalTools(): ToolManagerInterface {
+	const tools = createToolManager()
+	tools.add([createLookupTool(), createThrowingTool()])
+	return tools
+}
+
+/**
+ * Creates a headless page browser on a reserved debugging port.
+ * @returns The unconnected browser, owned by the caller
+ * @throws Thrown when no supported browser is installed or a port cannot be reserved
+ */
+export async function createPageBrowser(): Promise<BrowserInterface> {
+	return createBrowser({
+		executable: requirePageBrowser().executable,
+		headless: true,
+		args: PAGE_BROWSER_ARGS,
+		cdp: { port: await reservePort(), discover: false },
+	})
+}
+
+/** Holds a page slice with a continuation footer. */
+export const STORE_FIRST_SLICE =
+	'page "Policy" http://store/policy (80 lines)\n1: # Policy\n[lines 1–30 of 80; 50 below; call read with from 31 for more]'
+/** Holds the continuation window containing the policy token. */
+export const STORE_CONTINUED_SLICE =
+	'page "Policy" http://store/policy (80 lines)\n31: Quote ' +
+	STORE_POLICY_TOKEN +
+	'\n[lines 31–80 of 80; 30 above; end of page]'
+
+/** Names the seeded catalogue view the search fixtures open on. */
+const STORE_SEARCH_SEED =
+	'page "Harbor Goods — Catalogue" http://127.0.0.1/\n1: searchbox "Search products" [ref=e35]\n2: button "Search" [ref=e36]'
+
+/** Holds the result text of a submitted search that lists both kettles. */
+export const STORE_KETTLE_RESULTS = `Typed "kettles" into searchbox "Search products" [ref=e35] and submitted the form.
+
+page "Search: kettles" http://127.0.0.1/search?q=kettles
+link "Alpine Kettle" [ref=e47]
+link "Copper Kettle" [ref=e48]`
+
+/** Holds a search run that lists the kettles and then ends with an empty final turn. */
+export const STORE_STALLED_SEARCH: StoreTranscript = Object.freeze({
+	...buildStoreTranscript(
+		[
+			buildStoreCall('look', { search: 'kettle products' }, STORE_SEARCH_SEED),
+			buildStoreCall('type', { ref: 'e35', text: 'kettles', submit: true }, STORE_KETTLE_RESULTS),
+		],
+		STORE_SEARCH_SEED,
+	),
+	state: { cart: [], searches: ['kettles'], orders: [] },
+})
+
+/** Holds a search run that submits the query, lists no product, and ends with an empty final turn. */
+export const STORE_EMPTY_RESULTS_SEARCH: StoreTranscript = Object.freeze({
+	...STORE_STALLED_SEARCH,
+	calls: [
+		buildStoreCall(
+			'type',
+			{ ref: 'e35', text: 'kettles', submit: true },
+			'Typed "kettles" into searchbox "Search products" [ref=e35] and submitted the form.\n\n# Search results for “kettles”\nNo products match.',
+		),
+	],
+})
+
+/** Holds a search run whose last call is a click receipt naming the `type` tool, followed by an empty final turn. */
+export const STORE_CLICKED_SEARCH: StoreTranscript = Object.freeze({
+	...STORE_STALLED_SEARCH,
+	calls: [
+		buildStoreCall(
+			'click',
+			{ ref: 'e35' },
+			`Clicked searchbox "Search products" [ref=e35]; call type with e35 to enter text.\n\n${STORE_SEARCH_SEED}`,
+		),
+	],
+	state: { cart: [], searches: [], orders: [] },
+})
+
+/** Holds a search run that submitted the query and named every matching product. */
+export const STORE_COMPLETED_SEARCH: StoreTranscript = Object.freeze({
+	...buildStoreTranscript(
+		[
+			buildStoreCall(
+				'type',
+				{ ref: 'e35', text: STORE_QUERY, submit: true },
+				'Typed into searchbox "Search products" [ref=e35].\n\npage "Search: kettle" http://127.0.0.1/search?q=kettle\n1: link "Alpine Kettle" [ref=e40]\n2: link "Copper Kettle" [ref=e41]',
+			),
+		],
+		STORE_SEARCH_SEED,
+	),
+	answer: 'The Alpine Kettle and the Copper Kettle match.',
+	state: { cart: [], searches: [STORE_QUERY], orders: [] },
+})
+
+/** Holds the checkout journey as the journey task's edit leaves it: s3, the recorded cart click, removed. */
+export const STORE_EDITED_JOURNEY: BrowserJourney = Object.freeze({
+	format: 1,
+	name: STORE_JOURNEY_NAME,
+	description: 'Place an order at checkout.',
+	parameters: { [STORE_JOURNEY_PARAMETER]: { default: STORE_BUYER } },
+	next: 5,
+	steps: [
+		{ id: 's1', action: 'click', arguments: {}, target: { role: 'link', name: 'Checkout' } },
+		{
+			id: 's2',
+			action: 'type',
+			arguments: { text: { parameter: STORE_JOURNEY_PARAMETER }, submit: true },
+			target: { role: 'textbox', name: 'Full name' },
+		},
+		{ id: 's4', action: 'wait', arguments: { text: 'HG-48213' } },
+	],
+})
+
+/** Holds the `save` result the journey task's recording returns: one submission and a cart click. */
+export const STORE_SAVED_LISTING = [
+	`Saved ${STORE_JOURNEY_NAME} with 4 steps.`,
+	'',
+	`${STORE_JOURNEY_NAME} "Place an order at checkout."`,
+	's1 click link "Checkout"',
+	`s2 type "${STORE_BUYER}" into textbox "Full name", submit`,
+	's3 click link "Cart"',
+	's4 wait "HG-48213"',
+].join('\n')
+
+/** Holds the edit batch the journey task asks for. */
+export const STORE_EDITS: ReadonlyArray<Readonly<Record<string, unknown>>> = Object.freeze([
+	{
+		operation: 'declare',
+		name: STORE_JOURNEY_PARAMETER,
+		parameter: { default: STORE_BUYER },
+	},
+	{ operation: 'update', id: 's2', arguments: { text: { parameter: STORE_JOURNEY_PARAMETER } } },
+	{ operation: 'remove', id: 's3' },
+])
+
+/** Holds the journey task's calls in order, each successful. */
+export const STORE_JOURNEY_CALLS: readonly StoreCall[] = Object.freeze([
+	buildStoreCall('record', { journey: STORE_JOURNEY_NAME }),
+	buildStoreCall('click', { ref: 'e1' }),
+	buildStoreCall('save', { description: 'Place an order at checkout.' }, STORE_SAVED_LISTING),
+	buildStoreCall(
+		'journeys',
+		{ from: 1 },
+		STORE_SAVED_LISTING.split(/\r\n|\n/)
+			.slice(2)
+			.join('\n'),
+	),
+	buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: STORE_EDITS }),
+	buildStoreCall('replay', {
+		journey: STORE_JOURNEY_NAME,
+		inputs: { [STORE_JOURNEY_PARAMETER]: STORE_JOURNEY_BUYER },
+	}),
+])
+
+/**
+ * Writes the edited journey and one run of it through the real file stores, and returns the
+ * files the journey task's transcript would carry.
+ * @param outcome - The recorded run's completion state
+ * @returns The JSON file inventory from the released scratch directory
+ */
+export async function writeJourneyFiles(
+	outcome: BrowserRun['outcome'],
+): Promise<Readonly<Record<string, string>>> {
+	const scratch = createScratch({ prefix: 'store-journey-' })
+	try {
+		const saved = await createFileBrowserJourneyStore({ root: scratch.path }).set(
+			STORE_EDITED_JOURNEY,
+		)
+		const runs = createFileBrowserRunStore({ root: scratch.path })
+		const slot = await runs.create(STORE_JOURNEY_NAME)
+		await runs.set({
+			format: 1,
+			id: slot.id,
+			journey: saved.journey,
+			...(saved.revision === undefined ? {} : { revision: saved.revision }),
+			inputs: { [STORE_JOURNEY_PARAMETER]: STORE_JOURNEY_BUYER },
+			steps: STORE_EDITED_JOURNEY.steps
+				.slice(0, outcome === 'complete' ? STORE_EDITED_JOURNEY.steps.length : 2)
+				.map((step, index) => ({
+					id: step.id,
+					action: step.action,
+					trigger: step.target?.role ?? step.action,
+					arguments: {},
+					outcome: outcome === 'complete' || index === 0 ? 'done' : 'refused',
+					result: `${step.id} ${step.action}`,
+					elapsed: 1,
+				})),
+			outcome,
+			elapsed: 1,
+		})
+		return readInventory(scratch.path, ['.'], { extensions: ['.json'] })
+	} finally {
+		scratch.destroy()
+	}
+}
+
+/**
+ * Builds the journey task's transcript over the given files and orders.
+ * @param files - The saved journey and run files
+ * @param orders - The names submitted at checkout, in order
+ * @returns The complete journey transcript
+ */
+export function buildJourneyTranscript(
+	files: Readonly<Record<string, string>>,
+	orders: readonly string[],
+): StoreTranscript {
+	return {
+		...buildStoreTranscript(STORE_JOURNEY_CALLS),
+		files,
+		state: { cart: [], searches: [], orders },
+	}
+}
+
+/** Lists the products the catalogue must feature. */
+export const STORE_FEATURED: readonly string[] = Object.freeze([
+	'Birch Cutting Board',
+	'Cedar Tea Tray',
+	'Linen Apron',
+	'Stoneware Mug',
+	'Walnut Spice Rack',
+	'Oak Bread Bin',
+	'Wool Tea Cosy',
+])
+
+/** Lists the products that require a search rather than catalogue discovery. */
+export const STORE_UNFEATURED: readonly string[] = Object.freeze(['Alpine Kettle', 'Copper Kettle'])
+
+/** Lists the calls that add the requested product after refused text entry. */
+export const STORE_CART_CALLS: readonly StoreCall[] = Object.freeze([
+	buildStoreCall('read', { from: 46, to: 52, search: STORE_NAMED_PRODUCT }),
+	buildStoreCall('type', { ref: 'e7', text: STORE_NAMED_PRODUCT, submit: true }),
+	buildStoreCall('click', { ref: 'e7' }),
+	buildStoreCall('type', { ref: 'e16', text: 'Add to cart', submit: true }),
+	buildStoreCall('click', { ref: 'e16' }),
+])
+
+/** Lists the reference-exposure scenarios. */
+export const STORE_EXPOSURE_SCENARIOS: readonly string[] = Object.freeze([
+	'unchanged',
+	'bestmatch',
+	'action',
+	'invented',
+	'changed',
+	'refused',
+])
+
+/** Lists the actions that record, edit, and replay checkout. */
+export const STORE_JOURNEY_ACTIONS: readonly string[] = Object.freeze([
+	'record',
+	'Cart',
+	'Checkout',
+	'Full name',
+	'save',
+	'journeys',
+	'edit',
+	'replay',
+])
+
+/** Represents an oracle with a transcript that satisfies it. */
+export interface StoreOracleCase {
+	readonly predicate: (transcript: StoreTranscript) => boolean
+	readonly transcript: StoreTranscript
+}
+
+/** Holds the shared read evidence for page oracle fixtures. */
+export const STORE_ORACLE_BASE: StoreTranscript = Object.freeze(
+	buildStoreTranscript([buildStoreCall('read', { from: 1 }, STORE_FACT)]),
+)
+
+/** Lists the accepted page-oracle fixtures. */
+export const STORE_ORACLE_CASES: readonly StoreOracleCase[] = Object.freeze([
+	{ predicate: matchesShippingOracle, transcript: { ...STORE_ORACLE_BASE, answer: STORE_FACT } },
+	{
+		predicate: matchesCartOracle,
+		transcript: {
+			...STORE_ORACLE_BASE,
+			state: { ...STORE_ORACLE_BASE.state, cart: [STORE_NAMED_PRODUCT] },
+		},
+	},
+	{
+		predicate: matchesSearchOracle,
+		transcript: {
+			...STORE_ORACLE_BASE,
+			state: { ...STORE_ORACLE_BASE.state, searches: [STORE_QUERY] },
+			answer: 'Alpine Kettle, Copper Kettle',
+		},
+	},
+	{
+		predicate: matchesCheckoutOracle,
+		transcript: {
+			...STORE_ORACLE_BASE,
+			state: { ...STORE_ORACLE_BASE.state, orders: [STORE_BUYER] },
+			answer: STORE_CODE,
+		},
+	},
+	{
+		predicate: matchesPagingOracle,
+		transcript: buildStoreTranscript([
+			buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE),
+			buildStoreCall('read', { from: 31 }, STORE_CONTINUED_SLICE),
+		]),
+	},
+])
+
+/** Lists carts that do not contain exactly the requested product. */
+export const STORE_REFUSED_CARTS: ReadonlyArray<readonly string[]> = Object.freeze([
+	[],
+	[STORE_NAMED_PRODUCT, STORE_NAMED_PRODUCT],
+	[STORE_NAMED_PRODUCT, 'Linen Apron'],
+	['Linen Apron'],
+])
+
+/** Lists orders that do not match the requested checkout. */
+export const STORE_REFUSED_ORDERS: ReadonlyArray<readonly string[]> = Object.freeze([
+	[],
+	[STORE_BUYER, STORE_BUYER],
+	[STORE_JOURNEY_BUYER],
+	[STORE_BUYER, STORE_JOURNEY_BUYER],
+])
+
+/**
+ * Builds calls that invalidate previously exposed references.
+ * @param text - The result window before the page changes
+ * @returns Calls carrying a change note, an unreadable page, or a tab switch
+ */
+export function buildExposureChanges(text: string): readonly StoreCall[] {
+	return [
+		buildStoreCall(
+			'read',
+			{ from: 1 },
+			`${text}\nThe page changed since the last view; line numbers might differ.`,
+		),
+		buildStoreCall(
+			'read',
+			{ from: 1 },
+			'(The page changed before the view could be read; call read.)',
+		),
+		buildStoreCall('switch', { tab: 't2' }, text),
+	]
+}
+
+/** Lists call histories that cannot earn continuation credit. */
+export const STORE_STALE_CONTINUATIONS: ReadonlyArray<
+	readonly [reason: string, calls: readonly StoreCall[]]
+> = Object.freeze([
+	['seed footer', []],
+	['failed footer call', [buildRefusedCall('read', { from: 1 }, STORE_FIRST_SLICE)]],
+	[
+		'action',
+		[
+			buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE),
+			buildStoreCall('press', { key: 'Tab' }),
+		],
+	],
+	[
+		'failed action',
+		[
+			buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE),
+			buildRefusedCall('press', { key: 'Tab' }),
+		],
+	],
+	[
+		'intervening change note',
+		[
+			buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE),
+			buildStoreCall(
+				'read',
+				{ from: 40 },
+				'The page changed since the last view; line numbers might differ.\n' +
+					STORE_CONTINUED_SLICE.replace('31: ', '40: '),
+			),
+		],
+	],
+	[
+		'changed page then return',
+		[
+			buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE),
+			buildStoreCall(
+				'read',
+				{ from: 40 },
+				STORE_CONTINUED_SLICE.replace('http://store/policy', 'http://store/other').replace(
+					'31: ',
+					'40: ',
+				),
+			),
+		],
+	],
+])
+
+/** Lists invalid continuation arguments and results. */
+export const STORE_INVALID_CONTINUATIONS: ReadonlyArray<
+	readonly [
+		reason: string,
+		input: Readonly<Record<string, unknown>>,
+		text: string,
+		success: boolean,
+	]
+> = Object.freeze([
+	['guessed line', { from: 30 }, STORE_CONTINUED_SLICE.replace('31: ', '30: '), true],
+	['non-numeric line', { from: '31' }, STORE_CONTINUED_SLICE, true],
+	['shifted window', { from: 31 }, STORE_CONTINUED_SLICE.replace('31: ', '32: '), true],
+	[
+		'shifted search window',
+		{ from: 31, search: 'token' },
+		STORE_CONTINUED_SLICE.replace('31: ', '32: '),
+		true,
+	],
+	[
+		'changed page',
+		{ from: 31 },
+		STORE_CONTINUED_SLICE.replace('http://store/policy', 'http://store/other'),
+		true,
+	],
+	['failed continuation', { from: 31 }, STORE_CONTINUED_SLICE, false],
+	[
+		'change note',
+		{ from: 31 },
+		'The page changed since the last view; line numbers might differ.\n' + STORE_CONTINUED_SLICE,
+		true,
+	],
+	[
+		'missing token',
+		{ from: 31 },
+		STORE_CONTINUED_SLICE.replace(STORE_POLICY_TOKEN, 'absent'),
+		true,
+	],
+])
+
+/**
+ * Builds transcripts that violate the shared store checks.
+ * @param transcript - The accepted transcript to vary
+ * @param limit - The maximum permitted tool-call count
+ * @returns Partial, failed, empty, oversized, unlisted, and over-limit transcripts
+ */
+export function buildRefusedTranscripts(
+	transcript: StoreTranscript,
+	limit: number,
+): readonly StoreTranscript[] {
+	return [
+		{ ...transcript, partial: true },
+		{ ...transcript, failure: 'failed' },
+		{ ...transcript, calls: [] },
+		{ ...transcript, seed: 'x'.repeat(BROWSER_TOOL_LIMIT + 1) },
+		{
+			...transcript,
+			calls: [
+				...transcript.calls,
+				buildStoreCall('read', { from: 1 }, 'x'.repeat(BROWSER_TOOL_LIMIT + 1)),
+			],
+		},
+		{ ...transcript, calls: [...transcript.calls, buildStoreCall('click', { ref: 'e999' })] },
+		{
+			...transcript,
+			calls: [
+				...transcript.calls,
+				...Array.from({ length: limit }, () => buildStoreCall('read', { from: 1 })),
+			],
+		},
+		{
+			...transcript,
+			calls: [
+				...transcript.calls,
+				buildStoreCall(
+					'read',
+					{ from: 1 },
+					'x'.repeat(BROWSER_TOOL_LIMIT) + '\n[lines 1–1 of 1; the whole page]',
+				),
+			],
+		},
+	]
+}
+
+/** Lists saved-journey histories without the rows needed for an edit batch. */
+export const STORE_UNBATCHED_LISTINGS: ReadonlyArray<readonly StoreCall[]> = Object.freeze([
+	[
+		buildStoreCall(
+			'save',
+			{ description: 'Place an order at checkout.' },
+			STORE_SAVED_LISTING.replace('s3 click link "Cart"', 's3 press Tab'),
+		),
+	],
+	[],
+	[buildRefusedCall('save', {}, STORE_SAVED_LISTING)],
+])
+
+/** Holds a refusal to restart a saved journey. */
+export const STORE_REFUSED_RECORD: StoreCall = Object.freeze(
+	buildRefusedCall(
+		'record',
+		{ journey: STORE_JOURNEY_NAME },
+		`Journey "${STORE_JOURNEY_NAME}" is saved already and nothing is recording; call journeys to list it, edit to change it, or replay to run it.`,
+	),
+)
+
+/** Holds a refusal to save when recording has ended. */
+export const STORE_REFUSED_SAVE: StoreCall = Object.freeze(
+	buildRefusedCall(
+		'save',
+		{ description: 'Place an order at checkout.' },
+		`Nothing is recording; "${STORE_JOURNEY_NAME}" was saved. Call journeys, edit, or replay.`,
+	),
+)
+
+/** Holds a provider turn that calls the refusing tool. */
+export const STORE_FAIL_TURN = Object.freeze({
+	content: '',
+	tool_calls: Object.freeze([{ function: { name: 'fail', arguments: {} } }]),
+})
+
+/** Holds a provider turn that calls the lookup tool. */
+export const STORE_LOOKUP_TURN = Object.freeze({
+	content: '',
+	tool_calls: Object.freeze([{ function: { name: 'lookup', arguments: { query: 'kettle' } } }]),
+})
+
+/** Lists the turns that reach the consecutive-refusal bound. */
+export const STORE_REFUSAL_TURNS = Object.freeze(
+	Array.from({ length: STORE_BOUNDS.refusals }, () => STORE_FAIL_TURN),
+)
+
+/** Lists the tools the refusal registry must advertise. */
+export const STORE_REFUSAL_TOOLS: readonly string[] = Object.freeze(['lookup', 'fail'])
+
+/** Lists messages with voiced and silent assistant turns. */
+export const STORE_THINKING_MESSAGES: readonly Message[] = Object.freeze([
+	{ id: 'm1', role: 'user', content: 'Search for kettle.' },
+	{ id: 'm2', role: 'assistant', content: '' },
+	{ id: 'm3', role: 'tool', content: 'results' },
+	{ id: 'm4', role: 'assistant', content: '' },
+])
+
+/** Lists successful and unknown tool calls for interval recording. */
+export const STORE_TIMED_CALLS: readonly ToolCall[] = Object.freeze([
+	{ id: 'lookup', name: 'lookup', arguments: { query: 'kettle' } },
+	{ id: 'missing', name: 'missing', arguments: {} },
+])
+
+/** Lists calls using references exposed by the preceding page view. */
+export const STORE_REFERENCE_CALLS: readonly StoreCall[] = Object.freeze([
+	buildStoreCall('click', { ref: 'e1' }),
+	buildStoreCall(
+		'read',
+		{ from: 1, search: 'Cart' },
+		'page "Store" http://store/ (1 lines)\n1: link "Cart" [ref=e1]\n[lines 1–1 of 1; end of page]',
+	),
+	buildStoreCall('click', { ref: '[e1]' }),
+])
+
+/** Lists calls that violate the advertised browser tool contracts. */
+export const STORE_MALFORMED_CALLS: readonly StoreCall[] = Object.freeze([
+	buildStoreCall('checkout', { name: STORE_BUYER }),
+	buildStoreCall('look', {}),
+	buildStoreCall('type', { ref: 'e4', text: STORE_BUYER, submit: 'true' }),
+	buildStoreCall('look', { search: 'the page', ref: 'e4' }),
+	buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: 3 }),
+	buildStoreCall('edit', { journey: STORE_JOURNEY_NAME, edits: [{ id: 's3' }] }),
+	buildStoreCall('replay', { journey: STORE_JOURNEY_NAME, inputs: STORE_JOURNEY_BUYER }),
+	buildStoreCall('read', { search: 'the code', offset: 1.5 }),
+])
+
+/** Defines an edit tool accepting an encoded batch or a batch of identified edits. */
+export const STORE_EDIT_DEFINITION: ToolDefinition = Object.freeze({
+	name: 'edit',
+	parameters: {
+		type: 'object',
+		properties: {
+			edits: {
+				type: ['array', 'string'],
+				items: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+			},
+		},
+		required: ['edits'],
+	},
+})
+
+/** Lists edit calls accepted by the array-or-string fixture contract. */
+export const STORE_VALID_EDITS: readonly StoreCall[] = Object.freeze([
+	buildStoreCall('edit', { edits: '[]' }),
+	buildStoreCall('edit', { edits: [{ id: 's3' }] }),
+])
+
+/** Lists edit calls refused by the array-or-string fixture contract. */
+export const STORE_INVALID_EDITS: readonly StoreCall[] = Object.freeze([
+	buildStoreCall('edit', { edits: 3 }),
+	buildStoreCall('edit', { edits: [{ id: 3 }] }),
+	buildStoreCall('edit', { edits: null }),
+])
+
+/** Lists scenarios that retain a previously exposed reference. */
+export const STORE_ACCEPTED_EXPOSURES: readonly string[] = Object.freeze([
+	'unchanged',
+	'bestmatch',
+	'action',
+])
+
+/** Lists answers the system prompt must not reveal. */
+export const STORE_SEEDED_ANSWERS: readonly string[] = Object.freeze([
+	STORE_FACT,
+	STORE_CODE,
+	STORE_POLICY_TOKEN,
+	STORE_NAMED_PRODUCT,
+])
+
+/** Lists page tools the store prompt explains. */
+export const STORE_PROMPT_TOOLS: readonly string[] = Object.freeze([
+	'read',
+	'click',
+	'type',
+	'wait',
+])
+
+/** Lists consecutive attempts used to prove browser-context isolation. */
+export const STORE_ISOLATION_ATTEMPTS: readonly number[] = Object.freeze([1, 2])
+
+/** Lists checkout names in recording and replay order. */
+export const STORE_JOURNEY_ORDERS: readonly string[] = Object.freeze([
+	STORE_BUYER,
+	STORE_JOURNEY_BUYER,
+])
+
+/** Lists reasoning, answer, and usage chunks spanning provider turns. */
+export const STORE_THINKING_CHUNKS: readonly AgentChunk[] = Object.freeze([
+	{ category: 'think', content: 'Check ' },
+	{ category: 'token', content: 'Answer' },
+	{ category: 'think', content: 'the cart.' },
+	{ category: 'usage', usage: { prompt: 1, completion: 1, total: 2 } },
+	{ category: 'usage', usage: { prompt: 2, completion: 1, total: 3 } },
+	{ category: 'think', content: 'Confirm.' },
+])

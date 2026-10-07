@@ -333,7 +333,8 @@ describe('real line projection', () => {
 				).toHaveLength(1)
 				for (const refused of buildRefusedTranscripts(
 					transcript,
-					(1 + STORE_TASKS.journey.followups.length) * STORE_BOUNDS.limit,
+					(STORE_TASKS.journey.limit ?? STORE_BOUNDS.limit) +
+						STORE_TASKS.journey.followups.length * STORE_BOUNDS.limit,
 				))
 					expect(matchesJourneyOracle(refused)).toBe(false)
 			} finally {

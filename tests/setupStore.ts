@@ -145,7 +145,7 @@ export interface StoreTask {
 	readonly system?: string | undefined
 	/** The user turns after the first, each sent when the model ends the previous one. Default: none. */
 	readonly followups?: readonly StoreTurn[] | undefined
-	/** The most tool calls one user turn allows. Default: `STORE_BOUNDS.limit` value. */
+	/** The most tool calls the opening user turn allows; later turns take `STORE_BOUNDS.limit`. Default: `STORE_BOUNDS.limit` value. */
 	readonly limit?: number | undefined
 }
 
@@ -220,7 +220,7 @@ export interface StoreConversationOptions {
 	readonly tools: ToolManagerInterface
 	/** The user turns, in order, each sent when the model ends the previous one. */
 	readonly turns: readonly StoreTurn[]
-	/** The most tool calls one user turn allows. Default: `STORE_BOUNDS.limit` value. */
+	/** The most tool calls the opening user turn allows; later turns take `STORE_BOUNDS.limit`. Default: `STORE_BOUNDS.limit` value. */
 	readonly limit?: number | undefined
 }
 
@@ -936,7 +936,8 @@ export const STORE_BOUNDS = Object.freeze({
  * {@link STORE_BOUNDS}.
  *
  * @remarks The journey task sends its prompt and each followup as user turns in one conversation.
- * Each turn takes the `STORE_BOUNDS.run` deadline and `STORE_BOUNDS.limit` call allowance.
+ * The opening turn takes the task's `limit` call allowance and each later turn the
+ * `STORE_BOUNDS.limit` value, every turn under the `STORE_BOUNDS.run` deadline.
  */
 export const STORE_JOURNEY_BOUNDS = Object.freeze({
 	/** The attempt deadline allows the `STORE_BOUNDS.run` duration for each journey user turn. */
@@ -1099,7 +1100,9 @@ export function computeRefusals(calls: readonly StoreCall[]): number {
  * @param options - The model, the system prompt, the tools, and the user turns
  * @returns The messages, the calls, the usage, the last turn's result, and the error a turn
  * ended with
- * @remarks The agent runs `STORE_BOUNDS.limit` tool turns under `STORE_BOUNDS.run` deadline per user turn.
+ * @remarks The opening user turn runs at most `options.limit` tool calls (Default: the
+ * `STORE_BOUNDS.limit` value) and each later turn at most `STORE_BOUNDS.limit`, every turn under
+ * the `STORE_BOUNDS.run` deadline.
  * When one tool's refusals since the turn's last successful call reach `STORE_BOUNDS.refusals` bound
  * (see {@link computeRefusals}), the agent's context takes {@link STORE_ANSWER_SCOPE}, so the
  * next provider turn advertises no tool and the model answers after the refusal it last read;
@@ -1117,7 +1120,7 @@ export async function converseStore(options: StoreConversationOptions): Promise<
 		system: options.system,
 		tools: createTimedTools(options.tools, timings),
 		timeout: STORE_BOUNDS.run,
-		limit: options.limit ?? STORE_BOUNDS.limit,
+		limit: STORE_BOUNDS.limit,
 		on: {
 			tool: (call, result) => {
 				calls.push({
@@ -1141,14 +1144,18 @@ export async function converseStore(options: StoreConversationOptions): Promise<
 	let partial = false
 	let failure: unknown
 	try {
-		for (const turn of options.turns) {
+		for (const [index, turn] of options.turns.entries()) {
 			start = calls.length
 			agent.context.apply(undefined)
 			agent.context.messages.add({
 				role: 'user',
 				content: typeof turn === 'string' ? turn : turn(calls),
 			})
-			const stream = agent.stream()
+			// The opening turn carries the task's flow, so it takes the task's own budget; each later
+			// turn asks for one call and takes the shared bound.
+			const stream = agent.stream({
+				limit: index === 0 ? (options.limit ?? STORE_BOUNDS.limit) : STORE_BOUNDS.limit,
+			})
 			result = (
 				await driveAgent({
 					events: collectTurnThinking(stream.events, thoughts),
@@ -1438,7 +1445,10 @@ export const STORE_TASKS: Readonly<
 	journey: {
 		recordable: true,
 		name: 'journey',
-		prompt: `Record a journey named ${STORE_JOURNEY_NAME}, then open the cart before you complete checkout with the name ${STORE_BUYER} and report the confirmation code.`,
+		prompt: `Record a journey named ${STORE_JOURNEY_NAME}, then click the Cart link and complete checkout with the name ${STORE_BUYER} and report the confirmation code.`,
+		// The opening turn's shortest correct sequence under the journey prompt is record, click the
+		// Cart link, click Checkout, type with submit, and save, with one correction for each call.
+		limit: 10,
 		followups: Object.freeze([
 			'Save the journey.',
 			'List the saved journeys.',
@@ -2111,7 +2121,8 @@ export function matchesJourneyOracle(
 	if (
 		!matchesStoreOracles(
 			transcript,
-			(1 + STORE_TASKS.journey.followups.length) * STORE_BOUNDS.limit,
+			(STORE_TASKS.journey.limit ?? STORE_BOUNDS.limit) +
+				STORE_TASKS.journey.followups.length * STORE_BOUNDS.limit,
 		) ||
 		!matchesJourneySequence(transcript.calls)
 	)

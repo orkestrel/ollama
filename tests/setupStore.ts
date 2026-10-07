@@ -2011,7 +2011,7 @@ export function renderJourneyEdit(calls: readonly StoreCall[]): string {
 		)
 	}
 	return (
-		`Edit the journey ${STORE_JOURNEY_NAME} in one call with the edits ` +
+		`In one call, apply to the journey ${STORE_JOURNEY_NAME} the edits ` +
 		`[{"operation": "declare", "name": "${STORE_JOURNEY_PARAMETER}", "parameter": {"default": "${STORE_BUYER}"}}, ` +
 		`{"operation": "update", "arguments": {"text": {"parameter": "${STORE_JOURNEY_PARAMETER}"}}, "id": "${name.slice(0, name.indexOf(' '))}"}, ` +
 		`{"operation": "remove", "id": "${second.slice(0, second.indexOf(' '))}"}].`

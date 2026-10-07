@@ -192,7 +192,7 @@ export interface StoreTranscript {
 	readonly violations: number
 	/** How many `record` calls and `save` calls {@link findJourneyLoops} reads as refused after a save. */
 	readonly loops: number
-	/** How many user turns reached the `STORE_BOUNDS.refusals` bound and went on with no tool advertised. */
+	/** How many user turns went on with no tool advertised: after the `STORE_BOUNDS.refusals` bound, or after a later turn's first successful call. */
 	readonly ended: number
 	/** Each JSON file the journey stores wrote under the run's root, by its `/`-separated path. */
 	readonly files: Readonly<Record<string, string>>
@@ -240,7 +240,7 @@ export interface StoreConversation {
 	readonly result: AgentResult | undefined
 	/** True if a deadline or the turn limit cut a user turn short; false otherwise. */
 	readonly partial: boolean
-	/** How many user turns reached the `STORE_BOUNDS.refusals` bound and went on with no tool advertised. */
+	/** How many user turns went on with no tool advertised: after the `STORE_BOUNDS.refusals` bound, or after a later turn's first successful call. */
 	readonly ended: number
 	/** The error a user turn ended with; `undefined` value when every user turn settled. */
 	readonly failure: unknown
@@ -1120,9 +1120,10 @@ export function computeRefusals(calls: readonly StoreCall[]): number {
  * the `STORE_BOUNDS.run` deadline.
  * When one tool's refusals in the user turn reach the `STORE_BOUNDS.refusals` bound
  * (see {@link computeRefusals}), the agent's context takes {@link STORE_ANSWER_SCOPE}, so the
- * next provider turn advertises no tool and the model answers after the refusal it last read;
- * every user turn starts with no scope and its own count. An error ends the conversation and is
- * returned rather than thrown.
+ * next provider turn advertises no tool and the model answers after the refusal it last read.
+ * A later user turn asks for one call, so its first successful call takes the same scope and
+ * the model reports that call's result; every user turn starts with no scope and its own count.
+ * An error ends the conversation and is returned rather than thrown.
  */
 export async function converseStore(options: StoreConversationOptions): Promise<StoreConversation> {
 	const calls: StoreCall[] = []
@@ -1130,6 +1131,7 @@ export async function converseStore(options: StoreConversationOptions): Promise<
 	const usages: TokenUsage[] = []
 	const thoughts: string[] = ['']
 	let start = 0
+	let opening = true
 	let ended = 0
 	const agent = createAgent(createTimedProvider(options.provider, timings), {
 		system: options.system,
@@ -1146,7 +1148,8 @@ export async function converseStore(options: StoreConversationOptions): Promise<
 				})
 				if (
 					agent.context.scope !== STORE_ANSWER_SCOPE &&
-					computeRefusals(calls.slice(start)) >= STORE_BOUNDS.refusals
+					((!opening && result.success) ||
+						computeRefusals(calls.slice(start)) >= STORE_BOUNDS.refusals)
 				) {
 					agent.context.apply(STORE_ANSWER_SCOPE)
 					ended += 1
@@ -1161,6 +1164,7 @@ export async function converseStore(options: StoreConversationOptions): Promise<
 	try {
 		for (const [index, turn] of options.turns.entries()) {
 			start = calls.length
+			opening = index === 0
 			agent.context.apply(undefined)
 			agent.context.messages.add({
 				role: 'user',

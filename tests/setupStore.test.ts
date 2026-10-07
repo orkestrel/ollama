@@ -1736,9 +1736,9 @@ describe('converseStore', () => {
 			...STORE_REFUSAL_TURNS.map(() => STORE_REFUSAL_TOOLS),
 			[],
 			STORE_REFUSAL_TOOLS,
-			STORE_REFUSAL_TOOLS,
+			[],
 		])
-		expect(conversation.ended).toBe(1)
+		expect(conversation.ended).toBe(2)
 		expect(conversation.failure).toBeUndefined()
 		expect(conversation.result).toMatchObject({ content: 'Found.', partial: false })
 		expect(conversation.partial).toBe(false)
@@ -1770,6 +1770,40 @@ describe('converseStore', () => {
 		expect(daemon.requests.map(wireTools)).toEqual([STORE_REFUSAL_TOOLS, []])
 		expect(conversation.ended).toBe(1)
 		expect(conversation.result).toMatchObject({ content: 'The tool refused.', partial: false })
+	})
+
+	it("advertises no tool after a later turn's first successful call, while the opening turn keeps every tool", async () => {
+		const daemon = createRecordingTransport(
+			createScriptedTransport([
+				STORE_LOOKUP_TURN,
+				STORE_LOOKUP_TURN,
+				{ content: 'Found twice.' },
+				STORE_LOOKUP_TURN,
+				STORE_FAIL_TURN,
+				{ content: 'Found once.' },
+			]),
+		)
+		const tools = createRefusalTools()
+		const conversation = await converseStore({
+			provider: createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
+			system: STORE_SYSTEM_PROMPT,
+			tools,
+			turns: ['Look up the kettle twice.', 'Look up the kettle once more.'],
+		})
+		expect(daemon.requests.map(wireTools)).toEqual([
+			STORE_REFUSAL_TOOLS,
+			STORE_REFUSAL_TOOLS,
+			STORE_REFUSAL_TOOLS,
+			STORE_REFUSAL_TOOLS,
+			[],
+		])
+		expect(conversation.calls.map((call) => [call.name, call.success])).toEqual([
+			['lookup', true],
+			['lookup', true],
+			['lookup', true],
+		])
+		expect(conversation.ended).toBe(1)
+		expect(conversation.result).toMatchObject({ partial: false })
 	})
 
 	it('reaches the bound across a success between the refusals of one tool', async () => {

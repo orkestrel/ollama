@@ -2005,13 +2005,13 @@ export function renderJourneyEdit(calls: readonly StoreCall[]): string {
 	const second = extractJourneyLines(listing).find(matchesCartClick)
 	if (name === undefined || second === undefined) {
 		return (
-			`Edit ${STORE_JOURNEY_NAME} in one call: declare the parameter ${STORE_JOURNEY_PARAMETER} with the default ${STORE_BUYER}, ` +
+			`Edit the journey ${STORE_JOURNEY_NAME} in one call: declare the parameter ${STORE_JOURNEY_PARAMETER} with the default ${STORE_BUYER}, ` +
 			`update the step that types the name so its text is {"parameter": "${STORE_JOURNEY_PARAMETER}"}, ` +
 			'and remove the recorded cart click.'
 		)
 	}
 	return (
-		`Edit ${STORE_JOURNEY_NAME} in one call with the edits ` +
+		`Edit the journey ${STORE_JOURNEY_NAME} in one call with the edits ` +
 		`[{"operation": "declare", "name": "${STORE_JOURNEY_PARAMETER}", "parameter": {"default": "${STORE_BUYER}"}}, ` +
 		`{"operation": "update", "arguments": {"text": {"parameter": "${STORE_JOURNEY_PARAMETER}"}}, "id": "${name.slice(0, name.indexOf(' '))}"}, ` +
 		`{"operation": "remove", "id": "${second.slice(0, second.indexOf(' '))}"}].`

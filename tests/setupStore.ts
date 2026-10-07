@@ -927,7 +927,7 @@ export async function converseStore(options: StoreConversationOptions): Promise<
 		system: options.system,
 		tools: createTimedTools(options.tools, timings),
 		timeout: STORE_BOUNDS.run,
-		limit: STORE_BOUNDS.limit,
+		limit: options.limit ?? STORE_BOUNDS.limit,
 		on: {
 			tool: (call, result) => {
 				calls.push({
@@ -1042,6 +1042,7 @@ export async function runStoreTask(options: StoreRunOptions): Promise<StoreTrans
 			system,
 			tools: toolset.tools,
 			turns: [prompt, ...(options.followups ?? [])],
+			limit: options.limit,
 		})
 		const { calls, result } = conversation
 		const elapsed = performance.now() - started

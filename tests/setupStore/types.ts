@@ -148,6 +148,8 @@ export interface StoreRunOptions {
 	readonly system?: string | undefined
 	/** The user turns after the first, each sent when the model ends the previous one; omitted ⇒ none. */
 	readonly followups?: readonly StoreTurn[] | undefined
+	/** The most tool calls one user turn allows; omitted ⇒ `STORE_BOUNDS.limit`. */
+	readonly limit?: number | undefined
 }
 
 /** Builds a user turn from the calls a run made so far. */
@@ -166,6 +168,8 @@ export interface StoreConversationOptions {
 	readonly tools: ToolManagerInterface
 	/** The user turns, in order, each sent when the model ends the previous one. */
 	readonly turns: readonly StoreTurn[]
+	/** The most tool calls one user turn allows; omitted ⇒ `STORE_BOUNDS.limit`. */
+	readonly limit?: number | undefined
 }
 
 /** Represents what one store conversation leaves. */
@@ -204,6 +208,8 @@ export interface StoreTask {
 	readonly system?: string | undefined
 	/** The user turns after the first, each sent when the model ends the previous one; omitted ⇒ none. */
 	readonly followups?: readonly StoreTurn[] | undefined
+	/** The most tool calls one user turn allows; omitted ⇒ `STORE_BOUNDS.limit`. */
+	readonly limit?: number | undefined
 }
 
 /** Represents one finished attempt: its transcript and the store it ran against, stopped. */

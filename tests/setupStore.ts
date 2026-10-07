@@ -1439,7 +1439,7 @@ export const STORE_TASKS: Readonly<
 	cart: { name: 'cart', prompt: `Add the ${STORE_NAMED_PRODUCT} to the cart.`, path: '/' },
 	search: {
 		name: 'search',
-		prompt: `Search for ${STORE_QUERY} and tell me which products match.`,
+		prompt: `Use the search box to search for ${STORE_QUERY} and tell me which products match.`,
 		path: '/',
 	},
 	checkout: {

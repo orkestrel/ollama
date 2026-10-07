@@ -139,6 +139,8 @@ export interface StoreTask {
 	readonly prompt: string
 	/** The store path the page opens first. */
 	readonly path: string
+	/** The product names the store's cart holds before the page opens, in order. Default: none. */
+	readonly cart?: readonly string[] | undefined
 	/** The text whose presence in the final answer the transcript notes. Default: no note. */
 	readonly mention?: string | undefined
 	/** The system prompt. Default: {@link STORE_SYSTEM_PROMPT}. */
@@ -813,13 +815,17 @@ export function buildPageResponse(html: string, status = 200): Response {
  * Starts the store fixture on an ephemeral loopback port.
  *
  * @param port - The port supplied through the instrument seam. Default: 0, an ephemeral port
+ * @param initial - The product names the cart holds before any request, in order. Default: none
  * @returns The running store, its origin, and readers over the cart, searches, and orders
  * @remarks The catalogue, search, product, cart, checkout, order, and policy routes share only
  * this server instance's state. Cart additions redirect to the cart; checkout records the buyer.
  * The returned reader copies each state collection, so later requests cannot change an earlier reading.
  */
-export async function createStoreServer(port = 0): Promise<StoreServerInterface> {
-	const cart: string[] = []
+export async function createStoreServer(
+	port = 0,
+	initial: readonly string[] = [],
+): Promise<StoreServerInterface> {
+	const cart: string[] = [...initial]
 	const searches: string[] = []
 	const orders: string[] = []
 	const dispatcher = createDispatcher<Record<string, never>>()
@@ -926,6 +932,14 @@ export const STORE_BOUNDS = Object.freeze({
 	 * element's role and chooses the same call on every port.
 	 */
 	think: true,
+	/**
+	 * The Ollama `presence_penalty` value: 0, so greedy decoding reads the model's own ranking.
+	 * The 2B's card sets 1.5, which shifts a near-tie and lengthens an answer that repeats its
+	 * thinking (70 tokens against 33 on the same listing turn).
+	 */
+	presence: 0,
+	/** The Ollama `repeat_penalty` value: 1, off, for the same reason. */
+	repeat: 1,
 	/** The Ollama `num_ctx` window each attempt's model takes, in tokens. */
 	context: 16_384,
 	/** The provider's deadline for one model turn. */
@@ -1457,6 +1471,9 @@ export const STORE_TASKS: Readonly<
 		recordable: true,
 		name: 'journey',
 		prompt: `Record a journey named ${STORE_JOURNEY_NAME}, then click the Cart link and complete checkout with the name ${STORE_BUYER} and report the confirmation code.`,
+		// A checkout from an empty cart reads as a mistake to a reasoning model, which goes to add a
+		// product first; the cart holds one before the recording starts.
+		cart: Object.freeze([STORE_NAMED_PRODUCT]),
 		// The opening turn's shortest correct sequence under the journey prompt is record, click the
 		// Cart link, click Checkout, type with submit, and save, with one correction for each call.
 		limit: 10,
@@ -1506,7 +1523,7 @@ export async function attemptStoreTask(
 	mkdirSync(parent, { recursive: true })
 	const root = createScratch({ parent, prefix: `${name.name}-${attempt}-` })
 	try {
-		const store = await createStoreServer(port)
+		const store = await createStoreServer(port, name.cart)
 		try {
 			const context = await browser.isolate()
 			try {

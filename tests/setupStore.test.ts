@@ -614,6 +614,19 @@ describe('createStoreServer', () => {
 		}
 	})
 
+	it('starts with the requested products in the cart, which the journey task holds one of', async () => {
+		const seeded = await createStoreServer(0, [STORE_NAMED_PRODUCT])
+		try {
+			expect(seeded.read().cart).toEqual([STORE_NAMED_PRODUCT])
+			const html = await (await fetch(`${seeded.url}/cart`)).text()
+			expect(html).toContain(STORE_NAMED_PRODUCT)
+			expect(html).not.toContain('Your cart is empty.')
+		} finally {
+			await seeded.stop()
+		}
+		expect(STORE_TASKS.journey.cart).toEqual([STORE_NAMED_PRODUCT])
+	})
+
 	it('answers a query nothing matches with a page that names no product', async () => {
 		const html = await (await fetch(`${store.url}/search?q=anchor`)).text()
 		expect(html).toContain('No products match.')

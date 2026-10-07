@@ -43,6 +43,8 @@ describe('Browser vocabulary (live)', () => {
 								turn: STORE_BOUNDS.turn,
 								predict: STORE_BOUNDS.predict,
 								think: STORE_BOUNDS.think,
+								presence: STORE_BOUNDS.presence,
+								repeat: STORE_BOUNDS.repeat,
 							}),
 						),
 					(run) => predicate(run.transcript),

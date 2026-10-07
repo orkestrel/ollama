@@ -924,8 +924,8 @@ export const STORE_BOUNDS = Object.freeze({
 	/** The provider's deadline for one model turn. */
 	turn: 300_000,
 	/**
-	 * The refusals of one tool, with no successful call between them, after which the rest of the
-	 * user turn advertises no tool (see {@link converseStore}).
+	 * The refusals of one tool in one user turn, successful calls between them included, after
+	 * which the rest of the user turn advertises no tool (see {@link converseStore}).
 	 */
 	refusals: 3,
 })
@@ -1078,18 +1078,20 @@ export function buildStorePrompt(prompt: string, seed: string): string {
 export const STORE_ANSWER_SCOPE: ScopeInterface = createScope({ name: 'answer', tools: [] })
 
 /**
- * Computes how many refusals the most refused tool has had since the last successful call.
+ * Computes how many refusals the most refused tool has had in one user turn.
  *
  * @param calls - The calls of one user turn, in order
- * @returns The largest number of calls one tool name has among the calls after the last
- * successful one; zero when the last call succeeded or no call was made
- * @remarks A refusal of another tool keeps the count, so a model alternating two refused tools
- * reaches the bound as a model repeating one does.
+ * @returns The largest number of refused calls one tool name has among the calls; zero when
+ * every call succeeded or no call was made
+ * @remarks A successful call of any tool between two refusals keeps the count, so a model that
+ * alternates a listing with a refused `save` call, or a no-op `press` call with a refused `type`
+ * call, reaches the bound as a model repeating one refused call does. A refusal of another tool
+ * is counted apart.
  */
 export function computeRefusals(calls: readonly StoreCall[]): number {
 	const counts = new Map<string, number>()
-	for (const call of calls.slice(calls.findLastIndex((candidate) => candidate.success) + 1)) {
-		counts.set(call.name, (counts.get(call.name) ?? 0) + 1)
+	for (const call of calls) {
+		if (!call.success) counts.set(call.name, (counts.get(call.name) ?? 0) + 1)
 	}
 	return Math.max(0, ...counts.values())
 }
@@ -1103,7 +1105,7 @@ export function computeRefusals(calls: readonly StoreCall[]): number {
  * @remarks The opening user turn runs at most `options.limit` tool calls (Default: the
  * `STORE_BOUNDS.limit` value) and each later turn at most `STORE_BOUNDS.limit`, every turn under
  * the `STORE_BOUNDS.run` deadline.
- * When one tool's refusals since the turn's last successful call reach `STORE_BOUNDS.refusals` bound
+ * When one tool's refusals in the user turn reach the `STORE_BOUNDS.refusals` bound
  * (see {@link computeRefusals}), the agent's context takes {@link STORE_ANSWER_SCOPE}, so the
  * next provider turn advertises no tool and the model answers after the refusal it last read;
  * every user turn starts with no scope and its own count. An error ends the conversation and is

@@ -80,6 +80,7 @@ import {
 	STORE_UNBATCHED_LISTINGS,
 	STORE_REFUSED_RECORD,
 	STORE_REFUSED_SAVE,
+	STORE_FAIL_TURN,
 	STORE_LOOKUP_TURN,
 	STORE_REFUSAL_TURNS,
 	STORE_REFUSAL_TOOLS,
@@ -1657,7 +1658,7 @@ describe('findJourneyLoops', () => {
 })
 
 describe('computeRefusals', () => {
-	it('counts the most refused tool since the last success, with alternating tools counted apart', () => {
+	it('counts the most refused tool across the turn, with other tools counted apart', () => {
 		expect(
 			computeRefusals([
 				buildRefusedCall('save'),
@@ -1674,6 +1675,9 @@ describe('computeRefusals', () => {
 				buildRefusedCall('record'),
 			]),
 		).toBe(3)
+	})
+
+	it('keeps the count across a successful call of any tool between two refusals', () => {
 		expect(
 			computeRefusals([
 				buildRefusedCall('save'),
@@ -1681,12 +1685,20 @@ describe('computeRefusals', () => {
 				buildStoreCall('look', {}),
 				buildRefusedCall('save'),
 			]),
-		).toBe(1)
+		).toBe(3)
+		expect(
+			computeRefusals([
+				buildStoreCall('journeys', {}),
+				buildRefusedCall('save'),
+				buildStoreCall('journeys', {}),
+				buildRefusedCall('save'),
+			]),
+		).toBe(2)
 	})
 
-	it('returns 0 for a turn with no call and for a turn whose last call succeeded', () => {
+	it('returns 0 for a turn with no call and for a turn whose calls all succeeded', () => {
 		expect(computeRefusals([])).toBe(0)
-		expect(computeRefusals([buildRefusedCall('save'), buildStoreCall('look', {})])).toBe(0)
+		expect(computeRefusals([buildStoreCall('look', {}), buildStoreCall('look', {})])).toBe(0)
 	})
 })
 
@@ -1747,10 +1759,15 @@ describe('converseStore', () => {
 		expect(conversation.result).toMatchObject({ content: 'The tool refused.', partial: false })
 	})
 
-	it('keeps advertising every tool while a success breaks the refusals', async () => {
+	it('reaches the bound across a success between the refusals of one tool', async () => {
 		const short = STORE_REFUSAL_TURNS.slice(1)
 		const daemon = createRecordingTransport(
-			createScriptedTransport([...short, STORE_LOOKUP_TURN, ...short, { content: 'Found.' }]),
+			createScriptedTransport([
+				...short,
+				STORE_LOOKUP_TURN,
+				STORE_FAIL_TURN,
+				{ content: 'The tool refused.' },
+			]),
 		)
 		const tools = createRefusalTools()
 		const conversation = await converseStore({
@@ -1759,11 +1776,12 @@ describe('converseStore', () => {
 			tools,
 			turns: ['Call the fail tool, then look up the kettle.'],
 		})
-		expect(daemon.requests.map(wireTools)).toEqual(
-			[...short, STORE_LOOKUP_TURN, ...short, undefined].map(() => STORE_REFUSAL_TOOLS),
-		)
-		expect(conversation.ended).toBe(0)
-		expect(conversation.result).toMatchObject({ content: 'Found.', partial: false })
+		expect(daemon.requests.map(wireTools)).toEqual([
+			...[...short, STORE_LOOKUP_TURN, STORE_FAIL_TURN].map(() => STORE_REFUSAL_TOOLS),
+			[],
+		])
+		expect(conversation.ended).toBe(1)
+		expect(conversation.result).toMatchObject({ content: 'The tool refused.', partial: false })
 	})
 
 	it('returns the error that ended a user turn with the calls made before it', async () => {

@@ -26,7 +26,10 @@ import type {
 } from '@orkestrel/tool'
 import { createAgent, createScope, isProviderError, sumUsage } from '@orkestrel/agent'
 import {
+	BROWSER_JOURNEY_ACTIONS,
 	BROWSER_JOURNEY_TOOL_NAMES,
+	BROWSER_READ_CHANGED_NOTE,
+	BROWSER_TOOL_CHANGED_NOTE,
 	BROWSER_TOOL_LIMIT,
 	createBrowserToolset,
 	parseBrowserJourney,
@@ -134,7 +137,7 @@ export const STORE_SYSTEM_PROMPT =
 	'Use the browser tools before answering. The first message is a read of the page; references such as e4 name elements. ' +
 	'To learn a fact, call read with from 1 and search words from the question. ' +
 	'For more text, follow the footer: call read with from set to the line it names. ' +
-	'To enter text or search, call type with the reference, text, and submit true. ' +
+	"To fill a field or use the site's search box, call type with its reference, the text, and submit true. " +
 	'To activate an element, click its reference from the latest result. Never invent references. ' +
 	'If expected text has not appeared, call wait once. ' +
 	'When done, answer in one short sentence.'
@@ -877,7 +880,7 @@ export const STORE_SEED_ARGUMENTS: Readonly<Record<string, unknown>> = Object.fr
  * @returns The user turn's content
  */
 export function buildStorePrompt(prompt: string, seed: string): string {
-	return `${prompt}\n\nThe browser shows this page:\n${seed}`
+	return `${prompt}\n\nThe browser's first read of the page:\n${seed}`
 }
 
 /** Names the scope a user turn takes after `STORE_BOUNDS.refusals`: it advertises no tool. */
@@ -1122,38 +1125,55 @@ export function writeTranscript(
  * Extracts the element references a view lists.
  *
  * @param text - A `read` result or an action receipt
- * @returns The reference that opens each element row, such as `e12`, in row order; empty for a
+ * @returns Every bracketed reference token, or reference opening a legacy row, in text order; empty for a
  * result that lists no element
  */
 export function extractReferences(text: string): readonly string[] {
-	return [...text.matchAll(/^(?:\d+: (?:#{1,6} |[-] )?)?(e[1-9]\d*) /gm)].map(
-		(match) => match[1] ?? '',
+	return [...text.matchAll(/\[ref=(e[1-9]\d*)\]|^(?:\d+: (?:#{1,6} |[-] )?)?(e[1-9]\d*) /gm)].map(
+		(match) => match[1] ?? match[2] ?? '',
 	)
 }
 
 /**
- * Returns every call that names a reference the latest view did not list.
+ * Returns calls naming references absent from the results since the page last changed.
  *
  * @param seed - The seeded `read` result, which is the view before the first call
  * @param calls - The run's calls, in order
  * @returns The calls whose `ref` argument, read the way the toolset reads it, is not among the
- * references the latest view listed; a result that lists elements replaces that view, and one
- * page listing with no reference clears it
+ * references in the successful results since the page last changed, or is refused as not in view.
+ * Actions check their reference before clearing exposure; their results begin the next set.
+ * A transcript belongs to one context; a tab switch is an action and clears exposure.
  */
 export function findUnlistedReferences(
 	seed: string,
 	calls: readonly StoreCall[],
 ): readonly StoreCall[] {
-	let listed = new Set(extractReferences(seed))
+	const listed = new Set(extractReferences(seed))
+	let header = /^page .+$/m.exec(seed)?.[0]
 	const unlisted: StoreCall[] = []
 	for (const call of calls) {
 		const argument = call.arguments['ref']
 		if (argument !== undefined) {
 			const reference = typeof argument === 'string' ? parseBrowserReference(argument) : undefined
-			if (reference === undefined || !listed.has(reference)) unlisted.push(call)
+			if (
+				reference === undefined ||
+				!listed.has(reference) ||
+				(!call.success && call.text.includes('not in the current view'))
+			)
+				unlisted.push(call)
 		}
-		const references = extractReferences(call.text)
-		if (references.length > 0 || /^page "/m.test(call.text)) listed = new Set(references)
+		const page = /^page .+$/m.exec(call.text)?.[0]
+		if (
+			BROWSER_JOURNEY_ACTIONS.some((name) => name === call.name) ||
+			call.name === 'replay' ||
+			call.text.includes(BROWSER_READ_CHANGED_NOTE) ||
+			call.text.includes(BROWSER_TOOL_CHANGED_NOTE) ||
+			(page !== undefined && page !== header)
+		)
+			listed.clear()
+		if (!call.success) continue
+		if (page !== undefined) header = page
+		for (const reference of extractReferences(call.text)) listed.add(reference)
 	}
 	return unlisted
 }
@@ -1331,7 +1351,7 @@ export function matchesDaemonFault(failure: unknown): boolean {
  *
  * @param transcript - The run's transcript
  * @returns True if the run ended without a failure, made at least one and at most
- * `STORE_BOUNDS.limit` tool calls, named no reference its latest view did not list, and received
+ * `STORE_BOUNDS.limit` tool calls, named only references in the results since the page last changed, and received
  * no whole result over `BROWSER_TOOL_LIMIT` characters; false otherwise
  */
 export function matchesStoreOracles(
@@ -1429,6 +1449,38 @@ export function extractFooterLine(text: string): number | undefined {
 }
 
 /**
+ * Extracts the first row of the returned window, excluding a quoted best-match row.
+ * @param text - A page result, including its header and footer
+ * @returns The window's first line number; `undefined` when the window contains no rows
+ */
+export function extractWindowLine(text: string): number | undefined {
+	const match = /^([1-9]\d*): /.exec(extractWindowText(text))
+	return match?.[1] === undefined ? undefined : Number(match[1])
+}
+
+/**
+ * Extracts numbered window rows without headers, footers, or the quoted best match.
+ * @param text - A page result
+ * @returns The window rows joined by newlines; empty when there are no rows
+ */
+export function extractWindowText(text: string): string {
+	const rows: string[] = []
+	let quoted = false
+	for (const line of text.split(/\r\n|\n/)) {
+		if (quoted) {
+			quoted = false
+			continue
+		}
+		if (/^No line from .*; the best match is line \d+:$/.test(line)) {
+			quoted = true
+			continue
+		}
+		if (/^[1-9]\d*: /.test(line)) rows.push(line)
+	}
+	return rows.join('\n')
+}
+
+/**
  * Finds the first `read` that continued at the line an earlier `read` footer named and whose
  * slice contains the given text.
  *
@@ -1454,16 +1506,16 @@ export function findContinuedRead(
 		if (call.text.includes('The page changed since the last view')) lines.clear()
 		if (!call.success) continue
 		const from = call.arguments['from']
-		const first = /^([1-9]\d*): /m.exec(call.text)?.[1]
+		const first = extractWindowLine(call.text)
 		const page = /^page .+$/m.exec(call.text)?.[0]
 		if (page !== header) lines.clear()
 		header = page
 		if (
 			typeof from === 'number' &&
 			lines.has(from) &&
-			Number(first) === from &&
+			first === from &&
 			page !== undefined &&
-			call.text.includes(text)
+			extractWindowText(call.text).includes(text)
 		)
 			return call
 		const line = extractFooterLine(call.text)

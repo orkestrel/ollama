@@ -54,6 +54,7 @@ import {
 	extractFooterLine,
 	extractJourneyEvidence,
 	extractReferences,
+	extractWindowLine,
 	filterNamedProducts,
 	filterProducts,
 	filterSubmissionLines,
@@ -120,6 +121,96 @@ import { PAGE_BROWSER_ARGS, requirePageBrowser } from './setupService.js'
 let store: StoreServerInterface
 
 describe('real line projection', () => {
+	it('applies rule R to successful reads, page changes, actions, and refusals', async () => {
+		const fresh = await createStoreServer()
+		const browser = createBrowser({
+			executable: requirePageBrowser().executable,
+			headless: true,
+			args: PAGE_BROWSER_ARGS,
+			cdp: { port: await reservePort(), discover: false },
+		})
+		try {
+			await browser.connect()
+			for (const scenario of [
+				'unchanged',
+				'bestmatch',
+				'action',
+				'invented',
+				'changed',
+				'refused',
+			]) {
+				const context = await browser.isolate()
+				try {
+					const page = await context.create()
+					await page.navigate(fresh.url)
+					const toolset = createBrowserToolset(page)
+					try {
+						await toolset.start()
+						const seed = renderToolText(
+							await toolset.tools.execute({
+								id: 'seed',
+								name: 'read',
+								arguments: STORE_SEED_ARGUMENTS,
+							}),
+						)
+						const calls: StoreCall[] = []
+						if (scenario === 'changed' || scenario === 'refused')
+							await page.navigate(`${fresh.url}/policy`)
+						if (scenario === 'unchanged' || scenario === 'bestmatch' || scenario === 'changed') {
+							const args =
+								scenario === 'bestmatch'
+									? { from: 46, to: 52, search: STORE_NAMED }
+									: { from: 46, to: 52 }
+							const result = await toolset.tools.execute({
+								id: 'read',
+								name: 'read',
+								arguments: args,
+							})
+							calls.push({
+								name: 'read',
+								arguments: args,
+								success: result.success,
+								text: renderToolText(result),
+							})
+						}
+						for (const call of calls) expect(call.success).toBe(true)
+						for (const call of calls.filter((entry) => entry.arguments['search'] === STORE_NAMED)) {
+							expect(call.text).toContain('the best match is line 11:')
+							expect(extractReferences(call.text)).toEqual(['e7'])
+							expect(extractWindowLine(call.text)).toBe(46)
+						}
+						// A fresh read after the out-of-band navigation invalidates the tool's own reference map.
+						if (scenario === 'refused')
+							await toolset.tools.execute({ id: 'refresh', name: 'read', arguments: { from: 1 } })
+						const args = { ref: scenario === 'invented' ? 'e99999' : 'e7' }
+						const result = await toolset.tools.execute({
+							id: 'click',
+							name: 'click',
+							arguments: args,
+						})
+						const action = {
+							name: 'click',
+							arguments: args,
+							success: result.success,
+							text: renderToolText(result),
+						}
+						calls.push(action)
+						const accepted = ['unchanged', 'bestmatch', 'action'].includes(scenario)
+						expect(result.success).toBe(accepted)
+						expect(action.text.includes('not in the current view')).toBe(!accepted)
+						expect(findUnlistedReferences(seed, calls)).toEqual(accepted ? [] : [action])
+					} finally {
+						await toolset.destroy()
+					}
+				} finally {
+					await context.close()
+				}
+			}
+		} finally {
+			await browser.destroy()
+			await fresh.stop()
+		}
+	}, 60_000)
 	it('records a cart click and one submission, removes the click, and replays exactly one order for the other buyer', async () => {
 		const fresh = await createStoreServer()
 		const root = createScratch({ parent: journeyPath(), prefix: 'journey-proof-' })
@@ -292,6 +383,8 @@ describe('real line projection', () => {
 					)[0],
 				)
 				expect(fact).toBeGreaterThan(catalogueNext - 1)
+				expect(fact).toBe(52)
+				expect(catalogueNext).toBe(46)
 				await page.navigate(`${store.url}/policy`)
 				const policy = renderToolText(
 					await tools.tools.execute({
@@ -317,6 +410,9 @@ describe('real line projection', () => {
 					).split(': ')[0],
 				)
 				expect(token).toBeGreaterThan(third - 1)
+				expect(token).toBe(80)
+				expect(second).toBe(34)
+				expect(third).toBe(62)
 				expect(
 					matchesPagingOracle(
 						buildStoreTranscript(
@@ -760,12 +856,22 @@ describe('renderToolText', () => {
 describe('buildStorePrompt', () => {
 	it('states the task before the seeded view', () => {
 		const prompt = buildStorePrompt('Find the fixture.', 'page "Store" URL')
+		expect(prompt).toBe(
+			'Find the fixture.\n\nThe browser\'s first read of the page:\npage "Store" URL',
+		)
 		expect(prompt.startsWith('Find the fixture.')).toBe(true)
 		expect(prompt.endsWith('page "Store" URL')).toBe(true)
 	})
 })
 
 describe('extractReferences', () => {
+	it('reads every bracketed token, including a best-match row', () => {
+		expect(
+			extractReferences(
+				'page "Store" URL (52 lines)\nNo line from 46 on matches "Tray"; the best match is line 11:\n11: ### link "Tray" [ref=e7] /tray\n46: link "Cart" [ref=e12]',
+			),
+		).toEqual(['e7', 'e12'])
+	})
 	it('reads numbered headings and replaces exposure with an empty page listing', () => {
 		const seed =
 			'page "Store" http://store/ (2 lines)\n1: e1 link "Cart" /cart\n2: ### e2 link "Tray" /tray'
@@ -790,6 +896,40 @@ describe('extractReferences', () => {
 })
 
 describe('findUnlistedReferences', () => {
+	it('accumulates unchanged reads, ignores refused listings, and clears on notes and tab switches', () => {
+		const seed = 'page "Store" http://store/ (3 lines)\n1: link "Cart" [ref=e1]'
+		const reading = buildStoreCall(
+			'read',
+			{ from: 2 },
+			'page "Store" http://store/ (3 lines)\n2: button "Pay" [ref=e2]',
+		)
+		const empty = buildStoreCall(
+			'read',
+			{ from: 3 },
+			'page "Store" http://store/ (3 lines)\n3: Text only',
+		)
+		const earlier = buildStoreCall('click', { ref: '[ref=e1]' })
+		expect(findUnlistedReferences(seed, [reading, empty, earlier])).toEqual([])
+		const refused = { ...reading, success: false }
+		const invented = buildStoreCall('click', { ref: 'e2' })
+		expect(findUnlistedReferences(seed, [refused, invented])).toEqual([invented])
+		for (const change of [
+			buildStoreCall(
+				'read',
+				{ from: 1 },
+				`${empty.text}\nThe page changed since the last view; line numbers might differ.`,
+			),
+			buildStoreCall(
+				'read',
+				{ from: 1 },
+				'(The page changed before the view could be read; call read.)',
+			),
+			buildStoreCall('switch', { tab: 't2' }, empty.text),
+		])
+			expect(findUnlistedReferences(seed, [change, earlier])).toEqual([earlier])
+		// Every context has its own seed and call history; exposure cannot cross transcripts.
+		expect(findUnlistedReferences(empty.text, [earlier])).toEqual([earlier])
+	})
 	it('accepts a reference the seed listed, in any spelling the toolset reads', () => {
 		const calls = [
 			buildStoreCall('click', { ref: 'e1' }),
@@ -820,7 +960,7 @@ describe('findUnlistedReferences', () => {
 		).toEqual([invented, numeric, described])
 	})
 
-	it('replaces references with each read view and keeps them across receipts without a view', () => {
+	it('clears exposure after a press without a view and restores it with a later read', () => {
 		const receipt = buildStoreCall(
 			'click',
 			{ ref: 'e1' },
@@ -836,8 +976,15 @@ describe('findUnlistedReferences', () => {
 		const fresh = buildStoreCall('click', { ref: 'e5' })
 		const notice = buildStoreCall('press', { key: 'Tab' }, 'Pressed Tab.')
 		expect(findUnlistedReferences('e1 link "Cart"', [receipt, notice, fresh, stale])).toEqual([
+			fresh,
 			stale,
 		])
+		const relisted = buildStoreCall(
+			'read',
+			{ from: 1 },
+			'page "Cart" http://store/cart (1 lines)\n1: button "Pay" [ref=e5]',
+		)
+		expect(findUnlistedReferences('e1 link "Cart"', [receipt, notice, relisted, fresh])).toEqual([])
 		expect(findUnlistedReferences('e1 link "Cart"', [receipt, reading, fresh, stale])).toEqual([
 			fresh,
 			stale,
@@ -903,6 +1050,11 @@ describe('writeTranscript', () => {
 })
 
 describe('STORE_SYSTEM_PROMPT', () => {
+	it('uses the approved type sentence and keeps the other measured sentences', () => {
+		expect(STORE_SYSTEM_PROMPT).toBe(
+			"Use the browser tools before answering. The first message is a read of the page; references such as e4 name elements. To learn a fact, call read with from 1 and search words from the question. For more text, follow the footer: call read with from set to the line it names. To fill a field or use the site's search box, call type with its reference, the text, and submit true. To activate an element, click its reference from the latest result. Never invent references. If expected text has not appeared, call wait once. When done, answer in one short sentence.",
+		)
+	})
 	it('stays under 120 words and names the tools the loop uses', () => {
 		expect(STORE_SYSTEM_PROMPT.split(/\s+/).length).toBeLessThan(120)
 		for (const answer of [STORE_FACT, STORE_CODE, STORE_POLICY_TOKEN, STORE_NAMED])
@@ -949,6 +1101,26 @@ describe('instrument draws', () => {
 })
 
 describe('line continuation', () => {
+	it('never awards continuation credit to a quoted best-match row', () => {
+		const first = buildStoreCall('read', { from: 1 }, FIRST_SLICE)
+		const quoted = buildStoreCall(
+			'read',
+			{ from: 31, search: 'token' },
+			'page "Policy" http://store/policy (80 lines)\nThis read shows lines 40–50 of 80; lines 51–80 are not shown yet.\nNo line from 31 on matches "token"; the best match is line 31:\n31: ' +
+				STORE_POLICY_TOKEN +
+				'\n40: Actual window starts here.\n[lines 40–50 of 80; 39 above, 30 below; call read with from 51 for more]',
+		)
+		expect(findContinuedRead([first, quoted], STORE_POLICY_TOKEN)).toBeUndefined()
+		const outside = {
+			...quoted,
+			text: quoted.text
+				.replace('line 31:\n31:', 'line 20:\n20:')
+				.replace('40: Actual', '31: Actual')
+				.replaceAll('40–50', '31–50')
+				.replace('39 above', '30 above'),
+		}
+		expect(findContinuedRead([first, outside], STORE_POLICY_TOKEN)).toBeUndefined()
+	})
 	it('reads a continuation line only from a trailing line footer', () => {
 		expect(extractFooterLine(FIRST_SLICE)).toBe(31)
 		expect(extractFooterLine(CONTINUED_SLICE)).toBeUndefined()

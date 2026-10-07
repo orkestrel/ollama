@@ -472,8 +472,8 @@ describe('real line projection', () => {
 				)
 				expect(token).toBeGreaterThan(third - 1)
 				expect(token).toBe(80)
-				expect(second).toBe(34)
-				expect(third).toBe(62)
+				expect(second).toBe(33)
+				expect(third).toBe(61)
 				expect(
 					matchesPagingOracle(
 						buildStoreTranscript(

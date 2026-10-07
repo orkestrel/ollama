@@ -121,6 +121,67 @@ import { PAGE_BROWSER_ARGS, requirePageBrowser } from './setupService.js'
 let store: StoreServerInterface
 
 describe('real line projection', () => {
+	it('accepts the measured cart path through refused type calls', async () => {
+		const fresh = await createStoreServer()
+		const browser = createBrowser({
+			executable: requirePageBrowser().executable,
+			headless: true,
+			args: PAGE_BROWSER_ARGS,
+			cdp: { port: await reservePort(), discover: false },
+		})
+		try {
+			await browser.connect()
+			const context = await browser.isolate()
+			const page = await context.create()
+			await page.navigate(fresh.url)
+			const toolset = createBrowserToolset(page)
+			try {
+				await toolset.start()
+				const seed = renderToolText(
+					await toolset.tools.execute({
+						id: 'seed',
+						name: 'read',
+						arguments: STORE_SEED_ARGUMENTS,
+					}),
+				)
+				const calls: StoreCall[] = []
+				for (const call of [
+					buildStoreCall('read', { from: 46, to: 52, search: STORE_NAMED }),
+					buildStoreCall('type', { ref: 'e7', text: STORE_NAMED, submit: true }),
+					buildStoreCall('click', { ref: 'e7' }),
+					buildStoreCall('type', { ref: 'e16', text: 'Add to cart', submit: true }),
+					buildStoreCall('click', { ref: 'e16' }),
+				]) {
+					const result = await toolset.tools.execute({
+						id: String(calls.length),
+						name: call.name,
+						arguments: call.arguments,
+					})
+					calls.push({ ...call, success: result.success, text: renderToolText(result) })
+				}
+				expect(calls.map((call) => call.success)).toEqual([true, false, true, false, true])
+				for (const call of calls.filter((entry) => !entry.success))
+					expect(call.text).toContain('takes no text; call click')
+				expect(fresh.readCart()).toEqual([STORE_NAMED])
+				expect(findUnlistedReferences(seed, calls)).toEqual([])
+				expect(
+					matchesCartOracle({
+						...buildStoreTranscript(calls, seed),
+						state: {
+							cart: fresh.readCart(),
+							orders: fresh.readOrders(),
+							searches: fresh.readSearches(),
+						},
+					}),
+				).toBe(true)
+			} finally {
+				await toolset.destroy()
+			}
+		} finally {
+			await browser.destroy()
+			await fresh.stop()
+		}
+	}, 60_000)
 	it('applies rule R to successful reads, page changes, actions, and refusals', async () => {
 		const fresh = await createStoreServer()
 		const browser = createBrowser({
@@ -865,6 +926,10 @@ describe('buildStorePrompt', () => {
 })
 
 describe('extractReferences', () => {
+	it('rejects legacy rows and prose that starts with a reference', () => {
+		expect(extractReferences('1: e1 link "Catalogue"\n12: e5 is prose\ne7 button "Go"')).toEqual([])
+		expect(buildStoreTranscript([]).seed).toBe('1: link "Catalogue" [ref=e1]')
+	})
 	it('reads every bracketed token, including a best-match row', () => {
 		expect(
 			extractReferences(
@@ -874,7 +939,7 @@ describe('extractReferences', () => {
 	})
 	it('reads numbered headings and replaces exposure with an empty page listing', () => {
 		const seed =
-			'page "Store" http://store/ (2 lines)\n1: e1 link "Cart" /cart\n2: ### e2 link "Tray" /tray'
+			'page "Store" http://store/ (2 lines)\n1: link "Cart" [ref=e1] /cart\n2: ### link "Tray" [ref=e2] /tray'
 		expect(extractReferences(seed)).toEqual(['e1', 'e2'])
 		const cleared = buildStoreCall(
 			'read',
@@ -884,9 +949,9 @@ describe('extractReferences', () => {
 		const stale = buildStoreCall('click', { ref: 'e1' })
 		expect(findUnlistedReferences(seed, [cleared, stale])).toEqual([stale])
 	})
-	it('returns the reference that opens each element row, in row order', () => {
+	it('returns the bracketed reference from each element row, in row order', () => {
 		const view =
-			'page "Store" URL\ne1 link "Cart"\n# Heading\ntext e9 inside\ne12 button "Go"\n(2 of 2 elements)'
+			'page "Store" URL\n1: link "Cart" [ref=e1]\n# Heading\ntext e9 inside\n2: button "Go" [ref=e12]\n(2 of 2 elements)'
 		expect(extractReferences(view)).toEqual(['e1', 'e12'])
 	})
 
@@ -896,6 +961,59 @@ describe('extractReferences', () => {
 })
 
 describe('findUnlistedReferences', () => {
+	it('keeps exposure after a refused type and accepts the next listed reference', () => {
+		const seed =
+			'page "Store" http://store/ (2 lines)\n1: button "Search" [ref=e5]\n2: searchbox "Query" [ref=e4]'
+		const refused = {
+			...buildStoreCall(
+				'type',
+				{ ref: 'e5', text: 'kettle' },
+				'Element button "Search" [ref=e5] takes no text; call click for a button.',
+			),
+			success: false,
+		}
+		const next = buildStoreCall('type', { ref: 'e4', text: 'kettle', submit: true })
+		expect(findUnlistedReferences(seed, [refused, next])).toEqual([])
+	})
+	it('keeps exposure after a timed-out wait on an unchanged page', () => {
+		const seed = 'page "Store" http://store/ (1 lines)\n1: link "Cart" [ref=e1]'
+		const timeout = {
+			...buildStoreCall('wait', { text: 'absent', timeout: 1 }, 'Timed out waiting for "absent".'),
+			success: false,
+		}
+		expect(findUnlistedReferences(seed, [timeout, buildStoreCall('click', { ref: 'e1' })])).toEqual(
+			[],
+		)
+	})
+	it('starts exposure with the successful wait window', () => {
+		const seed = 'page "Store" http://store/ (2 lines)\n1: link "Cart" [ref=e1]'
+		const waited = buildStoreCall(
+			'wait',
+			{ text: 'Pay' },
+			'page "Store" http://store/ (2 lines)\n2: button "Pay" [ref=e2]',
+		)
+		const old = buildStoreCall('click', { ref: 'e1' })
+		expect(findUnlistedReferences(seed, [waited, old])).toEqual([old])
+		expect(findUnlistedReferences(seed, [waited, buildStoreCall('click', { ref: 'e2' })])).toEqual(
+			[],
+		)
+	})
+	it('ignores failed-call headers, change notes, and reference listings', () => {
+		const seed = 'page "Store" http://store/ (1 lines)\n1: link "Cart" [ref=e1]'
+		const failure = {
+			...buildStoreCall(
+				'read',
+				{ from: 1 },
+				'page "Other" http://store/other (2 lines)\nThe page changed since the last view; line numbers might differ.\n2: button "Fake" [ref=e9]',
+			),
+			success: false,
+		}
+		expect(findUnlistedReferences(seed, [failure, buildStoreCall('click', { ref: 'e1' })])).toEqual(
+			[],
+		)
+		const unlisted = buildStoreCall('click', { ref: 'e9' })
+		expect(findUnlistedReferences(seed, [failure, unlisted])).toEqual([unlisted])
+	})
 	it('accumulates unchanged reads, ignores refused listings, and clears on notes and tab switches', () => {
 		const seed = 'page "Store" http://store/ (3 lines)\n1: link "Cart" [ref=e1]'
 		const reading = buildStoreCall(
@@ -936,13 +1054,16 @@ describe('findUnlistedReferences', () => {
 			buildStoreCall(
 				'read',
 				{ from: 1, search: 'Cart' },
-				'page "Store" http://store/ (1 lines)\n1: e1 link "Cart"\n[lines 1–1 of 1; end of page]',
+				'page "Store" http://store/ (1 lines)\n1: link "Cart" [ref=e1]\n[lines 1–1 of 1; end of page]',
 			),
 			buildStoreCall('click', { ref: '[e1]' }),
 		]
 		expect(findMalformedCalls(calls, [BROWSER_TOOL_COPY.read, BROWSER_TOOL_COPY.click])).toEqual([])
 		expect(
-			findUnlistedReferences('page "Store" http://store/ (1 lines)\n1: e1 link "Cart"', calls),
+			findUnlistedReferences(
+				'page "Store" http://store/ (1 lines)\n1: link "Cart" [ref=e1]',
+				calls,
+			),
 		).toEqual([])
 	})
 
@@ -952,7 +1073,7 @@ describe('findUnlistedReferences', () => {
 		const described = buildStoreCall('click', { ref: 'the search button' })
 		expect(findMalformedCalls([described], [BROWSER_TOOL_COPY.click])).toEqual([])
 		expect(
-			findUnlistedReferences('page "Store" http://store/ (1 lines)\n1: e1 link "Cart"', [
+			findUnlistedReferences('page "Store" http://store/ (1 lines)\n1: link "Cart" [ref=e1]', [
 				invented,
 				numeric,
 				described,
@@ -964,7 +1085,7 @@ describe('findUnlistedReferences', () => {
 		const receipt = buildStoreCall(
 			'click',
 			{ ref: 'e1' },
-			'Clicked e1 link "Cart".\n\npage "Cart" http://store/cart (1 lines)\n1: e5 button "Pay"',
+			'Clicked link "Cart" [ref=e1].\n\npage "Cart" http://store/cart (1 lines)\n1: button "Pay" [ref=e5]',
 		)
 		const reading = buildStoreCall(
 			'read',
@@ -975,20 +1096,20 @@ describe('findUnlistedReferences', () => {
 		const stale = buildStoreCall('click', { ref: 'e1' })
 		const fresh = buildStoreCall('click', { ref: 'e5' })
 		const notice = buildStoreCall('press', { key: 'Tab' }, 'Pressed Tab.')
-		expect(findUnlistedReferences('e1 link "Cart"', [receipt, notice, fresh, stale])).toEqual([
-			fresh,
-			stale,
-		])
+		expect(findUnlistedReferences('link "Cart" [ref=e1]', [receipt, notice, fresh, stale])).toEqual(
+			[fresh, stale],
+		)
 		const relisted = buildStoreCall(
 			'read',
 			{ from: 1 },
 			'page "Cart" http://store/cart (1 lines)\n1: button "Pay" [ref=e5]',
 		)
-		expect(findUnlistedReferences('e1 link "Cart"', [receipt, notice, relisted, fresh])).toEqual([])
-		expect(findUnlistedReferences('e1 link "Cart"', [receipt, reading, fresh, stale])).toEqual([
-			fresh,
-			stale,
-		])
+		expect(
+			findUnlistedReferences('link "Cart" [ref=e1]', [receipt, notice, relisted, fresh]),
+		).toEqual([])
+		expect(
+			findUnlistedReferences('link "Cart" [ref=e1]', [receipt, reading, fresh, stale]),
+		).toEqual([fresh, stale])
 	})
 
 	it('flags nothing for calls that carry no reference', () => {
@@ -1003,7 +1124,10 @@ describe('splitResultFooter', () => {
 	})
 
 	it('returns the whole text and an empty footer when the result carries none', () => {
-		expect(splitResultFooter('Clicked e1 link "Cart".')).toEqual(['Clicked e1 link "Cart".', ''])
+		expect(splitResultFooter('Clicked link "Cart" [ref=e1].')).toEqual([
+			'Clicked link "Cart" [ref=e1].',
+			'',
+		])
 	})
 })
 
@@ -1275,14 +1399,14 @@ describe('matchesStoreOracles with a failure', () => {
 
 /** Names the seeded catalogue view the search fixtures open on. */
 const SEARCH_SEED =
-	'page "Harbor Goods — Catalogue" http://127.0.0.1/\ne35 searchbox "Search products"\ne36 button "Search"'
+	'page "Harbor Goods — Catalogue" http://127.0.0.1/\n1: searchbox "Search products" [ref=e35]\n2: button "Search" [ref=e36]'
 
 /** Holds the result text of a submitted search that lists the two kettles. */
-const KETTLE_RESULTS = `Typed "kettles" into e35 searchbox "Search products" and submitted the form.
+const KETTLE_RESULTS = `Typed "kettles" into searchbox "Search products" [ref=e35] and submitted the form.
 
 page "Search: kettles" http://127.0.0.1/search?q=kettles
-e47 link "Alpine Kettle"
-e48 link "Copper Kettle"`
+link "Alpine Kettle" [ref=e47]
+link "Copper Kettle" [ref=e48]`
 
 /** Holds a search run that ends as run v7 ended: the kettles listed, then an empty final turn. */
 const STALLED_SEARCH: StoreTranscript = {
@@ -1303,7 +1427,7 @@ const EMPTY_RESULTS_SEARCH: StoreTranscript = {
 		buildStoreCall(
 			'type',
 			{ ref: 'e35', text: 'kettles', submit: true },
-			'Typed "kettles" into e35 searchbox "Search products" and submitted the form.\n\n# Search results for “kettles”\nNo products match.',
+			'Typed "kettles" into searchbox "Search products" [ref=e35] and submitted the form.\n\n# Search results for “kettles”\nNo products match.',
 		),
 	],
 }
@@ -1315,7 +1439,7 @@ const CLICKED_SEARCH: StoreTranscript = {
 		buildStoreCall(
 			'click',
 			{ ref: 'e35' },
-			`Clicked e35 searchbox "Search products"; call type with e35 to enter text.\n\n${SEARCH_SEED}`,
+			`Clicked searchbox "Search products" [ref=e35]; call type with e35 to enter text.\n\n${SEARCH_SEED}`,
 		),
 	],
 	state: { cart: [], searches: [], orders: [] },
@@ -1328,7 +1452,7 @@ const COMPLETED_SEARCH: StoreTranscript = {
 			buildStoreCall(
 				'type',
 				{ ref: 'e35', text: STORE_QUERY, submit: true },
-				'Typed into e35 searchbox "Search products".\n\npage "Search: kettle" http://127.0.0.1/search?q=kettle\ne40 link "Alpine Kettle"\ne41 link "Copper Kettle"',
+				'Typed into searchbox "Search products" [ref=e35].\n\npage "Search: kettle" http://127.0.0.1/search?q=kettle\n1: link "Alpine Kettle" [ref=e40]\n2: link "Copper Kettle" [ref=e41]',
 			),
 		],
 		SEARCH_SEED,

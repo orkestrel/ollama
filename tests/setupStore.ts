@@ -1125,13 +1125,11 @@ export function writeTranscript(
  * Extracts the element references a view lists.
  *
  * @param text - A `read` result or an action receipt
- * @returns Every bracketed reference token, or reference opening a legacy row, in text order; empty for a
+ * @returns Every bracketed reference token in text order; empty for a
  * result that lists no element
  */
 export function extractReferences(text: string): readonly string[] {
-	return [...text.matchAll(/\[ref=(e[1-9]\d*)\]|^(?:\d+: (?:#{1,6} |[-] )?)?(e[1-9]\d*) /gm)].map(
-		(match) => match[1] ?? match[2] ?? '',
-	)
+	return [...text.matchAll(/\[ref=(e[1-9]\d*)\]/g)].map((match) => match[1] ?? '')
 }
 
 /**
@@ -1141,7 +1139,8 @@ export function extractReferences(text: string): readonly string[] {
  * @param calls - The run's calls, in order
  * @returns The calls whose `ref` argument, read the way the toolset reads it, is not among the
  * references in the successful results since the page last changed, or is refused as not in view.
- * Actions check their reference before clearing exposure; their results begin the next set.
+ * Successful actions check their reference before clearing exposure; their results begin the next set.
+ * Failed calls neither add nor clear exposure, including their headers and change notes.
  * A transcript belongs to one context; a tab switch is an action and clears exposure.
  */
 export function findUnlistedReferences(
@@ -1162,6 +1161,7 @@ export function findUnlistedReferences(
 			)
 				unlisted.push(call)
 		}
+		if (!call.success) continue
 		const page = /^page .+$/m.exec(call.text)?.[0]
 		if (
 			BROWSER_JOURNEY_ACTIONS.some((name) => name === call.name) ||
@@ -1171,7 +1171,6 @@ export function findUnlistedReferences(
 			(page !== undefined && page !== header)
 		)
 			listed.clear()
-		if (!call.success) continue
 		if (page !== undefined) header = page
 		for (const reference of extractReferences(call.text)) listed.add(reference)
 	}
@@ -1394,7 +1393,7 @@ export function buildStoreCall(
  */
 export function buildStoreTranscript(
 	calls: readonly StoreCall[],
-	seed = 'e1 link "Catalogue"',
+	seed = '1: link "Catalogue" [ref=e1]',
 ): StoreTranscript {
 	return {
 		task: 'fixture',

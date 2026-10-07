@@ -364,22 +364,6 @@ describe('createLiveOllama', () => {
 		expect(latestChat().think).toBe(false)
 	})
 
-	it('carries requested presence and repeat penalties to the wire and omits them without a request', async () => {
-		await createLiveOllama({ presence: 0, repeat: 1 }).generate(
-			[createUserMessage('hi')],
-			AbortSignal.timeout(5000),
-		)
-		expect(latestChat().options).toEqual({
-			num_predict: 32,
-			temperature: 0,
-			presence_penalty: 0,
-			repeat_penalty: 1,
-		})
-
-		await createLiveOllama().generate([createUserMessage('hi')], AbortSignal.timeout(5000))
-		expect(latestChat().options).toEqual({ num_predict: 32, temperature: 0 })
-	})
-
 	it('ends a turn the daemon never answers at the requested deadline, before the caller signal', async () => {
 		daemon.chat({ status: 200, content: FIXTURE_CONTENT, park: true })
 		try {

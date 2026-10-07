@@ -34,16 +34,12 @@ export interface LiveProviderOptions {
 	readonly turn?: number
 	/** The `/api/chat` `think` flag; omission leaves the provider's default, which is `false`. */
 	readonly think?: boolean
-	/** The Ollama `presence_penalty` value; omission leaves the model's own value. */
-	readonly presence?: number
-	/** The Ollama `repeat_penalty` value; omission leaves the daemon's default. */
-	readonly repeat?: number
 }
 
 /**
  * Builds a concrete provider against the selected live daemon and warmed model.
  *
- * @param options - Optional prediction, temperature, framing, window, turn-deadline, thinking, and penalty overrides
+ * @param options - Optional prediction, temperature, framing, window, turn-deadline, and thinking overrides
  * @returns A concrete provider configured for the service axis
  */
 export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider {
@@ -54,8 +50,6 @@ export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider 
 			num_predict: options?.predict ?? 32,
 			temperature: options?.temperature ?? 0,
 			...(options?.context === undefined ? {} : { num_ctx: options.context }),
-			...(options?.presence === undefined ? {} : { presence_penalty: options.presence }),
-			...(options?.repeat === undefined ? {} : { repeat_penalty: options.repeat }),
 		},
 		...(options?.format === undefined ? {} : { format: options.format }),
 		...(options?.turn === undefined ? {} : { timeout: options.turn }),

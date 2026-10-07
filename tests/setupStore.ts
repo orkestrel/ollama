@@ -932,14 +932,6 @@ export const STORE_BOUNDS = Object.freeze({
 	 * element's role and chooses the same call on every port.
 	 */
 	think: true,
-	/**
-	 * The Ollama `presence_penalty` value: 0, so greedy decoding reads the model's own ranking.
-	 * The 2B's card sets 1.5, which shifts a near-tie and lengthens an answer that repeats its
-	 * thinking (70 tokens against 33 on the same listing turn).
-	 */
-	presence: 0,
-	/** The Ollama `repeat_penalty` value: 1, off, for the same reason. */
-	repeat: 1,
 	/** The Ollama `num_ctx` window each attempt's model takes, in tokens. */
 	context: 16_384,
 	/** The provider's deadline for one model turn. */

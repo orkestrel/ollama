@@ -1,6 +1,6 @@
 import { createAbort } from '@orkestrel/abort'
 import { createRecorder, waitForDelay } from '@orkestrel/test'
-import { createOllama } from '@src/core'
+import { createOllama, createOllamaJudge } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../../setup.js'
 import {
@@ -9,7 +9,26 @@ import {
 	createRefusingTransport,
 	createStreamingTransport,
 	waitForRequest,
+	JUDGE_RAW_NOUL,
+	JUDGE_NOUL_REQUEST,
+	MICA_SYSTEM,
 } from '../../setupServer.js'
+
+describe('createOllamaJudge', () => {
+	it('constructs an independent judge and drives the raw transport', async () => {
+		const transport = createRecordingTransport(
+			createStreamingTransport([JSON.stringify(JUDGE_RAW_NOUL)]),
+		)
+		const judge = createOllamaJudge({ model: 'mica', system: MICA_SYSTEM, fetch: transport.fetch })
+		const other = createOllamaJudge({ model: 'mica', system: MICA_SYSTEM })
+		expect(judge.id).not.toBe(other.id)
+		expect(judge.name).toBe('ollama')
+		expect(judge.model).toBe(other.model)
+		const result = await judge.ask(JUDGE_NOUL_REQUEST, new AbortController().signal)
+		expect(result.answers.deletion?.form).toBe('noul')
+		expect(transport.requests[0]?.path).toBe('/api/generate')
+	})
+})
 
 describe('createOllama (shape)', () => {
 	it('conforms to ProviderInterface (id + name data, generate + stream callable)', () => {

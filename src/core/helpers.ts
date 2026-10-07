@@ -1,13 +1,242 @@
-// The Ollama wire leaves — the request projections and the response extractions
-// `OllamaProvider` composes. Each is a pure, total function of its parameters: a missing
-// or malformed wire field degrades to a sensible default (empty content, no usage, `{}`
-// arguments), never a throw, and no value is reached through `as`.
-
-import type { Message } from '@orkestrel/agent'
+import type { JudgeAnswer, JudgeEntry, JudgeQuestion, Message, Refusal } from '@orkestrel/agent'
 import type { TokenUsage } from '@orkestrel/budget'
 import type { ToolCall } from '@orkestrel/tool'
-import type { WireChatRequest } from './types.js'
-import { isArray, isNumber, isRecord, isString, parseJSONAs } from '@orkestrel/contract'
+import type { Logprob, OllamaJudgeOptions, WireChatRequest } from './types.js'
+import { JudgeError } from '@orkestrel/agent'
+import {
+	isArray,
+	isFiniteNumber,
+	isNumber,
+	isObject,
+	isRecord,
+	isString,
+	parseJSONAs,
+} from '@orkestrel/contract'
+import {
+	MAX_MICA_LEVELS,
+	MICA_NOUL_LABELS,
+	MICA_OPTION_LABELS,
+	MICA_RENDER_REVISION,
+	MICA_SPECIAL_TOKENS,
+	TOP_LOGPROBS,
+} from './constants.js'
+
+/**
+ * Escapes Mica control tokens by inserting U+200B after their opening angle bracket.
+ * @param text - The untrusted text to render
+ * @returns The text with control tokens escaped and all other bytes preserved
+ * @example
+ * ```ts
+ * escapeSpecialTokens('<think>') // '<\u200bthink>'
+ * ```
+ */
+export function escapeSpecialTokens(text: string): string {
+	let escaped = text
+	for (const token of MICA_SPECIAL_TOKENS)
+		escaped = escaped.replaceAll(token, `<\u200b${token.slice(1)}`)
+	return escaped
+}
+
+/**
+ * Mirrors the TypeSafe adapter path of Mica's server, from the `rows_from_request` function in the `typesafe_server.py` file to the `prompt_for` function in the `native.py` file, with disabled thinking. Serializes structured state as JSON with a one-space indent and JavaScript numeric spelling; parity is byte-exact for string states and structured states whose numbers spell the same in both runtimes.
+ * @remarks
+ * JavaScript cannot distinguish 100.0 from 100 and spells an exponent as 1e-7 where Python spells 1e-07.
+ * @param state - The text or structured JSON state
+ * @param question - The question with string instructions and descriptions
+ * @param system - The model's training system prompt, preserved verbatim
+ * @returns The complete raw generate prompt
+ * @throws JudgeError Thrown with code `QUESTION` for structured instructions or criteria, or an unsupported candidate count
+ * @example
+ * ```ts
+ * renderJudgePrompt('Approved.', { form: 'noul' }, 'Judge the state.')
+ * ```
+ */
+export function renderJudgePrompt(
+	state: JudgeEntry,
+	question: JudgeQuestion,
+	system: string,
+): string {
+	const labels = buildJudgeLabels(question)
+	const instructions = question.instructions ?? ''
+	if (!isString(instructions))
+		throw new JudgeError('QUESTION', 'judge error: mica instructions must be text')
+	const lines: string[] = []
+	if (question.form === 'noul') {
+		for (const key of ['false', 'true'] as const) {
+			const text = question.criteria?.[key] ?? key
+			if (!isString(text))
+				throw new JudgeError('QUESTION', `judge error: mica criterion ${key} must be text`)
+			lines.push(`${key}: ${escapeSpecialTokens(text === '' ? key : text)}`)
+		}
+	} else {
+		const entries =
+			question.form === 'choice'
+				? Object.entries(question.criteria)
+				: question.criteria.map((text, index) => [String(index), text] as const)
+		for (const [key, text] of entries) {
+			if (text !== null && !isString(text))
+				throw new JudgeError('QUESTION', `judge error: mica criterion ${key} must be text or null`)
+			const label = labels.get(key)
+			const named =
+				question.form === 'choice' && key !== '' && key !== label && !/^[cs]?\p{Nd}+$/u.test(key)
+			lines.push(
+				`${label}) ${named ? `[${escapeSpecialTokens(key)}] ` : ''}${escapeSpecialTokens(text === null ? 'None' : text)}`,
+			)
+		}
+	}
+	const ending =
+		question.form === 'noul'
+			? `Criteria:\n${lines.join('\n')}\nAnswer Yes if true, or No if false.`
+			: `Candidates:\n${lines.join('\n')}\nAnswer with the label of the best ${question.form === 'score' ? 'level' : 'candidate'}.`
+	return `<|im_start|>system\n${system}<|im_end|>\n<|im_start|>user\n<state>\n${escapeSpecialTokens(isString(state) ? state : JSON.stringify(state, null, 1))}\n</state>\nQuestion: ${escapeSpecialTokens(instructions)}\n${ending}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`
+}
+
+/**
+ * Pairs caller candidate keys with Mica's output labels in criteria order.
+ * @param question - The question whose candidates define the label map
+ * @returns A map from caller keys to wire tokens
+ * @throws JudgeError Thrown with code `QUESTION` outside the choice or score limits
+ * @example
+ * ```ts
+ * buildJudgeLabels({ form: 'noul' }) // Map { 'false' => 'No', 'true' => 'Yes' }
+ * ```
+ */
+export function buildJudgeLabels(question: JudgeQuestion): ReadonlyMap<string, string> {
+	const keys =
+		question.form === 'noul'
+			? ['false', 'true']
+			: question.form === 'choice'
+				? Object.keys(question.criteria)
+				: question.criteria.map((_, index) => String(index))
+	const limit = question.form === 'score' ? MAX_MICA_LEVELS : TOP_LOGPROBS
+	if (keys.length < 2 || keys.length > limit)
+		throw new JudgeError(
+			'QUESTION',
+			`judge error: mica ${question.form} requires 2..${limit} candidates`,
+		)
+	const labels = question.form === 'noul' ? MICA_NOUL_LABELS : MICA_OPTION_LABELS
+	return new Map(
+		keys.map((key, index) => {
+			const label = labels[index]
+			if (label === undefined)
+				throw new JudgeError('QUESTION', `judge error: missing mica label for ${key}`)
+			return [key, label]
+		}),
+	)
+}
+
+/**
+ * Extracts the first generated position's top logprobs without changing token text.
+ * @param value - The parsed Ollama generate response
+ * @returns The owned top list, preserving its wire order
+ * @throws JudgeError Thrown with code `PROTOCOL` for a malformed list or a non-finite logprob
+ * @example
+ * ```ts
+ * extractTopLogprobs({ logprobs: [{ top_logprobs: [{ token: 'No', logprob: -0.1 }] }] })
+ * // [{ token: 'No', logprob: -0.1 }]
+ * ```
+ */
+export function extractTopLogprobs(value: unknown): readonly Logprob[] {
+	const positions: unknown = isObject(value) ? Reflect.get(value, 'logprobs') : undefined
+	const first: unknown = isArray(positions) ? positions[0] : undefined
+	const top: unknown = isObject(first) ? Reflect.get(first, 'top_logprobs') : undefined
+	if (!isArray(top))
+		throw new JudgeError('PROTOCOL', 'judge error: missing first-position top logprobs')
+	const result: Logprob[] = []
+	const seen = new Set<string>()
+	for (const entry of top) {
+		const token: unknown = isObject(entry) ? Reflect.get(entry, 'token') : undefined
+		const logprob: unknown = isObject(entry) ? Reflect.get(entry, 'logprob') : undefined
+		if (!isString(token) || !isFiniteNumber(logprob) || seen.has(token))
+			throw new JudgeError('PROTOCOL', 'judge error: invalid or duplicate top logprob token')
+		seen.add(token)
+		result.push({ token, logprob })
+	}
+	return result
+}
+
+/**
+ * Computes a calibrated distribution over candidate labels or refuses missing candidates.
+ * @param question - The question defining the candidate keys
+ * @param top - The first position's top logprobs
+ * @param temperature - The finite positive calibration temperature; default 1
+ * @returns The answer, or a refusal naming every missing caller key
+ * @throws JudgeError Thrown with code `QUESTION` for invalid calibration or candidate counts, or `PROTOCOL` for invalid logprobs
+ * @example
+ * ```ts
+ * computeAnswer({ form: 'noul' }, [{ token: 'No', logprob: 0 }, { token: 'Yes', logprob: 0 }])
+ * // { form: 'noul', noul: 0.5 }
+ * ```
+ */
+export function computeAnswer(
+	question: JudgeQuestion,
+	top: readonly Logprob[],
+	temperature = 1,
+): JudgeAnswer | Refusal {
+	if (!isFiniteNumber(temperature) || temperature <= 0)
+		throw new JudgeError(
+			'QUESTION',
+			'judge error: calibration temperature must be finite and positive',
+		)
+	const labels = buildJudgeLabels(question)
+	const available = new Map<string, number>()
+	for (const entry of top) {
+		const { token, logprob } = entry
+		if (!isFiniteNumber(logprob) || available.has(token))
+			throw new JudgeError('PROTOCOL', 'judge error: invalid or duplicate top logprob token')
+		available.set(token, logprob)
+	}
+	const missing: string[] = []
+	const candidates: Array<[string, number]> = []
+	for (const [key, label] of labels) {
+		const logprob = available.get(label)
+		if (logprob === undefined) missing.push(key)
+		else candidates.push([key, logprob])
+	}
+	if (missing.length > 0) return { missing }
+	const peak = Math.max(...candidates.map(([, logprob]) => logprob))
+	const weights = candidates.map(
+		([key, logprob]) => [key, Math.exp((logprob - peak) / temperature)] as const,
+	)
+	const total = weights.reduce((sum, [, weight]) => sum + weight, 0)
+	const probabilities = weights.map(([key, weight]) => [key, weight / total] as const)
+	if (question.form === 'choice')
+		return { form: 'choice', probabilities: Object.fromEntries(probabilities) }
+	if (question.form === 'score')
+		return { form: 'score', probabilities: probabilities.map(([, probability]) => probability) }
+	const yes = probabilities.find(([key]) => key === 'true')
+	if (yes === undefined) throw new JudgeError('PROTOCOL', 'judge error: missing true probability')
+	return { form: 'noul', noul: yes[1] }
+}
+
+/**
+ * Renders a stable identity from the model tag, system prompt, calibration, sorted effective options, and render revision.
+ * @param options - The settings that define the judge's answers
+ * @param revision - The render revision; defaults to the published revision
+ * @returns An unambiguous JSON tuple identifying the configured judge
+ * @throws JudgeError Thrown with code `QUESTION` for invalid calibration
+ * @example
+ * ```ts
+ * renderJudgeIdentity({ model: 'mica', system: 'Judge.' }, 'v1')
+ * // '["mica","Judge.",1,{"num_predict":1,"temperature":1},"v1"]'
+ * ```
+ */
+export function renderJudgeIdentity(
+	options: OllamaJudgeOptions,
+	revision = MICA_RENDER_REVISION,
+): string {
+	const temperature = options.calibration?.temperature ?? 1
+	if (!isFiniteNumber(temperature) || temperature <= 0)
+		throw new JudgeError(
+			'QUESTION',
+			'judge error: calibration temperature must be finite and positive',
+		)
+	const effective = { ...options.options, num_predict: 1, temperature: 1 }
+	const sorted = Object.fromEntries(
+		Object.entries(effective).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
+	)
+	return JSON.stringify([options.model, options.system, temperature, sorted, revision])
+}
 
 /**
  * Maps conversation turns onto the `/api/chat` wire's minimal message shape.

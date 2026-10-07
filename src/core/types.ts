@@ -91,3 +91,39 @@ export interface OllamaOptions extends ProviderOptions {
 	 */
 	readonly think?: boolean
 }
+
+/**
+ * Configures the raw Mica judge wire, its calibration, and its transport.
+ *
+ * @remarks
+ * `system` is the model's training prompt. `calibration.temperature` divides candidate
+ * logprob gaps and must be finite and positive. Default: 1. `options` carries Ollama
+ * sampling settings; the wire fixes `temperature` and `num_predict` to 1.
+ */
+export interface OllamaJudgeOptions extends Pick<ProviderOptions, 'timeout' | 'fetch' | 'headers'> {
+	readonly model: string
+	readonly system: string
+	readonly calibration?: { readonly temperature: number }
+	readonly url?: string
+	/** Mirrors the Ollama `keep_alive` duration. Default: '5m'. */
+	readonly keepAlive?: string | number
+	readonly options?: Readonly<Record<string, unknown>>
+}
+
+/** Carries a token and its log probability from Ollama's top logprob list. */
+export interface Logprob {
+	readonly token: string
+	readonly logprob: number
+}
+
+/** Transliterates the Ollama raw, non-streaming `POST /api/generate` request. */
+export interface WireGenerateRequest {
+	readonly model: string
+	readonly prompt: string
+	readonly raw: true
+	readonly stream: false
+	readonly logprobs: true
+	readonly top_logprobs: number
+	readonly keep_alive: string | number
+	readonly options: Readonly<Record<string, unknown>>
+}

@@ -13,6 +13,13 @@ export const OLLAMA_CONFIG = Object.freeze({
 	model: env('OLLAMA_MODEL', 'qwen3.5:2b-q4_K_M'),
 })
 
+/** Names the live Mica calibration and the native decision model. */
+export const OLLAMA_JUDGE_CONFIG = Object.freeze({
+	model: env('OLLAMA_JUDGE_MODEL', 'hf.co/sky7350/Mica-v0.1-4B:Q4_K_M'),
+	temperature: Number(env('OLLAMA_JUDGE_TEMPERATURE', '1.1244734010661372')),
+	decision: env('OLLAMA_DECISION_MODEL', 'tev1:0.8b'),
+})
+
 /** Represents the tuning a live Ollama test provider accepts. */
 export interface LiveProviderOptions {
 	/** The Ollama `num_predict` cap; defaults to `32`. */
@@ -109,9 +116,10 @@ export function seedConversation(conversation: ConversationInterface): void {
 /**
  * Checks whether the daemon answers and reports the selected model as installed.
  *
+ * @param selected - The required model; defaults to the provider service model
  * @returns `true` only when `/api/tags` succeeds and includes the configured model
  */
-export async function isOllamaReady(): Promise<boolean> {
+export async function isOllamaReady(selected = OLLAMA_CONFIG.model): Promise<boolean> {
 	try {
 		const response = await fetch(`${OLLAMA_CONFIG.host}/api/tags`, {
 			signal: AbortSignal.timeout(5000),
@@ -122,8 +130,8 @@ export async function isOllamaReady(): Promise<boolean> {
 		return body.models.some(
 			(model) =>
 				isRecord(model) &&
-				((isString(model.name) && model.name === OLLAMA_CONFIG.model) ||
-					(isString(model.model) && model.model === OLLAMA_CONFIG.model)),
+				((isString(model.name) && model.name === selected) ||
+					(isString(model.model) && model.model === selected)),
 		)
 	} catch {
 		return false
@@ -133,34 +141,39 @@ export async function isOllamaReady(): Promise<boolean> {
 /**
  * Warms the selected model with a one-token chat request.
  *
+ * @param selected - The model to warm; defaults to the provider service model
+ * @param timeout - The warmup deadline in milliseconds; default 300000 for Mica and 120000 otherwise
  * @returns A promise that resolves after the response body has been drained
  * @throws When the daemon cannot be reached or rejects the warmup
  */
-export async function warmOllama(): Promise<void> {
+export async function warmOllama(
+	selected = OLLAMA_CONFIG.model,
+	timeout = selected === OLLAMA_JUDGE_CONFIG.model ? 300_000 : 120_000,
+): Promise<void> {
 	let response: Response
 	try {
 		response = await fetch(`${OLLAMA_CONFIG.host}/api/chat`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
-				model: OLLAMA_CONFIG.model,
+				model: selected,
 				messages: [{ role: 'user', content: 'hi' }],
 				stream: false,
 				think: false,
 				options: { num_predict: 1 },
 				keep_alive: '30m',
 			}),
-			signal: AbortSignal.timeout(120_000),
+			signal: AbortSignal.timeout(timeout),
 		})
 	} catch (error) {
 		throw new Error(
-			`Ollama warmup could not reach ${OLLAMA_CONFIG.host} for model ${OLLAMA_CONFIG.model} (${String(error)})`,
+			`Ollama warmup could not reach ${OLLAMA_CONFIG.host} for model ${selected} (${String(error)})`,
 			{ cause: error },
 		)
 	}
 	if (!response.ok) {
 		throw new Error(
-			`Ollama warmup failed (${response.status}) for model ${OLLAMA_CONFIG.model} at ${OLLAMA_CONFIG.host}`,
+			`Ollama warmup failed (${response.status}) for model ${selected} at ${OLLAMA_CONFIG.host}`,
 		)
 	}
 	await response.text()

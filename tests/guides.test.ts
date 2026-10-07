@@ -2,7 +2,7 @@
 // repository's own `guides/README.md` manifest. The constants that follow are this
 // package's own, as is the executed section that closes the file.
 
-import type { ContextFormat } from '@orkestrel/agent'
+import type { ContextFormat, JudgeQuestion } from '@orkestrel/agent'
 import { GuideCommand } from '@orkestrel/guide/server'
 import { readInventory } from '@orkestrel/test/server'
 import { createVitest } from 'vitest/node'
@@ -40,15 +40,50 @@ await new GuideCommand({
 }).execute(async ({ files, report, rows }) => {
 	const { isRecord, parseJSON } = await import('@orkestrel/contract')
 	const { computeSymbolKey, findMissingSymbols } = await import('@orkestrel/guide')
-	const { createRelay, createRelayProvider, isProviderAbortError, isProviderError } =
-		await import('@orkestrel/agent')
+	const {
+		computeReading,
+		createSystemOneJudge,
+		createRelay,
+		createRelayProvider,
+		isProviderAbortError,
+		isProviderError,
+		isJudgeAbortError,
+		JudgeError,
+	} = await import('@orkestrel/agent')
 	const { createNDJSONParser } = await import('@orkestrel/ndjson')
 	const { createDispatcher } = await import('@orkestrel/router')
 	const { requireValue } = await import('@orkestrel/test')
 	const barrel = await import('@src/core')
-	const { createOllama, OllamaProvider } = barrel
-	const { createOpenTransport, createRelayServer, createStreamingTransport, OBFUSCATED } =
-		await import('./setupServer.js')
+	const {
+		createOllama,
+		OllamaProvider,
+		createOllamaJudge,
+		OllamaJudge,
+		buildJudgeLabels,
+		computeAnswer,
+		escapeSpecialTokens,
+		extractTopLogprobs,
+		renderJudgeIdentity,
+		renderJudgePrompt,
+	} = barrel
+	const {
+		createOpenTransport,
+		createRelayServer,
+		createStreamingTransport,
+		createRecordingTransport,
+		JUDGE_RAW_NOUL,
+		JUDGE_SYSTEM_ONE,
+		JUDGE_NOUL_REQUEST,
+		JUDGE_SYSTEM_REQUEST,
+		JUDGE_WIRE_NOUL,
+		JUDGE_WIRE_CHOICE,
+		JUDGE_CHOICE_REQUEST,
+		JUDGE_WIRE_SYSTEM,
+		JUDGE_INVALID_QUESTIONS,
+		MICA_SYSTEM,
+		MICA_CALIBRATION,
+		OBFUSCATED,
+	} = await import('./setupServer.js')
 	const { describe, expect, it } = await import('vitest')
 	const manifest = parseJSON(requireValue(files['package.json'], 'Missing inventory: package.json'))
 	if (!isRecord(manifest)) throw new Error('Invalid package manifest: package.json')
@@ -64,6 +99,8 @@ await new GuideCommand({
 	// repository's own guide contributes.
 	it('pairs at least one example title across the guide and the source', () => {
 		expect(report.examples.titles.filter((finding) => finding.spec === GUIDE_SPEC)).toEqual([])
+		expect(files['src/core/OllamaJudge.ts']).toContain('@example Ask Mica a noul')
+		expect(files[GUIDE_SPEC]).toContain('### Ask Mica a noul')
 	})
 
 	it('opens the README with the guide tagline', () => {
@@ -150,11 +187,335 @@ await new GuideCommand({
 		})
 	}
 
+	describe('judge contract', () => {
+		it('clause 16: preserves the recorded renders and the TypeSafe boundary cases', () => {
+			const noul = requireValue(JUDGE_NOUL_REQUEST.questions.deletion, 'Missing noul')
+			const choice = requireValue(JUDGE_CHOICE_REQUEST.questions.team, 'Missing choice')
+			expect(renderJudgePrompt(JUDGE_NOUL_REQUEST.state, noul, MICA_SYSTEM)).toBe(
+				JUDGE_WIRE_NOUL.prompt,
+			)
+			expect(renderJudgePrompt(JUDGE_CHOICE_REQUEST.state, choice, MICA_SYSTEM)).toBe(
+				JUDGE_WIRE_CHOICE.prompt,
+			)
+			expect(
+				renderJudgePrompt(
+					{ n: 1e-7 },
+					{ form: 'noul', criteria: { false: '', true: '' } },
+					'system',
+				),
+			).toBe(
+				'<|im_start|>system\nsystem<|im_end|>\n<|im_start|>user\n<state>\n{\n "n": 1e-7\n}\n</state>\nQuestion: \nCriteria:\nfalse: false\ntrue: true\nAnswer Yes if true, or No if false.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n',
+			)
+			expect(
+				renderJudgePrompt(
+					'',
+					{ form: 'choice', criteria: { c١: null, named: '<think>' } },
+					'system',
+				),
+			).toContain('Candidates:\nA) None\nB) [named] <\u200bthink>\n')
+		})
+		it('clause 17: sends separate raw requests and reads only candidate logprobs and valid usage', async () => {
+			const transport = createRecordingTransport(
+				createStreamingTransport([JSON.stringify(JUDGE_RAW_NOUL)]),
+			)
+			const judge = new OllamaJudge({
+				model: JUDGE_WIRE_NOUL.model,
+				system: MICA_SYSTEM,
+				calibration: MICA_CALIBRATION,
+				options: { temperature: 0, num_predict: 99 },
+				fetch: transport.fetch,
+			})
+			const result = await judge.ask(
+				{ state: '', questions: { deletion: { form: 'noul' }, permission: { form: 'noul' } } },
+				new AbortController().signal,
+			)
+			expect(transport.requests).toHaveLength(2)
+			for (const request of transport.requests) {
+				expect(request.method).toBe('POST')
+				expect(request.path).toBe('/api/generate')
+				expect(request.body).toMatchObject({
+					raw: true,
+					stream: false,
+					logprobs: true,
+					top_logprobs: 20,
+					options: { num_predict: 1, temperature: 1 },
+				})
+			}
+			expect(result.usage).toEqual({ prompt: 276, completion: 2, total: 278 })
+			const answer = requireValue(result.answers.deletion, 'Missing answer')
+			expect(computeReading(answer).probability).toBeCloseTo(0.9899737974147249, 12)
+			expect(
+				extractTopLogprobs({
+					logprobs: [
+						{ top_logprobs: [{ token: ' No', logprob: -1 }] },
+						{ top_logprobs: [{ token: 'Yes', logprob: 0 }] },
+					],
+				}),
+			).toEqual([{ token: ' No', logprob: -1 }])
+			expect(() =>
+				extractTopLogprobs({ logprobs: [{ top_logprobs: [{ token: 'No', logprob: NaN }] }] }),
+			).toThrow(JudgeError)
+			expect(() =>
+				extractTopLogprobs({
+					logprobs: [
+						{
+							top_logprobs: [
+								{ token: 'No', logprob: 0 },
+								{ token: 'No', logprob: 0 },
+							],
+						},
+					],
+				}),
+			).toThrow(JudgeError)
+			expect(
+				judge.read({ ...JUDGE_RAW_NOUL, eval_count: -1 }, JUDGE_NOUL_REQUEST).usage,
+			).toBeUndefined()
+			expect(
+				judge.read({ ...JUDGE_RAW_NOUL, eval_count: undefined }, JUDGE_NOUL_REQUEST).usage,
+			).toBeUndefined()
+		})
+		it('clause 18: retains the other answers and spent usage after a missing-label refusal', async () => {
+			const transport = createRecordingTransport(
+				createStreamingTransport([JSON.stringify(JUDGE_RAW_NOUL)]),
+			)
+			const judge = createOllamaJudge({
+				model: JUDGE_WIRE_NOUL.model,
+				system: MICA_SYSTEM,
+				fetch: transport.fetch,
+			})
+			const result = await judge.ask(
+				{
+					state: '',
+					questions: {
+						routing: {
+							form: 'choice',
+							criteria: { billing: null, technical: null, sales: null, account: null },
+						},
+						permission: { form: 'noul' },
+					},
+				},
+				new AbortController().signal,
+			)
+			expect(result.refusals).toEqual({ routing: { missing: ['account'] } })
+			expect(Object.keys(result.answers)).toEqual(['permission'])
+			expect(result.usage).toEqual({ prompt: 276, completion: 2, total: 278 })
+		})
+		it('clause 19: enforces Mica limits before transport and accepts numeric residency', async () => {
+			const transport = createRecordingTransport(
+				createStreamingTransport([JSON.stringify(JUDGE_RAW_NOUL)]),
+			)
+			const judge = new OllamaJudge({
+				model: JUDGE_WIRE_NOUL.model,
+				system: MICA_SYSTEM,
+				fetch: transport.fetch,
+				keepAlive: 0,
+			})
+			for (const question of JUDGE_INVALID_QUESTIONS) {
+				await expect(
+					judge.ask(
+						{ state: '', questions: { valid: { form: 'noul' }, invalid: question } },
+						new AbortController().signal,
+					),
+				).rejects.toMatchObject({
+					code: 'QUESTION',
+					message: expect.stringMatching(/^judge error: question invalid /),
+				})
+			}
+			expect(transport.requests).toEqual([])
+			expect(() => buildJudgeLabels({ form: 'choice', criteria: { alone: null } })).toThrow(
+				JudgeError,
+			)
+			expect(buildJudgeLabels({ form: 'choice', criteria: { yes: null, no: null } }).size).toBe(2)
+			expect(
+				buildJudgeLabels({
+					form: 'choice',
+					criteria: Object.fromEntries(
+						Array.from({ length: 20 }, (_, index) => [String(index), null]),
+					),
+				}).size,
+			).toBe(20)
+			expect(buildJudgeLabels({ form: 'score', criteria: ['low', 'high'] }).size).toBe(2)
+			expect(
+				buildJudgeLabels({
+					form: 'score',
+					criteria: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'],
+				}).size,
+			).toBe(10)
+			expect(judge.body(JUDGE_NOUL_REQUEST).keep_alive).toBe(0)
+			expect(
+				new OllamaJudge({ model: JUDGE_WIRE_NOUL.model, system: MICA_SYSTEM }).body(
+					JUDGE_NOUL_REQUEST,
+				).keep_alive,
+			).toBe('5m')
+		})
+		it('clause 20: carries effective identity through results and retains completed work on cancellation', async () => {
+			const transport = createRecordingTransport(
+				createStreamingTransport([JSON.stringify(JUDGE_RAW_NOUL)]),
+			)
+			const abort = new AbortController()
+			const judge = new OllamaJudge({
+				model: JUDGE_WIRE_NOUL.model,
+				system: MICA_SYSTEM,
+				options: { num_ctx: 8192, seed: 42 },
+				fetch: transport.fetch,
+				headers: () => {
+					if (transport.requests.length === 1) abort.abort()
+					return {}
+				},
+			})
+			const identity = renderJudgeIdentity({
+				model: JUDGE_WIRE_NOUL.model,
+				system: MICA_SYSTEM,
+				options: { seed: 42, num_ctx: 8192 },
+			})
+			expect(judge.model).toBe(identity)
+			expect(judge.read(JUDGE_RAW_NOUL, JUDGE_NOUL_REQUEST).model).toBe(identity)
+			expect(
+				renderJudgeIdentity({
+					model: JUDGE_WIRE_NOUL.model,
+					system: MICA_SYSTEM,
+					options: { seed: 42, num_ctx: 4096 },
+				}),
+			).not.toBe(identity)
+			const error: unknown = await judge
+				.ask(
+					{ state: '', questions: { permission: { form: 'noul' }, routing: { form: 'noul' } } },
+					abort.signal,
+				)
+				.catch((caught: unknown) => caught)
+			if (!isJudgeAbortError(error)) throw new Error('Expected judge abort', { cause: error })
+			expect(error.partial.model).toBe(identity)
+			expect(Object.keys(error.partial.answers)).toEqual(['permission'])
+			expect(error.partial.usage).toEqual({ prompt: 138, completion: 1, total: 139 })
+			expect(transport.requests).toHaveLength(1)
+		})
+	})
+
 	// The EXECUTED half. Every preceding check reads a name from guide or source text.
 	// These cases run the flagship fences and assert the values their comments claim. Only
 	// the hermetic half runs here: the `guides` project has no daemon, so a fence claim about
 	// a live model's output is asserted in `tests/service/`.
 	describe('flagship fences', () => {
+		it('executes Ask Mica a noul over the recorded raw body', async () => {
+			const transport = createRecordingTransport(
+				createStreamingTransport([JSON.stringify(JUDGE_RAW_NOUL)]),
+			)
+			const judge = createOllamaJudge({
+				model: 'hf.co/sky7350/Mica-v0.1-4B:Q4_K_M',
+				system: MICA_SYSTEM,
+				calibration: { temperature: 1.1244734010661372 },
+				timeout: 300000,
+				options: { num_ctx: 8192 },
+				fetch: transport.fetch,
+			})
+			const request = {
+				state: 'The user asked to delete the staging database. No approval has been given.',
+				questions: {
+					deletion: {
+						form: 'noul',
+						instructions: 'Should the agent delete it now?',
+						criteria: {
+							false: 'Do not delete. No approval has been given.',
+							true: 'Delete the staging database now.',
+						},
+					},
+				},
+			} as const
+			expect(request).toEqual(JUDGE_NOUL_REQUEST)
+			const result = await judge.ask(request, new AbortController().signal)
+			const answer = result.answers.deletion
+			if (answer === undefined) throw new Error('Missing deletion answer')
+			expect(computeReading(answer).winner).toBe('false')
+			expect(computeReading(answer).probability).toBeCloseTo(0.99, 3)
+			expect(transport.requests[0]?.body.prompt).toBe(JUDGE_WIRE_NOUL.prompt)
+		})
+
+		it('executes Ask a native decision model over the recorded System One body', async () => {
+			const transport = createRecordingTransport(
+				createStreamingTransport([JSON.stringify(JUDGE_SYSTEM_ONE)]),
+			)
+			const judge = createSystemOneJudge({
+				url: 'http://localhost:11434',
+				model: 'tev1:0.8b',
+				fetch: transport.fetch,
+			})
+			const request = {
+				state: 'Our checkout has returned 500 errors since 9am. I want a refund for today.',
+				questions: {
+					label: {
+						form: 'choice',
+						instructions: 'Which label fits this ticket?',
+						criteria: {
+							billing: 'Payments and refunds',
+							bug: 'Software errors',
+							account: null,
+						},
+					},
+					refund: {
+						form: 'noul',
+						instructions: 'Does the customer ask for money back?',
+						criteria: {
+							true: 'The customer asks for a refund or for money back.',
+							false: 'The customer does not ask for money back.',
+						},
+					},
+					severity: {
+						form: 'score',
+						instructions: 'How severe is the reported issue?',
+						criteria: [
+							'Cosmetic; no impact',
+							'Degraded, workaround exists',
+							'Blocking; no workaround',
+						],
+					},
+				},
+			} as const
+			expect(request).toEqual(JUDGE_SYSTEM_REQUEST)
+			const result = await judge.ask(request, new AbortController().signal)
+			expect(Object.keys(result.answers)).toEqual(['label', 'refund', 'severity'])
+			expect(result.answers.label?.form).toBe('choice')
+			expect(result.answers.refund?.form).toBe('noul')
+			expect(result.answers.severity?.form).toBe('score')
+			expect(transport.requests).toHaveLength(1)
+			expect(transport.requests[0]?.path).toBe('/v1/systemone')
+			expect(transport.requests[0]?.body).toEqual(JUDGE_WIRE_SYSTEM)
+			const readings = Object.fromEntries(
+				Object.entries(result.answers).map(([id, answer]) => [id, computeReading(answer)]),
+			)
+			expect(readings.label?.winner).toBe('bug')
+			expect(readings.label?.confidence).toBeCloseTo(0.9536250219153858, 12)
+			expect(readings.refund?.probability).toBeCloseTo(0.9978973674111222, 12)
+			expect(readings.severity?.score).toBeCloseTo(0.9919248376139791, 12)
+		})
+
+		it('executes Inspect the raw judge wire', () => {
+			const question: JudgeQuestion = { form: 'noul' }
+			expect(escapeSpecialTokens('<think>')).toBe('<\u200bthink>')
+			const labels = buildJudgeLabels(question)
+			expect(labels.get('false')).toBe('No')
+			const options = { model: 'mica', system: 'Judge the state.' }
+			const prompt = renderJudgePrompt('Approved.', question, options.system)
+			const identity = renderJudgeIdentity(options)
+			const response = {
+				done: true,
+				logprobs: [
+					{
+						top_logprobs: [
+							{ token: 'No', logprob: 0 },
+							{ token: 'Yes', logprob: 0 },
+						],
+					},
+				],
+			}
+			expect(computeAnswer(question, extractTopLogprobs(response))).toEqual({
+				form: 'noul',
+				noul: 0.5,
+			})
+			const judge = new OllamaJudge(options)
+			const request = { state: 'Approved.', questions: { approval: question } }
+			expect(judge.body(request).prompt).toBe(prompt)
+			expect(judge.read(response, request).model).toBe(identity)
+		})
 		const guideText = requireValue(files[GUIDE_SPEC], `Missing file: ${GUIDE_SPEC}`)
 		const readmeText = requireValue(files[README_SPEC], `Missing file: ${README_SPEC}`)
 

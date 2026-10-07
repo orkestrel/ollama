@@ -353,8 +353,8 @@ export const STORE_SYSTEM_PROMPT =
 	'Use the browser tools before answering. The first message is a read of the page; references such as e4 name elements. ' +
 	'To learn a fact, call read with from 1 and search words from the question. ' +
 	'For more text, follow the footer: call read with from set to the line it names. ' +
-	"To fill a field or use the site's search box, call type with its reference, the text, and submit true. " +
-	'To activate an element, click its reference from the latest result. Never invent references. ' +
+	'To follow a link or press a button, call click with its reference from the latest result. ' +
+	"To fill a textbox or the site's search box, call type with its reference, the text, and submit true. Never invent references. " +
 	'If expected text has not appeared, call wait once. ' +
 	'When done, answer in one short sentence.'
 

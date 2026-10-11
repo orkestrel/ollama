@@ -26,6 +26,7 @@ import { createWorkspace } from '@orkestrel/workspace'
 import { beforeAll, describe, expect, it } from 'vitest'
 import {
 	buildTurns,
+	createChallengeTools,
 	createRecordingSummarizer,
 	createThrowingSummarizer,
 	fillWorkspace,
@@ -70,6 +71,37 @@ function requestWithBody(body: Record<string, unknown>): RecordedRequest {
 // A non-aborted context for the tool `execute` calls below — none of these fixtures
 // read `context.caller`, so a signal alone satisfies `ToolContext`.
 const CONTEXT: ToolContext = { signal: new AbortController().signal }
+
+describe('createChallengeTools', () => {
+	it('returns the challenge without revealing the secret code', async () => {
+		const [lookup, secret] = createChallengeTools('opaque-challenge', '7193')
+		if (lookup === undefined || secret === undefined) throw new Error('Missing lookup tools')
+		expect(lookup.name).toBe('lookup_challenge')
+		expect(secret.name).toBe('lookup_secret')
+		expect(secret.parameters).toEqual({
+			type: 'object',
+			properties: { challenge: { type: 'string' } },
+			required: ['challenge'],
+		})
+		expect(await lookup.execute({}, CONTEXT)).toEqual({ challenge: 'opaque-challenge' })
+	})
+
+	it('rejects missing, non-string, and incorrect challenges with TypeError', () => {
+		const [, secret] = createChallengeTools('opaque-challenge', '7193')
+		if (secret === undefined) throw new Error('Missing secret lookup')
+		expect(() => secret.execute({}, CONTEXT)).toThrow(TypeError)
+		expect(() => secret.execute({ challenge: 7 }, CONTEXT)).toThrow(TypeError)
+		expect(() => secret.execute({ challenge: 'incorrect' }, CONTEXT)).toThrow(TypeError)
+	})
+
+	it('reveals the code after the caller supplies the actual lookup result', async () => {
+		const [lookup, secret] = createChallengeTools('opaque-challenge', '7193')
+		if (lookup === undefined || secret === undefined) throw new Error('Missing lookup tools')
+		const result = await lookup.execute({}, CONTEXT)
+		if (!isRecord(result)) throw new Error('Missing challenge result')
+		expect(await secret.execute(result, CONTEXT)).toEqual({ code: '7193' })
+	})
+})
 
 describe('parseRequestBody', () => {
 	it('returns the record for valid JSON object text', () => {

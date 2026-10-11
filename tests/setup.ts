@@ -1,8 +1,49 @@
 import type { Message } from '@orkestrel/agent'
 import type { RecorderInterface } from '@orkestrel/test'
-import type { ToolDefinition } from '@orkestrel/tool'
+import type { ToolDefinition, ToolInterface } from '@orkestrel/tool'
 import type { WorkspaceInterface } from '@orkestrel/workspace'
 import { waitForDelay } from '@orkestrel/test'
+import { isString } from '@orkestrel/contract'
+import { createTool } from '@orkestrel/tool'
+
+/**
+ * Creates dependent lookup tools that reveal a code only for the returned challenge.
+ *
+ * @param challenge - The opaque value the first lookup returns
+ * @param code - The code the second lookup returns for the correct challenge
+ * @returns The challenge lookup followed by the secret lookup
+ * @throws TypeError - Thrown when the secret lookup receives a missing or incorrect challenge.
+ * @example
+ * ```ts
+ * const tools = createChallengeTools('opaque-challenge', '7193')
+ * ```
+ */
+export function createChallengeTools(challenge: string, code: string): readonly ToolInterface[] {
+	return [
+		createTool({
+			name: 'lookup_challenge',
+			description: 'Look up the challenge required by lookup_secret. Takes no arguments.',
+			parameters: { type: 'object', properties: {} },
+			execute: () => ({ challenge }),
+		}),
+		createTool({
+			name: 'lookup_secret',
+			description:
+				'Look up the secret access code using the challenge returned by lookup_challenge.',
+			parameters: {
+				type: 'object',
+				properties: { challenge: { type: 'string' } },
+				required: ['challenge'],
+			},
+			execute: (args) => {
+				if (!isString(args.challenge) || args.challenge !== challenge) {
+					throw new TypeError('The returned lookup challenge is required.')
+				}
+				return { code }
+			},
+		}),
+	]
+}
 
 // ── Agent data-stub factory (real shape, not a mock) ─────────────────────────
 //

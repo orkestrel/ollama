@@ -1,3 +1,5 @@
+import type { Message, Section } from '@orkestrel/agent'
+import { inspect } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import {
 	CONVERSATION_RECAP_PREFIX,
@@ -7,13 +9,12 @@ import {
 	estimateMessages,
 } from '@orkestrel/agent'
 import { createBudget } from '@orkestrel/budget'
-import { collect, retryUntil } from '@orkestrel/test'
+import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createTool, createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/core'
-import { buildTurns, createUserMessage } from '../setup.js'
+import { buildTurns, createChallengeTools, createUserMessage } from '../setup.js'
 import { createRecordingProxy, driveAgent, wireMessages } from '../setupServer.js'
 import {
-	createLiveOllama,
 	createLiveSummarizer,
 	OLLAMA_CONFIG,
 	RETRY_BUDGET,
@@ -22,16 +23,15 @@ import {
 
 const TIMEOUT = 60_000
 
-describe('Agent (live) — auto-compaction folds a recap while retaining the kept tail', () => {
+describe('Agent (live) — compaction retains complete exchanges on the wire', () => {
 	const summarize = createLiveSummarizer(TIMEOUT)
 
-	it('a recorded wire request carries a recap-prefixed message followed by the kept tail verbatim', async () => {
+	it('sends a recap followed by the final seeded pair and the active request verbatim', async () => {
 		const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
 		try {
 			const conversations = createConversationManager({ summarize, keep: 2 })
 			const conversation = conversations.add()
-			const turns = buildTurns(12)
-			conversation.add(turns)
+			const turns = conversation.add(buildTurns(12))
 			const provider = createOllama({
 				model: OLLAMA_CONFIG.model,
 				url: proxy.url,
@@ -48,271 +48,390 @@ describe('Agent (live) — auto-compaction folds a recap while retaining the kep
 			})
 			const finalMessage = createUserMessage('Please continue.')
 			agent.context.messages.add(finalMessage)
-			// Once generation completes, the first proxy request is guaranteed to have been captured.
 			const result = await agent.generate()
 			expect(result.partial).toBe(false)
+			const section = conversation.sections[0]
+			expect(conversation.sections).toHaveLength(1)
+			expect(section?.messages).toEqual(turns.slice(0, -2))
+			expect(section?.summary.trim().length).toBeGreaterThan(0)
 			const request = proxy.requests[0]
 			const messages = request === undefined ? [] : wireMessages(request)
-			const recapIndex = messages.findIndex((message) =>
-				message.content.startsWith(CONVERSATION_RECAP_PREFIX),
-			)
-			const recapRole = recapIndex >= 0 ? messages[recapIndex]?.role : undefined
-			const keptTail = [turns[turns.length - 1], finalMessage]
-			const tailIndices = keptTail.map((turn) =>
-				messages.findIndex((message) => turn !== undefined && message.content === turn.content),
-			)
-			const followingCount = messages.filter(
-				(message, index) => index > recapIndex && message.role !== 'system',
-			).length
-
-			expect(recapIndex).toBeGreaterThanOrEqual(0)
-			expect(recapRole).toBe('assistant')
-			for (const index of tailIndices) {
-				expect(index).toBeGreaterThan(recapIndex)
-			}
-			expect(followingCount).toBe(2)
+			expect(messages.filter((message) => message.role !== 'system')).toEqual([
+				{ role: 'assistant', content: `${CONVERSATION_RECAP_PREFIX}${section?.summary}` },
+				...turns.slice(-2).map(({ role, content }) => ({ role, content })),
+				{ role: finalMessage.role, content: finalMessage.content },
+			])
 		} finally {
 			await proxy.stop()
 		}
 	})
 })
 
-describe('Conversation (live) — compaction summarizes via the REAL model', () => {
-	// A REAL ConversationSummaryHandler built from the live provider — the provider-agnostic seam the
-	// conversation layer drives. Recipe retuned: num_predict 256→64 (a one-sentence digest fits
-	// comfortably; keeps wall-time bounded). This proves compaction works end-to-
-	// end against a genuine model — no mocks for the inference boundary, and no skipIf.
-	// Assertion strategy: STRUCTURAL only (non-empty summaries, view() shrinks to 1) — never
-	// exact prose.
-	// The instruction rides as the FINAL user turn AFTER the folded messages — a reasoning chat
-	// model emits nothing when the prompt ends on an assistant turn (a leading-system instruction
-	// leaves the template thinking the turn is already answered), so the trailing user turn is
-	// what reliably elicits the digest. (Documented as the recommended summarizer shape.)
+describe('Conversation (live) — manual compaction preserves the newest exchange', () => {
 	const summarize = createLiveSummarizer(TIMEOUT)
 
 	it(
-		'compact() folds the live tail into a section authored by the live model, and view() shrinks',
+		'folds the older pair into a live summary and retains the newest pair',
 		async () => {
-			// Bounded retry (explicit attempts=3) over the small model's
-			// nondeterminism: each attempt is a FRESH conversation seeded + compacted, retried until
-			// the model genuinely produced a non-empty section summary (never a vacuous pass), failing
-			// loudly if NO attempt across the loop did.
-			const { conversation, before } = await retryUntil(
-				'produce a non-empty compaction section summary',
+			const best = await retryUntil(
+				'produce a nonempty recap while preserving the newest exchange',
 				async () => {
-					const attempt = createConversation({ summarize })
-					seedConversation(attempt)
-					const attemptBefore = attempt.view().length
-					const section = await attempt.compact()
-					return { conversation: attempt, before: attemptBefore, section }
+					const conversation = createConversation({ summarize })
+					seedConversation(conversation)
+					const seeded = conversation.messages()
+					const before = conversation.view().length
+					const section = await conversation.compact()
+					return {
+						seeded,
+						before,
+						section,
+						live: conversation.messages(),
+						view: conversation.view(),
+					}
 				},
-				(value) => value.section !== undefined && value.section.summary.trim().length > 0,
+				(tried) => {
+					try {
+						expect(tried.section?.summary.trim().length).toBeGreaterThan(0)
+						expect(tried.section?.messages).toEqual(tried.seeded.slice(0, 2))
+						expect(tried.live).toEqual(tried.seeded.slice(2))
+						expect(tried.view.map(({ role, content }) => ({ role, content }))).toEqual([
+							{
+								role: 'assistant',
+								content: `${CONVERSATION_RECAP_PREFIX}${tried.section?.summary}`,
+							},
+							...tried.seeded.slice(2).map(({ role, content }) => ({ role, content })),
+						])
+						expect(tried.view.length).toBeLessThan(tried.before)
+						return true
+					} catch {
+						return false
+					}
+				},
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
-
-			const section = conversation.sections[0]
-			expect(section).toBeDefined()
-			expect((section?.summary ?? '').trim().length).toBeGreaterThan(0)
-			// view() SHRANK: four live turns folded into ONE section summary message.
-			const after = conversation.view().length
-			expect(after).toBeLessThan(before)
-			expect(after).toBe(1)
+			expect(best.view).toHaveLength(3)
 		},
 		TIMEOUT,
 	)
 })
 
-describe('Agent (live) — AUTOMATIC compaction fires mid-run, the run continues on the compacted view', () => {
-	// The headline live proof of Chunk B: an agent with an injected conversation + a LOW `window`
-	// auto-compacts BETWEEN turns (compact-and-continue) during a REAL multi-turn run, then
-	// produces a valid final answer THROUGH the compacted context. The deterministic loop trigger
-	// is pinned in tests/src/core/agents/Agent.test.ts; here a genuine model drives the tool-call
-	// turn that crosses the threshold, the conversation's REAL-model summarizer folds the tail, and
-	// the model answers from the compacted view. Warmed, no skipIf, no mocks. Recipe retuned:
-	// summarizer num_predict 256→64, bounded retry attempts=3. Assertion strategy:
-	// STRUCTURAL only (section count + non-empty summary, non-empty non-partial final answer).
-
+describe('Agent (live) — automatic compaction folds an older exchange mid-run', () => {
 	const summarize = createLiveSummarizer(TIMEOUT)
-
-	// A no-args lookup tool returning a sentinel the model cannot derive on its own — so a final
-	// answer carrying it proves the multi-turn round-trip survived compaction (the model called the
-	// tool, the loop compacted the tail BETWEEN turns, then the model produced a final turn USING
-	// the fed-back result THROUGH the compacted view).
 	const SENTINEL = '8254'
 
 	it(
-		'a real multi-turn run with window set folds the tail mid-run + answers from the compacted view',
+		'folds after the lookup response and continues with the active exchange intact',
 		async () => {
-			// Bounded retry, explicit attempts=3 over the 2B model's tool-use
-			// nondeterminism — each attempt is a FRESH conversation + agent. Retry until an attempt
-			// genuinely (a) auto-compacted mid-run AND (b) produced a valid (non-empty, non-partial)
-			// final answer THROUGH the compacted view. FAIL loudly if NO attempt across the loop
-			// achieved it.
 			const best = await retryUntil(
-				'auto-compact mid-run and produce a valid final answer through the compacted view',
+				'fold the older pair after lookup_code and finish with its code',
 				async () => {
-					const conversations = createConversationManager({ summarize, keep: 1 })
-					const conversation = conversations.add() // auto-activates — the agent's message source
-					const tools = createToolManager()
-					tools.add(
-						createTool({
-							name: 'lookup_code',
-							description: 'Look up the secret access code. Takes no arguments.',
-							parameters: { type: 'object', properties: {} },
-							execute: () => ({ code: SENTINEL }),
-						}),
-					)
-					const agent = createAgent(createLiveOllama(), {
-						system:
-							'You MUST call the lookup_code tool to obtain the secret access code, then state the code in your final reply. Never invent a code.',
-						tools,
-						conversations,
-						window: createBudget({ max: 48, consumer: estimateMessages }),
-						timeout: TIMEOUT,
-						limit: 4,
-					})
-					agent.context.messages.add({
-						role: 'user',
-						content:
-							'What is the secret access code? You MUST call the lookup_code tool, then tell me the code.',
-					})
-					const stream = agent.stream()
-					const { tools: driven, result } = await driveAgent(stream)
-					return { conversation, result, tools: driven }
+					const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
+					try {
+						const conversations = createConversationManager({ summarize, keep: 3 })
+						const conversation = conversations.add()
+						const seeded = conversation.add(buildTurns(2))
+						const folds = createRecorder<[Section, number, readonly Message[]]>()
+						conversation.emitter.on('compact', (section) => {
+							folds.handler(section, proxy.requests.length, conversation.messages())
+						})
+						const tools = createToolManager()
+						tools.add(
+							createTool({
+								name: 'lookup_code',
+								description: 'Look up the secret access code. Takes no arguments.',
+								parameters: { type: 'object', properties: {} },
+								execute: () => ({ code: SENTINEL }),
+							}),
+						)
+						const agent = createAgent(
+							createOllama({
+								model: OLLAMA_CONFIG.model,
+								url: proxy.url,
+								options: { num_predict: 32, temperature: 0 },
+							}),
+							{
+								system:
+									'You MUST call the lookup_code tool to obtain the secret access code, then state the code in your final reply. Never invent a code.',
+								tools,
+								conversations,
+								window: createBudget({ max: 48, consumer: estimateMessages }),
+								timeout: TIMEOUT,
+								limit: 4,
+							},
+						)
+						const user = agent.context.messages.add({
+							role: 'user',
+							content:
+								'What is the secret access code? You MUST call the lookup_code tool, then tell me the code.',
+						})
+						const driven = await driveAgent(agent.stream())
+						return {
+							seeded,
+							user,
+							folds: folds.calls.map(([section, requests, live]) => ({ section, requests, live })),
+							sections: conversation.sections,
+							requests: proxy.requests.map((request) =>
+								wireMessages(request).filter((message) => message.role !== 'system'),
+							),
+							tools: driven.tools,
+							result: driven.result,
+						}
+					} finally {
+						await proxy.stop()
+					}
 				},
-				// A genuine mid-run auto-compaction: at least one section folded, authored by the
-				// live model (a non-empty summary). This is the load-bearing trigger proof.
-				(tried) =>
-					(tried.conversation.sections[0]?.summary.trim().length ?? 0) > 0 &&
-					tried.result.content.trim().length > 0,
+				(tried) => {
+					try {
+						expect(tried.sections).toHaveLength(1)
+						expect(tried.sections[0]?.messages).toEqual(tried.seeded)
+						expect(tried.sections[0]?.summary.trim().length).toBeGreaterThan(0)
+						expect(tried.folds.map((fold) => fold.requests)).toEqual([1])
+						expect(tried.folds[0]?.section).toEqual(tried.sections[0])
+						expect(tried.tools).toHaveLength(1)
+						const tool = tried.tools[0]
+						if (tool === undefined) return false
+						expect(tool.call.name).toBe('lookup_code')
+						expect(tool.call.arguments).toEqual({})
+						expect(tool.result).toEqual({
+							success: true,
+							id: tool.call.id,
+							name: 'lookup_code',
+							value: { code: SENTINEL },
+						})
+						const live = tried.folds[0]?.live ?? []
+						expect(live).toEqual([
+							tried.user,
+							{
+								id: expect.any(String),
+								role: 'assistant',
+								content: expect.any(String),
+								calls: [tool.call],
+							},
+							{
+								id: expect.any(String),
+								role: 'tool',
+								content: JSON.stringify({ code: SENTINEL }),
+								call: tool.call.id,
+							},
+						])
+						expect(tried.requests).toEqual([
+							[
+								...tried.seeded.map(({ role, content }) => ({ role, content })),
+								{ role: 'user', content: tried.user.content },
+							],
+							[
+								{
+									role: 'assistant',
+									content: `${CONVERSATION_RECAP_PREFIX}${tried.sections[0]?.summary}`,
+								},
+								{ role: 'user', content: tried.user.content },
+								{
+									role: 'assistant',
+									content: live[1]?.content,
+									tool_calls: [{ function: { name: 'lookup_code', arguments: {} } }],
+								},
+								{ role: 'tool', content: JSON.stringify({ code: SENTINEL }) },
+							],
+						])
+						expect(tried.result.partial).toBe(false)
+						expect(tried.result.content).toContain(SENTINEL)
+						return true
+					} catch {
+						return false
+					}
+				},
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
-
-			// (a) AUTOMATIC compaction fired mid-run — at least one section, authored by the live
-			// model (a non-empty summary), now exists on the injected conversation.
-			expect(best.conversation.sections.length).toBeGreaterThan(0)
-			expect((best.conversation.sections[0]?.summary ?? '').trim().length).toBeGreaterThan(0)
-			// (b) The run produced a VALID final answer THROUGH the compacted view — non-empty and
-			// not partial — proving the loop continued correctly on the compacted context.
-			expect(best.result.content.trim().length).toBeGreaterThan(0)
 			expect(best.result.partial).toBe(false)
-			// (c) The emitted `tool` chunk(s) from the SAME run carry [call, result] shape — the
-			// call names the registered tool, and its result is defined (never dropped) — proving
-			// the tool-chunk payload the agent stream emits, not the eventual final answer alone.
-			expect(best.tools.length).toBeGreaterThan(0)
-			for (const driven of best.tools) {
-				expect(driven.call.name).toBe('lookup_code')
-				expect(driven.result).toBeDefined()
-			}
+			expect(best.result.content).toContain(SENTINEL)
 		},
 		TIMEOUT,
 	)
 })
 
-describe('Agent (live) — repeated auto-compaction stays COHERENT across MULTIPLE folds', () => {
-	// THE production proof of Chunk B's hardening: a REAL multi-turn run that forces MULTIPLE
-	// compactions (≥ 2 sections) and shows the agent stays coherent THROUGH the repeatedly-compacted
-	// context — a valid, non-partial final answer with NON-EMPTY model-written section summaries.
-	// The deterministic pre-first-turn / non-fatal / futile paths are pinned in Agent.test.ts; here
-	// a genuine model drives several tool-call turns, the real-model summarizer folds the tail on
-	// EACH between-turns check (a tiny window crossed every turn), and the model answers from the
-	// multiply-compacted view. Warmed, no skipIf, bounded-retry (attempts=3).
-	// Assertion strategy: STRUCTURAL only.
+describe('Agent (live) — dependent lookups cause repeated mid-run compaction', () => {
 	const summarize = createLiveSummarizer(TIMEOUT)
-
-	// The forced tool call (the proven reliable pattern from the preceding block): a no-arg lookup the
-	// system prompt MANDATES, returning a sentinel the model cannot derive — so a final answer that
-	// states it could only come THROUGH the compacted context. keep: 1 retains the most recent message
-	// verbatim across each fold so the run never loses its immediate footing.
 	const SENTINEL = '7193'
 
 	it(
-		'forces ≥ 2 mid-run folds and produces a valid final answer through the repeatedly-compacted context',
+		'folds each older pair after sequential tool responses and finishes with the secret',
 		async () => {
-			// Bounded retry, explicit attempts=3 over the 2B model's tool-use
-			// nondeterminism — each attempt is a FRESH conversation + agent. Retry until an attempt
-			// genuinely (a) folded ≥ 2 sections (each a non-empty model-written summary) AND (b)
-			// produced a valid (non-empty, non-partial) final answer THROUGH the repeatedly-compacted
-			// view. FAIL loudly if NO attempt across the loop achieved it.
 			const best = await retryUntil(
-				'fold >= 2 sections and produce a valid, non-partial final answer through the repeatedly-compacted view',
+				'fold both older pairs between dependent calls and finish with the secret code',
 				async () => {
-					const conversations = createConversationManager({ summarize, keep: 1 })
-					const conversation = conversations.add() // auto-activates — the agent's message source
-					const tools = createToolManager()
-					tools.add(
-						createTool({
-							name: 'lookup_secret',
-							description: 'Look up the secret access code. Takes no arguments.',
-							parameters: { type: 'object', properties: {} },
-							execute: () => ({ code: SENTINEL }),
-						}),
-					)
-					const agent = createAgent(createLiveOllama(), {
-						system:
-							'You MUST call the lookup_secret tool to obtain the secret access code, then state the ' +
-							'code in your final reply. Never invent a code.',
-						tools,
-						conversations,
-						window: createBudget({ max: 40, consumer: estimateMessages }),
-						timeout: TIMEOUT,
-						limit: 8,
-					})
-					// SEED a prior multi-turn history (a resumed / long conversation) — six turns whose
-					// absolute footprint already exceeds the tiny window, so the PRE-FIRST-TURN check
-					// folds them into the first section before the model is ever called.
-					conversation.add([
-						{
+					const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
+					try {
+						const conversations = createConversationManager({ summarize, keep: 5 })
+						const conversation = conversations.add()
+						const seeded = conversation.add(buildTurns(4))
+						const challenge = 'r7k2'
+						const folds = createRecorder<[Section, number, readonly Message[]]>()
+						conversation.emitter.on('compact', (section) => {
+							folds.handler(section, proxy.requests.length, conversation.messages())
+						})
+						const tools = createToolManager()
+						tools.add(createChallengeTools(challenge, SENTINEL))
+						const agent = createAgent(
+							createOllama({
+								model: OLLAMA_CONFIG.model,
+								url: proxy.url,
+								options: { num_predict: 32, temperature: 0 },
+							}),
+							{
+								system:
+									'You MUST first call lookup_challenge. Wait for its result, then call lookup_secret with the returned challenge. State the secret code in your final reply. Never invent a challenge or code.',
+								tools,
+								conversations,
+								window: createBudget({ max: 40, consumer: estimateMessages }),
+								timeout: TIMEOUT,
+								limit: 8,
+							},
+						)
+						const user = agent.context.messages.add({
 							role: 'user',
-							content: 'Hi, I am planning a trip and need help organizing the details.',
-						},
-						{ role: 'assistant', content: 'Happy to help — tell me your destination and dates.' },
-						{ role: 'user', content: 'Kyoto, in early April, for about a week with my family.' },
-						{
-							role: 'assistant',
-							content: 'Great — early April is cherry-blossom season in Kyoto.',
-						},
-						{
-							role: 'user',
-							content: 'We are interested in temples, gardens, and traditional food.',
-						},
-						{
-							role: 'assistant',
-							content: 'Fushimi Inari, Kinkaku-ji, and a kaiseki dinner are musts.',
-						},
-					])
-					agent.context.messages.add({
-						role: 'user',
-						content:
-							'Before we continue planning, what is the secret access code? You MUST call the ' +
-							'lookup_secret tool, then tell me the code.',
-					})
-					const stream = agent.stream()
-					await collect(stream.events)
-					const result = await stream.result
-					return { conversation, result }
+							content:
+								'What is the secret access code? Call lookup_challenge first, then use its returned challenge with lookup_secret, then tell me the code.',
+						})
+						const driven = await driveAgent(agent.stream())
+						return {
+							seeded,
+							user,
+							challenge,
+							usages: driven.usages,
+							folds: folds.calls.map(([section, requests, live]) => ({ section, requests, live })),
+							sections: conversation.sections,
+							requests: proxy.requests.map((request) =>
+								wireMessages(request).filter((message) => message.role !== 'system'),
+							),
+							tools: driven.tools,
+							result: driven.result,
+						}
+					} finally {
+						await proxy.stop()
+					}
 				},
-				// MULTIPLE folds: at least TWO sections, each authored by the live model (a non-empty
-				// summary). This is the load-bearing multi-compaction proof.
-				(tried) =>
-					tried.conversation.sections.length >= 2 &&
-					tried.conversation.sections.every((section) => section.summary.trim().length > 0) &&
-					tried.result.content.trim().length > 0 &&
-					!tried.result.partial,
+				(tried) => {
+					try {
+						expect(tried.sections).toHaveLength(2)
+						expect(tried.sections.map((section) => section.messages)).toEqual([
+							tried.seeded.slice(0, 2),
+							tried.seeded.slice(2),
+						])
+						for (const section of tried.sections)
+							expect(section.summary.trim().length).toBeGreaterThan(0)
+						expect(tried.folds.map((fold) => fold.requests)).toEqual([1, 2])
+						expect(tried.folds.map((fold) => fold.section)).toEqual(tried.sections)
+						expect(tried.tools).toHaveLength(2)
+						const [lookup, secret] = tried.tools
+						if (lookup === undefined || secret === undefined) return false
+						expect(lookup.call.name).toBe('lookup_challenge')
+						expect(lookup.call.arguments).toEqual({})
+						expect(lookup.result).toEqual({
+							success: true,
+							id: lookup.call.id,
+							name: 'lookup_challenge',
+							value: { challenge: tried.challenge },
+						})
+						expect(secret.call.name).toBe('lookup_secret')
+						expect(secret.call.arguments).toEqual({ challenge: tried.challenge })
+						expect(secret.result).toEqual({
+							success: true,
+							id: secret.call.id,
+							name: 'lookup_secret',
+							value: { code: SENTINEL },
+						})
+						const first = tried.folds[0]?.live ?? []
+						const second = tried.folds[1]?.live ?? []
+						expect(first).toEqual([
+							...tried.seeded.slice(2),
+							tried.user,
+							{
+								id: expect.any(String),
+								role: 'assistant',
+								content: expect.any(String),
+								calls: [lookup.call],
+							},
+							{
+								id: expect.any(String),
+								role: 'tool',
+								content: JSON.stringify({ challenge: tried.challenge }),
+								call: lookup.call.id,
+							},
+						])
+						expect(second).toEqual([
+							...first.slice(2),
+							{
+								id: expect.any(String),
+								role: 'assistant',
+								content: expect.any(String),
+								calls: [secret.call],
+							},
+							{
+								id: expect.any(String),
+								role: 'tool',
+								content: JSON.stringify({ code: SENTINEL }),
+								call: secret.call.id,
+							},
+						])
+						const active = [
+							{ role: 'user', content: tried.user.content },
+							{
+								role: 'assistant',
+								content: first[3]?.content,
+								tool_calls: [{ function: { name: 'lookup_challenge', arguments: {} } }],
+							},
+							{ role: 'tool', content: JSON.stringify({ challenge: tried.challenge }) },
+						]
+						const recaps = tried.sections.map((section) => ({
+							role: 'assistant',
+							content: `${CONVERSATION_RECAP_PREFIX}${section.summary}`,
+						}))
+						expect(tried.requests).toEqual([
+							[
+								...tried.seeded.map(({ role, content }) => ({ role, content })),
+								{ role: 'user', content: tried.user.content },
+							],
+							[
+								...recaps.slice(0, 1),
+								...tried.seeded.slice(2).map(({ role, content }) => ({ role, content })),
+								...active,
+							],
+							[
+								...recaps,
+								...active,
+								{
+									role: 'assistant',
+									content: second[3]?.content,
+									tool_calls: [
+										{
+											function: {
+												name: 'lookup_secret',
+												arguments: { challenge: tried.challenge },
+											},
+										},
+									],
+								},
+								{ role: 'tool', content: JSON.stringify({ code: SENTINEL }) },
+							],
+						])
+						expect(tried.result.partial).toBe(false)
+						expect(tried.result.content).toContain(SENTINEL)
+						return true
+					} catch (error) {
+						console.error(
+							inspect(
+								{ error, tried },
+								{ depth: null, maxArrayLength: null, maxStringLength: null },
+							),
+						)
+						return false
+					}
+				},
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
-
-			// (a) MULTIPLE compactions fired mid-run — at least TWO sections now exist on the injected
-			// conversation, EACH authored by the live model (a non-empty, real one-sentence digest).
-			expect(best.conversation.sections.length).toBeGreaterThanOrEqual(2)
-			for (const section of best.conversation.sections) {
-				expect(section.summary.trim().length).toBeGreaterThan(0)
-			}
-			// (b) The run stayed COHERENT through the repeatedly-compacted context — a valid, non-partial
-			// final answer produced AFTER multiple folds (proving each rebuilt working array stayed a
-			// usable prompt the model could keep reasoning from).
-			expect(best.result.content.trim().length).toBeGreaterThan(0)
+			expect(best.sections).toHaveLength(2)
 			expect(best.result.partial).toBe(false)
+			expect(best.result.content).toContain(SENTINEL)
 		},
 		TIMEOUT,
 	)

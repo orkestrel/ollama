@@ -1,4 +1,4 @@
-import type { ContextFormat, ConversationInterface, Message } from '@orkestrel/agent'
+import type { ConversationInterface, Message } from '@orkestrel/agent'
 import type { SystemBrowser, SystemBrowserOptions } from '@orkestrel/browser/server'
 import { findSystemBrowsers } from '@orkestrel/browser/server'
 import { isRecord, isString } from '@orkestrel/contract'
@@ -26,8 +26,6 @@ export interface LiveProviderOptions {
 	readonly predict?: number
 	/** The sampling temperature; defaults to `0` for reproducible fixtures. */
 	readonly temperature?: number
-	/** The provider's context-framing default; omission leaves framing undefined. */
-	readonly format?: ContextFormat
 	/** The Ollama `num_ctx` window in tokens; omission leaves the daemon's default window. */
 	readonly context?: number
 	/** The provider's deadline for one turn in milliseconds; omission leaves the provider's default. */
@@ -39,7 +37,7 @@ export interface LiveProviderOptions {
 /**
  * Builds a concrete provider against the selected live daemon and warmed model.
  *
- * @param options - Optional prediction, temperature, framing, window, turn-deadline, and thinking overrides
+ * @param options - Optional prediction, temperature, window, turn-deadline, and thinking overrides
  * @returns A concrete provider configured for the service axis
  */
 export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider {
@@ -51,7 +49,6 @@ export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider 
 			temperature: options?.temperature ?? 0,
 			...(options?.context === undefined ? {} : { num_ctx: options.context }),
 		},
-		...(options?.format === undefined ? {} : { format: options.format }),
 		...(options?.turn === undefined ? {} : { timeout: options.turn }),
 		...(options?.think === undefined ? {} : { think: options.think }),
 	})

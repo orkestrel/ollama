@@ -2,7 +2,7 @@
 // relay consumers. Local recording servers capture the requests; canned or unreachable
 // daemon transports keep these proofs independent of a running Ollama service.
 
-import type { ContextFormat, Message } from '@orkestrel/agent'
+import type { ContextSectionFormat, InstructionInterface, Message } from '@orkestrel/agent'
 import {
 	CONVERSATION_RECAP_PREFIX,
 	createAgent,
@@ -328,18 +328,12 @@ describe('AgentContext (provider-behavior) — a constraining instruction reache
 
 describe('AgentContext (provider-behavior) — a CUSTOM format still reaches the wire framed correctly', () => {
 	it(
-		'a provider.format XML override frames the instruction into the request body with its open/render/close shape',
+		'an instruction-manager XML override frames the instruction into the request body with its open/render/close shape',
 		async () => {
-			// Recipe: { num_predict: 8, temperature: 0 }. Assertion strategy: the provider's format cascade level is applied
-			// by build() and the RENDERED XML group ends up in the request the provider sends —
-			// proving a customized format reaches the wire correctly (the framing is
-			// asserted on the wire, not inferred from whether the model "understood" it).
-			const format: ContextFormat = {
-				instructions: {
-					open: '<instructions>',
-					render: (one) => `<instruction>${one.content}</instruction>`,
-					close: '</instructions>',
-				},
+			const format: ContextSectionFormat<InstructionInterface> = {
+				open: '<instructions>',
+				render: (one) => `<instruction>${one.content}</instruction>`,
+				close: '</instructions>',
 			}
 			const proxy = await createRecordingProxy()
 			try {
@@ -347,9 +341,8 @@ describe('AgentContext (provider-behavior) — a CUSTOM format still reaches the
 					model: 'test-model',
 					url: proxy.url,
 					options: { num_predict: 8, temperature: 0 },
-					format,
 				})
-				const instructions = createInstructionManager()
+				const instructions = createInstructionManager({ format })
 				instructions.add({
 					name: 'always-no',
 					content:
@@ -445,9 +438,6 @@ describe('Conversation.reference (provider-behavior) — cross-conversation attr
 	it(
 		'writes B’s decision + provenance into A’s active workspace, and the reference text reaches the request the provider sends',
 		async () => {
-			// Conversation B (the planning thread) — its rollup summary carries the decision. We craft
-			// the summary directly (a stub digest) so the probe is about the REFERENCE plumbing +
-			// provenance, not about a model-authored summary.
 			const planning = createConversation({ id: 'planning' })
 			planning.add([
 				{ role: 'user', content: 'Which database should we use?' },
@@ -455,7 +445,6 @@ describe('Conversation.reference (provider-behavior) — cross-conversation attr
 			])
 			const block = planning.reference({
 				label: 'planning',
-				summary: false,
 				messages: planning.search('Postgres'),
 			})
 			// DETERMINISTIC: the rendered reference block carries the fact and its provenance label.
@@ -527,7 +516,7 @@ describe('Conversation.reference (provider-behavior) — cherry-pick ONE relevan
 			// CHERRY-PICK exactly the relevant turn (as the recommended flow does).
 			const picked = other.search('endpoint')
 			expect(picked).toHaveLength(1)
-			const block = other.reference({ label: 'planning', summary: false, messages: picked })
+			const block = other.reference({ label: 'planning', messages: picked })
 
 			// DETERMINISTIC: the rendered reference carries ONLY the cherry-picked message — none of
 			// the four noise turns leaked in (cherry-pick, not a full history dump).

@@ -155,7 +155,7 @@ describe('OllamaJudge', () => {
 		expect(
 			judge.read({ ...JUDGE_RAW_NOUL, eval_count: -1 }, JUDGE_NOUL_REQUEST).usage,
 		).toBeUndefined()
-		expect(() => judge.body({ state: '', questions: {} })).toThrow(JudgeError)
+		expect(() => judge.encode({ state: '', questions: {} })).toThrow(JudgeError)
 	})
 	it('rejects invalid calibration before transport', () => {
 		expect(

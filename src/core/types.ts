@@ -40,9 +40,7 @@ export interface WireChatRequest {
 	}>
 	/**
 	 * Holds the `/api/chat` structured-output constraint — a JSON-Schema object forwarded
-	 * verbatim from the per-call `ProviderStreamOptions.schema`. This is not
-	 * `OllamaOptions.format` (the unrelated prompt-context framing); only present
-	 * when a call supplies a `schema`.
+	 * verbatim from the per-call `ProviderStreamOptions.schema`. Only present when a call supplies a `schema`.
 	 */
 	readonly format?: Readonly<Record<string, unknown>>
 }

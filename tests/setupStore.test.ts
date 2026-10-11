@@ -25,7 +25,7 @@ import { collect, requireValue } from '@orkestrel/test'
 import { createScratch, readInventory } from '@orkestrel/test/server'
 import { createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/core'
-import { readdirSync, readFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
@@ -269,6 +269,7 @@ describe('real line projection', () => {
 		}
 	}, 60_000)
 	it('records a cart click and one submission, removes the click, and replays exactly one order for the other buyer', async () => {
+		mkdirSync(resolveJourneyPath(), { recursive: true })
 		const fresh = await createStoreServer()
 		const root = createScratch({ parent: resolveJourneyPath(), prefix: 'journey-proof-' })
 		const browser = await createPageBrowser()

@@ -1,4 +1,4 @@
-import type { ContextFormat, Message } from '@orkestrel/agent'
+import type { Message } from '@orkestrel/agent'
 import { createAbort } from '@orkestrel/abort'
 import { AgentProvider, isProviderAbortError, isProviderError } from '@orkestrel/agent'
 import { createRecorder, waitForDelay } from '@orkestrel/test'
@@ -13,14 +13,6 @@ import {
 	waitForRequest,
 	WEATHER_TOOL,
 } from '../../setupServer.js'
-
-const FRAMING: ContextFormat = {
-	instructions: {
-		open: '<instructions>',
-		render: (one) => `<instruction>${one.content}</instruction>`,
-		close: '</instructions>',
-	},
-}
 
 /** The real per-call deadline the deadline tests arm, in milliseconds. */
 const DEADLINE_MS = 25
@@ -57,25 +49,12 @@ describe('OllamaProvider (pre-aborted)', () => {
 	})
 })
 
-describe('OllamaProvider (context-framing format — no network)', () => {
-	it('exposes the configured ContextFormat verbatim (satisfies the optional ProviderInterface.format)', () => {
-		const provider = new OllamaProvider({
-			model: 'm',
-			url: 'http://localhost:11434',
-			format: FRAMING,
-		})
-
-		expect(provider.format).toBe(FRAMING)
-	})
-
-	it("defaults format to undefined when omitted (the framing-agnostic default ⇒ core's built-ins)", () => {
-		const provider = new OllamaProvider({ model: 'm', url: 'http://localhost:11434' })
-
-		expect(provider.format).toBeUndefined()
-	})
-})
-
 describe('OllamaProvider (wire seams)', () => {
+	it('forwards configured replay and defaults to none', () => {
+		expect(new OllamaProvider({ model: 'test-model', replay: 'all' }).replay).toBe('all')
+		expect(new OllamaProvider({ model: 'test-model' }).replay).toBe('none')
+	})
+
 	it('inherits the shared engine and creates independent framing state', () => {
 		const provider = new OllamaProvider({ model: 'test-model' })
 		const first = provider.frame()
@@ -108,7 +87,7 @@ describe('OllamaProvider (wire seams)', () => {
 	it('projects a schema and minimal tool without adding absent tool fields', () => {
 		const provider = new OllamaProvider({ model: 'test-model' })
 		const schema = { type: 'object', properties: { answer: { type: 'string' } } }
-		const body = provider.body({
+		const body = provider.encode({
 			messages: [],
 			tools: [{ name: 'weather' }],
 			options: { schema },
@@ -120,7 +99,7 @@ describe('OllamaProvider (wire seams)', () => {
 
 	it('never sends a tool title or annotations on the wire', () => {
 		const provider = new OllamaProvider({ model: 'test-model' })
-		const body = provider.body({
+		const body = provider.encode({
 			messages: [],
 			tools: [
 				{
@@ -462,17 +441,12 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 		}
 	})
 
-	// Recipe: 'hi' / a context-framing format configured. Assertion: provider-
-	// behavior — the same-name `format` (context-framing) NEVER crosses onto the
-	// Ollama wire body.
-	// bounded by abort-once-recorded, no generation awaited.
-	it('NEVER sends the context-framing format on the /api/chat wire (the same-name collision guard)', async () => {
+	it('omits the wire format when no per-call schema is supplied', async () => {
 		const proxy = await createRecordingProxy()
 		try {
 			const provider = new OllamaProvider({
 				model: 'test-model',
 				url: proxy.url,
-				format: FRAMING,
 			})
 			const abort = createAbort()
 			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})

@@ -16,7 +16,6 @@
 // runs its readiness gate at import; that is why the import is deferred until the
 // environment points at the fixture.
 
-import type { ContextFormat } from '@orkestrel/agent'
 import { createConversation } from '@orkestrel/agent'
 import { createScratch } from '@orkestrel/test/server'
 import { join } from 'node:path'
@@ -79,15 +78,6 @@ const READY_CHAT: ChatAnswer = { status: 200, content: FIXTURE_CONTENT, park: fa
 
 /** The instruction `createLiveSummarizer` appends as the final user turn. */
 const SUMMARY_INSTRUCTION = 'Summarize the conversation so far concisely in one sentence.'
-
-/** A framing default used to prove the option reaches the built provider unchanged. */
-const FRAMING: ContextFormat = {
-	instructions: {
-		open: '<instructions>',
-		render: (one) => `<instruction>${one.content}</instruction>`,
-		close: '</instructions>',
-	},
-}
 
 /** Start the fixture daemon, answering `/api/tags` and `/api/chat` as Ollama does. */
 async function createDaemon(): Promise<DaemonInterface> {
@@ -338,11 +328,6 @@ describe('createLiveOllama', () => {
 		await provider.generate([createUserMessage('hi')], AbortSignal.timeout(5000))
 
 		expect(latestChat().options).toEqual({ num_predict: 7, temperature: 0.5 })
-	})
-
-	it('exposes a requested framing default and leaves it undefined when omitted', () => {
-		expect(createLiveOllama({ format: FRAMING }).format).toBe(FRAMING)
-		expect(createLiveOllama().format).toBeUndefined()
 	})
 
 	it('carries a requested context window to the wire as num_ctx', async () => {

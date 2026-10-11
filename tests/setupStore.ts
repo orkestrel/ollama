@@ -974,7 +974,7 @@ export function createTimedProvider(
 	return {
 		id: provider.id,
 		name: provider.name,
-		format: provider.format,
+		...(provider.replay === undefined ? {} : { replay: provider.replay }),
 		async generate(messages, signal, tools, options) {
 			const start = performance.now()
 			try {

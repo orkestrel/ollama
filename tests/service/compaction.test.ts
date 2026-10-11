@@ -91,7 +91,7 @@ describe('Conversation (live) — compaction summarizes via the REAL model', () 
 	const summarize = createLiveSummarizer(TIMEOUT)
 
 	it(
-		'compact() folds the live tail into a section + rollup, both authored by the live model, and view() shrinks',
+		'compact() folds the live tail into a section authored by the live model, and view() shrinks',
 		async () => {
 			// Bounded retry (explicit attempts=3) over the small model's
 			// nondeterminism: each attempt is a FRESH conversation seeded + compacted, retried until
@@ -110,12 +110,9 @@ describe('Conversation (live) — compaction summarizes via the REAL model', () 
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
-			// The model authored a NON-EMPTY section summary (a real digest of the folded turns) and a
-			// NON-EMPTY rollup (a second real summarizer call over the section summaries).
 			const section = conversation.sections[0]
 			expect(section).toBeDefined()
 			expect((section?.summary ?? '').trim().length).toBeGreaterThan(0)
-			expect((conversation.summary ?? '').trim().length).toBeGreaterThan(0)
 			// view() SHRANK: four live turns folded into ONE section summary message.
 			const after = conversation.view().length
 			expect(after).toBeLessThan(before)

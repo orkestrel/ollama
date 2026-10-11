@@ -44,7 +44,7 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 			...(options.timeout === undefined ? {} : { timeout: options.timeout }),
 			...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 			...(options.headers === undefined ? {} : { headers: options.headers }),
-			...(options.format === undefined ? {} : { format: options.format }),
+			...(options.replay === undefined ? {} : { replay: options.replay }),
 		})
 		this.#model = options.model
 		this.#keepAlive = options.keepAlive ?? DEFAULT_KEEP_ALIVE
@@ -71,7 +71,7 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 	 * @param request - The conversation, advertised tools, and per-call overrides
 	 * @returns The `/api/chat` body with streaming enabled
 	 */
-	body(request: ProviderRequest): WireChatRequest {
+	encode(request: ProviderRequest): WireChatRequest {
 		return {
 			model: this.#model,
 			messages: mapMessages(request.messages),

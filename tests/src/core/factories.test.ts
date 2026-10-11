@@ -62,7 +62,7 @@ describe('createOllama (shape)', () => {
 // unreachable upstream cannot affect the request captured before forwarding, so the
 // suite passes with the daemon down.
 describe('createOllama (defaults)', () => {
-	it('defaults the destination and framing while accepting a custom transport', async () => {
+	it('defaults the destination and replay while accepting a custom transport', async () => {
 		const transport = createRecordingTransport(createStreamingTransport([]))
 		const provider = createOllama({
 			model: 'test-model',
@@ -71,14 +71,13 @@ describe('createOllama (defaults)', () => {
 
 		expect(await provider.generate([], createAbort().signal)).toEqual({ content: '' })
 		expect(transport.requests[0]?.path).toBe('/api/chat')
-		expect(provider.format).toBeUndefined()
+		expect(provider.replay).toBe('none')
 	})
 
-	it('accepts inherited transport, headers, timeout, and framing with Ollama options', async () => {
+	it('accepts inherited transport, headers, timeout, and replay with Ollama options', async () => {
 		const proxy = await createRecordingProxy()
 		const transport = createRecordingTransport()
 		const signals = createRecorder<readonly [AbortSignal]>()
-		const format = { instructions: { open: '<instructions>', close: '</instructions>' } }
 		try {
 			const provider = createOllama({
 				model: 'test-model',
@@ -92,11 +91,11 @@ describe('createOllama (defaults)', () => {
 					return { 'x-provider': 'factory' }
 				},
 				timeout: 1_000,
-				format,
+				replay: 'turn',
 			})
 			await provider.generate([], createAbort().signal).catch(() => {})
 
-			expect(provider.format).toBe(format)
+			expect(provider.replay).toBe('turn')
 			expect(transport.requests[0]?.path).toBe('/api/chat')
 			expect(signals.count).toBe(1)
 			expect(proxy.requests[0]?.headers['x-provider']).toBe('factory')

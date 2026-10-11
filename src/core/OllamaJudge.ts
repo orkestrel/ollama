@@ -110,7 +110,7 @@ export class OllamaJudge extends AgentJudge implements AgentJudgeInterface {
 	 * @returns The raw non-streaming body with fixed readout sampling
 	 * @throws JudgeError Thrown with code `QUESTION` for multiple questions or unsupported question content
 	 */
-	body(request: JudgeRequest): WireGenerateRequest {
+	encode(request: JudgeRequest): WireGenerateRequest {
 		const entries = Object.entries(request.questions)
 		const entry = entries[0]
 		if (entries.length !== 1 || entry === undefined)

@@ -2,7 +2,7 @@
 // repository's own `guides/README.md` manifest. The constants that follow are this
 // package's own, as is the executed section that closes the file.
 
-import type { ContextFormat, JudgeQuestion } from '@orkestrel/agent'
+import type { ContextSectionFormat, InstructionInterface, JudgeQuestion } from '@orkestrel/agent'
 import { GuideCommand } from '@orkestrel/guide/server'
 import { readInventory } from '@orkestrel/test/server'
 import { createVitest } from 'vitest/node'
@@ -42,6 +42,8 @@ await new GuideCommand({
 	const { computeSymbolKey, findMissingSymbols } = await import('@orkestrel/guide')
 	const {
 		computeReading,
+		createAgent,
+		createInstructionManager,
 		createSystemOneJudge,
 		createRelay,
 		createRelayProvider,
@@ -341,9 +343,9 @@ await new GuideCommand({
 					criteria: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'],
 				}).size,
 			).toBe(10)
-			expect(judge.body(JUDGE_NOUL_REQUEST).keep_alive).toBe(0)
+			expect(judge.encode(JUDGE_NOUL_REQUEST).keep_alive).toBe(0)
 			expect(
-				new OllamaJudge({ model: JUDGE_WIRE_NOUL.model, system: MICA_SYSTEM }).body(
+				new OllamaJudge({ model: JUDGE_WIRE_NOUL.model, system: MICA_SYSTEM }).encode(
 					JUDGE_NOUL_REQUEST,
 				).keep_alive,
 			).toBe('5m')
@@ -513,7 +515,7 @@ await new GuideCommand({
 			})
 			const judge = new OllamaJudge(options)
 			const request = { state: 'Approved.', questions: { approval: question } }
-			expect(judge.body(request).prompt).toBe(prompt)
+			expect(judge.encode(request).prompt).toBe(prompt)
 			expect(judge.read(response, request).model).toBe(identity)
 		})
 		const guideText = requireValue(files[GUIDE_SPEC], `Missing file: ${GUIDE_SPEC}`)
@@ -667,7 +669,7 @@ await new GuideCommand({
 		// driven directly with no socket and no daemon.
 		it('answers the seam fence with the projected body, the framed record, and the read increment', () => {
 			const provider = new OllamaProvider({ model: 'qwen3.5:2b-q4_K_M', keepAlive: '9m' })
-			const request = provider.body({
+			const request = provider.encode({
 				messages: [{ id: '1', role: 'user', content: 'Say hello.' }],
 				options: { think: true },
 			})
@@ -832,18 +834,26 @@ await new GuideCommand({
 			)
 		})
 
-		// `guides/ollama.md` § Context framing: `provider.format` is the ContextFormat passed in.
-		it('createOllama exposes the framing default it was given, and undefined without one', () => {
-			const format: ContextFormat = {
-				instructions: {
-					open: '<instructions>',
-					render: (instruction) => `<instruction>${instruction.content}</instruction>`,
-					close: '</instructions>',
-				},
+		it('frames instructions through the manager when the real agent builds context', () => {
+			const format: ContextSectionFormat<InstructionInterface> = {
+				open: '<instructions>',
+				render: (instruction) => `<instruction>${instruction.content}</instruction>`,
+				close: '</instructions>',
 			}
-
-			expect(createOllama({ model: 'qwen3.5:2b-q4_K_M', format }).format).toBe(format)
-			expect(createOllama({ model: 'qwen3.5:2b-q4_K_M' }).format).toBeUndefined()
+			const instructions = createInstructionManager({ format })
+			instructions.add({ name: 'concise', content: 'Answer briefly.' })
+			const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M' })
+			const agent = createAgent(provider, { instructions })
+			expect(
+				agent.context
+					.build()
+					.some(
+						(message) =>
+							message.content.includes('<instructions>') &&
+							message.content.includes('<instruction>Answer briefly.</instruction>') &&
+							message.content.includes('</instructions>'),
+					),
+			).toBe(true)
 		})
 	})
 })

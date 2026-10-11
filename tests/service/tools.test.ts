@@ -236,7 +236,7 @@ describe('Agent tool loop (live) — turn-limit exhaustion', () => {
 		'limit exhaustion with unresolved tool intent on the last allowed turn resolves partial, fires exhaust (not abort), then finish',
 		async () => {
 			// Source-verified semantics (0.0.6, dist/src/core/index.d.ts AgentEventMap.exhaust +
-			// RunOutcome.exhausted): when the loop exhausts `limit` while the LAST allowed turn
+			// AgentRunResult.exhausted): when the loop exhausts `limit` while the LAST allowed turn
 			// still requested tools, the run resolves `partial: true`, a dedicated `exhaust` event
 			// fires with the effective turn count `[limit]`, and `abort` does NOT fire — exhaustion
 			// is explicitly distinct from a cancel. `finish` still fires last, carrying the partial

@@ -344,3 +344,35 @@ export async function sampleTimerSpans(
 	}
 	return spans
 }
+
+/** Holds the unchanged default encoded chat prefix for context-control proofs. */
+export const OLLAMA_CONTEXT_PREFIX =
+	'{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true,"keep_alive":"5m","think":false'
+
+/** Holds independent and paired native chat context switches with their expected wire suffixes. */
+export const OLLAMA_CONTEXT_CASES = Object.freeze([
+	{ name: 'truncate false', control: { truncate: false }, suffix: ',"truncate":false' },
+	{ name: 'truncate true', control: { truncate: true }, suffix: ',"truncate":true' },
+	{ name: 'shift false', control: { shift: false }, suffix: ',"shift":false' },
+	{ name: 'shift true', control: { shift: true }, suffix: ',"shift":true' },
+	{
+		name: 'both false',
+		control: { truncate: false, shift: false },
+		suffix: ',"truncate":false,"shift":false',
+	},
+	{
+		name: 'both true',
+		control: { truncate: true, shift: true },
+		suffix: ',"truncate":true,"shift":true',
+	},
+	{
+		name: 'truncate false with shift true',
+		control: { truncate: false, shift: true },
+		suffix: ',"truncate":false,"shift":true',
+	},
+	{
+		name: 'truncate true with shift false',
+		control: { truncate: true, shift: false },
+		suffix: ',"truncate":true,"shift":false',
+	},
+] as const)

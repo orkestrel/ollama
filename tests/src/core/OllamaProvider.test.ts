@@ -4,7 +4,7 @@ import { AgentProvider, isProviderAbortError, isProviderError } from '@orkestrel
 import { createRecorder, waitForDelay } from '@orkestrel/test'
 import { OllamaProvider } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createUserMessage } from '../../setup.js'
+import { createUserMessage, OLLAMA_CONTEXT_PREFIX, OLLAMA_CONTEXT_CASES } from '../../setup.js'
 import {
 	createRecordingProxy,
 	createRefusingTransport,
@@ -487,6 +487,115 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 				{ role: 'system', content: 'You only ever answer with the single word: blue.' },
 				{ role: 'user', content: 'What is your favorite color?' },
 			])
+		} finally {
+			await proxy.stop()
+		}
+	})
+})
+
+describe('OllamaProvider (recording proxy — context controls)', () => {
+	// Recipe: 'hi' / no truncate, no shift. Assertion: provider-behavior — omission leaves
+	// the encoded body byte for byte at the default wire, with neither key present.
+	// bounded by abort-once-recorded, no generation awaited.
+	it('omits truncate and shift when neither option is set', async () => {
+		const proxy = await createRecordingProxy()
+		try {
+			const provider = new OllamaProvider({ model: 'test-model', url: proxy.url })
+			const abort = createAbort()
+			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
+
+			const request = proxy.requests[0]
+			if (request === undefined) throw new Error('no recorded request')
+			expect(request.text).toBe(`${OLLAMA_CONTEXT_PREFIX}}`)
+			expect('truncate' in request.body).toBe(false)
+			expect('shift' in request.body).toBe(false)
+		} finally {
+			await proxy.stop()
+		}
+	})
+
+	// Recipe: 'hi' / each of true and false for each switch alone, then mixed and both.
+	// Assertion: provider-behavior — a set value rides the wire as its own top-level key
+	// in the order truncate, shift, an unset one stays absent, and false survives.
+	// bounded by abort-once-recorded, no generation awaited.
+	it.each(OLLAMA_CONTEXT_CASES)('sends $name as top-level keys', async ({ control, suffix }) => {
+		const proxy = await createRecordingProxy()
+		try {
+			const provider = new OllamaProvider({ model: 'test-model', url: proxy.url, ...control })
+			const abort = createAbort()
+			const pending = provider.generate([createUserMessage('hi')], abort.signal).catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
+
+			const request = proxy.requests[0]
+			if (request === undefined) throw new Error('no recorded request')
+			expect(request.text).toBe(`${OLLAMA_CONTEXT_PREFIX}${suffix}}`)
+			expect('options' in request.body).toBe(false)
+		} finally {
+			await proxy.stop()
+		}
+	})
+
+	// Recipe: 'hi' / sampling options, one minimal tool, truncate:false, shift:true.
+	// Assertion: provider-behavior — both keys follow tools at the top level, the options
+	// bag stays exactly as configured, and the fields before them keep their order.
+	// bounded by abort-once-recorded, no generation awaited.
+	it('places truncate and shift after tools and never inside options', async () => {
+		const proxy = await createRecordingProxy()
+		try {
+			const provider = new OllamaProvider({
+				model: 'test-model',
+				url: proxy.url,
+				options: { num_predict: 7 },
+				truncate: false,
+				shift: true,
+			})
+			const abort = createAbort()
+			const pending = provider
+				.generate([createUserMessage('hi')], abort.signal, [{ name: 'weather' }])
+				.catch(() => {})
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
+
+			const request = proxy.requests[0]
+			if (request === undefined) throw new Error('no recorded request')
+			expect(request.text).toBe(
+				`${OLLAMA_CONTEXT_PREFIX},"options":{"num_predict":7},"tools":[{"type":"function","function":{"name":"weather"}}],"truncate":false,"shift":true}`,
+			)
+			expect(request.body.options).toEqual({ num_predict: 7 })
+		} finally {
+			await proxy.stop()
+		}
+	})
+
+	// Recipe: 'hi' / truncate:false, shift:false on the streaming path. Assertion: provider-
+	// behavior — stream shares the encoder with generate, so it sends the same body.
+	// bounded by abort-once-recorded, no generation awaited.
+	it('sends the same truncate and shift on the streaming path', async () => {
+		const proxy = await createRecordingProxy()
+		try {
+			const provider = new OllamaProvider({
+				model: 'test-model',
+				url: proxy.url,
+				truncate: false,
+				shift: false,
+			})
+			const abort = createAbort()
+			const pending = drive(provider.stream([createUserMessage('hi')], abort.signal)).catch(
+				() => {},
+			)
+			await waitForRequest(proxy)
+			abort.abort()
+			await pending
+
+			expect(proxy.requests[0]?.text).toBe(
+				`${OLLAMA_CONTEXT_PREFIX},"truncate":false,"shift":false}`,
+			)
 		} finally {
 			await proxy.stop()
 		}

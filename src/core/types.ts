@@ -11,7 +11,8 @@ import type { ProviderOptions } from '@orkestrel/agent'
  * `tool_calls` only on a turn that replays them and `images` only on a multimodal
  * turn); `options` and `tools` are only present when configured. `format` carries the
  * `/api/chat` structured-output constraint, forwarded verbatim from the per-call
- * `ProviderStreamOptions.schema` and absent when no schema is supplied.
+ * `ProviderStreamOptions.schema` and absent when no schema is supplied. `truncate` and
+ * `shift` are top-level context-control switches, present only when `OllamaOptions` sets them.
  */
 export interface WireChatRequest {
 	readonly model: string
@@ -43,6 +44,18 @@ export interface WireChatRequest {
 	 * verbatim from the per-call `ProviderStreamOptions.schema`. Only present when a call supplies a `schema`.
 	 */
 	readonly format?: Readonly<Record<string, unknown>>
+	/**
+	 * Holds the `/api/chat` top-level `truncate` switch, carried verbatim from
+	 * {@link OllamaOptions.truncate}. Absent when the option is omitted, which delegates to the
+	 * daemon default; `false` requests refusal instead of truncation and requires daemon support.
+	 */
+	readonly truncate?: boolean
+	/**
+	 * Holds the `/api/chat` top-level `shift` switch, carried verbatim from
+	 * {@link OllamaOptions.shift}. Absent when the option is omitted, which delegates to the
+	 * daemon default; `false` requests refusal instead of shifting and requires daemon support.
+	 */
+	readonly shift?: boolean
 }
 
 /**
@@ -88,6 +101,20 @@ export interface OllamaOptions extends ProviderOptions {
 	 * way. Set it `true` for a thinking model whose reasoning you intend to display separately.
 	 */
 	readonly think?: boolean
+	/**
+	 * Sets the `/api/chat` top-level `truncate` switch. Omission delegates to the daemon default.
+	 * `false` requests refusal instead of truncation when the prompt exceeds the context window and
+	 * requires daemon support; `true` requests truncation explicitly. Carried verbatim onto
+	 * {@link WireChatRequest.truncate}, never inside `options`.
+	 */
+	readonly truncate?: boolean
+	/**
+	 * Sets the `/api/chat` top-level `shift` switch. Omission delegates to the daemon default.
+	 * `false` requests refusal instead of shifting the context window during generation and
+	 * requires daemon support; `true` requests shifting explicitly. Carried verbatim onto
+	 * {@link WireChatRequest.shift}, never inside `options`.
+	 */
+	readonly shift?: boolean
 }
 
 /**

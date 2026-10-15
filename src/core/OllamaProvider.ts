@@ -36,6 +36,8 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 	readonly #keepAlive: string | number
 	readonly #think: boolean
 	readonly #options: Readonly<Record<string, unknown>> | undefined
+	readonly #truncate: boolean | undefined
+	readonly #shift: boolean | undefined
 
 	constructor(options: OllamaOptions) {
 		super({
@@ -50,6 +52,8 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 		this.#keepAlive = options.keepAlive ?? DEFAULT_KEEP_ALIVE
 		this.#think = options.think ?? false
 		this.#options = options.options
+		this.#truncate = options.truncate
+		this.#shift = options.shift
 	}
 
 	/**
@@ -66,7 +70,8 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 	 *
 	 * @remarks
 	 * A tool's `title` and `annotations` are never sent: the `/api/chat` tool function
-	 * object carries no field for either.
+	 * object carries no field for either. `truncate` and `shift` follow `tools` and appear only
+	 * when the constructor option is set, so `false` survives and omission leaves the body unchanged.
 	 *
 	 * @param request - The conversation, advertised tools, and per-call overrides
 	 * @returns The `/api/chat` body with streaming enabled
@@ -92,6 +97,8 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 						})),
 					}
 				: {}),
+			...(this.#truncate !== undefined ? { truncate: this.#truncate } : {}),
+			...(this.#shift !== undefined ? { shift: this.#shift } : {}),
 		}
 	}
 

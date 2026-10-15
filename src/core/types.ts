@@ -114,6 +114,51 @@ export interface Logprob {
 	readonly logprob: number
 }
 
+/**
+ * Carries the daemon durations of one terminal record in raw nanoseconds.
+ *
+ * @remarks
+ * Each member maps one wire field and keeps its integer verbatim, with no unit conversion:
+ * `total` is `total_duration`, `load` is `load_duration`, `prompt` is `prompt_eval_duration`,
+ * and `decode` is `eval_duration`. A member is `undefined` when the record omits its field or
+ * carries an invalid value.
+ */
+export interface OllamaDurations {
+	readonly total: number | undefined
+	readonly load: number | undefined
+	readonly prompt: number | undefined
+	readonly decode: number | undefined
+}
+
+/**
+ * Carries the token counts of one terminal record.
+ *
+ * @remarks
+ * Each member maps one wire field: `prompt` is `prompt_eval_count`, `decode` is `eval_count`,
+ * and `cached` is `prompt_eval_cached_count`. A member is `undefined` when the record omits its
+ * field or carries an invalid value.
+ */
+export interface OllamaCounts {
+	readonly prompt: number | undefined
+	readonly decode: number | undefined
+	readonly cached: number | undefined
+}
+
+/**
+ * Carries the timing observation of one terminal record.
+ *
+ * @remarks
+ * `invalid` lists the wire keys the record carried with a value that is not a non-negative safe
+ * integer, in the order `total_duration`, `load_duration`, `prompt_eval_duration`,
+ * `eval_duration`, `prompt_eval_count`, `eval_count`, `prompt_eval_cached_count`. An omitted
+ * field is unknown, not invalid, and appears there never.
+ */
+export interface OllamaTiming {
+	readonly durations: OllamaDurations
+	readonly counts: OllamaCounts
+	readonly invalid: readonly string[]
+}
+
 /** Transliterates the Ollama raw, non-streaming `POST /api/generate` request. */
 export interface WireGenerateRequest {
 	readonly model: string

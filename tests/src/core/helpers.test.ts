@@ -4,6 +4,7 @@ import {
 	extractArguments,
 	extractContent,
 	extractThinking,
+	extractTiming,
 	extractTools,
 	extractUsage,
 	mapMessages,
@@ -17,7 +18,13 @@ import {
 	MICA_RENDER_REVISION,
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { createUserMessage } from '../../setup.js'
+import {
+	createUserMessage,
+	TIMING_FIELDS,
+	TIMING_HOSTILE,
+	TIMING_READING,
+	TIMING_TERMINAL,
+} from '../../setup.js'
 import {
 	JUDGE_NOUL_REQUEST,
 	JUDGE_CHOICE_REQUEST,
@@ -377,6 +384,119 @@ describe('extractUsage', () => {
 
 	it('yields undefined for a delta line carrying neither count', () => {
 		expect(extractUsage({ message: { content: 'ok' } })).toBeUndefined()
+	})
+})
+
+describe('extractTiming', () => {
+	it('keeps a complete terminal record verbatim in nanoseconds and tokens', () => {
+		expect(extractTiming(TIMING_TERMINAL)).toStrictEqual(TIMING_READING)
+		expect(extractTiming({ done: true, total_duration: 1234567890123 })?.durations.total).toBe(
+			1234567890123,
+		)
+	})
+
+	it('keeps zero as a reading', () => {
+		const zeros = Object.fromEntries(TIMING_FIELDS.map(([key]) => [key, 0]))
+		expect(extractTiming({ done: true, ...zeros })).toStrictEqual({
+			durations: { total: 0, load: 0, prompt: 0, decode: 0 },
+			counts: { prompt: 0, decode: 0, cached: 0 },
+			invalid: [],
+		})
+	})
+
+	it('reads each absent key as unknown, never as zero and never as invalid', () => {
+		for (const [key, group, member] of TIMING_FIELDS) {
+			const expected = structuredClone(TIMING_READING)
+			Reflect.set(expected[group], member, undefined)
+			const { [key]: _omitted, ...rest } = TIMING_TERMINAL
+			expect(extractTiming(rest)).toStrictEqual(expected)
+		}
+		expect(extractTiming({ done: true })).toStrictEqual({
+			durations: { total: undefined, load: undefined, prompt: undefined, decode: undefined },
+			counts: { prompt: undefined, decode: undefined, cached: undefined },
+			invalid: [],
+		})
+	})
+
+	it('reads each malformed, negative, fractional, or unsafe value as undefined and lists its key', () => {
+		for (const [key, group, member] of TIMING_FIELDS)
+			for (const value of TIMING_HOSTILE) {
+				const expected = structuredClone(TIMING_READING)
+				Reflect.set(expected[group], member, undefined)
+				expect(extractTiming({ ...TIMING_TERMINAL, [key]: value })).toStrictEqual({
+					...expected,
+					invalid: [key],
+				})
+			}
+	})
+
+	it('accepts the largest safe integer', () => {
+		expect(
+			extractTiming({ done: true, total_duration: Number.MAX_SAFE_INTEGER })?.durations.total,
+		).toBe(Number.MAX_SAFE_INTEGER)
+	})
+
+	it('keeps the valid fields beside the invalid ones in wire order', () => {
+		expect(
+			extractTiming({
+				...TIMING_TERMINAL,
+				eval_count: -4,
+				load_duration: '2345678',
+				prompt_eval_count: undefined,
+			}),
+		).toStrictEqual({
+			durations: { total: 1234567890123, load: undefined, prompt: 345678901, decode: 987654321 },
+			counts: { prompt: undefined, decode: undefined, cached: 12 },
+			invalid: ['load_duration', 'prompt_eval_count', 'eval_count'],
+		})
+	})
+
+	it('yields undefined unless done is true', () => {
+		const { done: _done, ...unfinished } = TIMING_TERMINAL
+		expect(extractTiming({ ...TIMING_TERMINAL, done: false })).toBeUndefined()
+		expect(extractTiming(unfinished)).toBeUndefined()
+		expect(extractTiming({ ...TIMING_TERMINAL, done: 'true' })).toBeUndefined()
+		expect(extractTiming({ ...TIMING_TERMINAL, done: 1 })).toBeUndefined()
+		expect(extractTiming({ ...TIMING_TERMINAL, done: undefined })).toBeUndefined()
+		expect(extractTiming({ message: { content: 'ok' } })).toBeUndefined()
+		expect(extractTiming({})).toBeUndefined()
+	})
+
+	it('reads only own fields', () => {
+		expect(extractTiming(Object.create(TIMING_TERMINAL))).toBeUndefined()
+		const { done: _done, ...inherited } = TIMING_TERMINAL
+		const record: Record<string, unknown> = Object.create(inherited)
+		record.done = true
+		expect(extractTiming(record)).toStrictEqual({
+			durations: { total: undefined, load: undefined, prompt: undefined, decode: undefined },
+			counts: { prompt: undefined, decode: undefined, cached: undefined },
+			invalid: [],
+		})
+	})
+
+	it('neither mutates the record nor throws for hostile records', () => {
+		const frozen = Object.freeze({ ...TIMING_TERMINAL, eval_count: '4', extra: { nested: [1] } })
+		const before = JSON.stringify(frozen)
+		expect(extractTiming(frozen)?.invalid).toEqual(['eval_count'])
+		expect(JSON.stringify(frozen)).toBe(before)
+		const bare: Record<string, unknown> = Object.create(null)
+		bare.done = true
+		bare.total_duration = 7
+		expect(extractTiming(bare)?.durations.total).toBe(7)
+		expect(extractTiming({ done: true, total_duration: Symbol('ns') })?.invalid).toEqual([
+			'total_duration',
+		])
+		expect(() => extractTiming({ done: true, eval_count: () => 4 })).not.toThrow()
+	})
+
+	it('leaves usage extraction unchanged by the timing fields', () => {
+		expect(extractUsage(TIMING_TERMINAL)).toEqual({ prompt: 26, completion: 298, total: 324 })
+		expect(extractUsage({ ...TIMING_TERMINAL, total_duration: 'x', eval_duration: -1 })).toEqual({
+			prompt: 26,
+			completion: 298,
+			total: 324,
+		})
+		expect(extractUsage({ done: true, total_duration: 1234567890123 })).toBeUndefined()
 	})
 })
 

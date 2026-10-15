@@ -1,11 +1,12 @@
 import type { JudgeAnswer, JudgeEntry, JudgeQuestion, Message, Refusal } from '@orkestrel/agent'
 import type { TokenUsage } from '@orkestrel/budget'
 import type { ToolCall } from '@orkestrel/tool'
-import type { Logprob, OllamaJudgeOptions, WireChatRequest } from './types.js'
+import type { Logprob, OllamaJudgeOptions, OllamaTiming, WireChatRequest } from './types.js'
 import { JudgeError } from '@orkestrel/agent'
 import {
 	isArray,
 	isFiniteNumber,
+	isNonNegativeInteger,
 	isNumber,
 	isObject,
 	isRecord,
@@ -334,6 +335,52 @@ export function extractUsage(record: Readonly<Record<string, unknown>>): TokenUs
 	const completion = Reflect.get(record, 'eval_count')
 	if (!isNumber(prompt) || !isNumber(completion)) return undefined
 	return { prompt, completion, total: prompt + completion }
+}
+
+/**
+ * Extracts the daemon timing of one terminal wire record.
+ *
+ * @remarks
+ * Durations are raw nanoseconds and counts are tokens, both kept verbatim. A field the record
+ * does not own is unknown and reads `undefined` without entering `invalid`. A field the record
+ * owns whose value is not a non-negative safe integer (including `undefined`, `-0`, a string,
+ * a fraction, or an unsafe integer) reads `undefined` and enters `invalid` under its wire key.
+ * Nothing is defaulted to zero, inferred, or converted, and the record is never mutated.
+ *
+ * @param record - One parsed `/api/chat` or `/api/generate` record
+ * @returns The timing observation, or `undefined` unless the record owns `done: true`
+ *
+ * @example
+ * ```ts
+ * extractTiming({ done: true, total_duration: 1234567890123, eval_count: 4 })
+ * // durations.total is 1234567890123, counts.decode is 4, invalid is []
+ * ```
+ */
+export function extractTiming(record: Readonly<Record<string, unknown>>): OllamaTiming | undefined {
+	if (!Object.hasOwn(record, 'done') || Reflect.get(record, 'done') !== true) return undefined
+	const keys = [
+		'total_duration',
+		'load_duration',
+		'prompt_eval_duration',
+		'eval_duration',
+		'prompt_eval_count',
+		'eval_count',
+		'prompt_eval_cached_count',
+	] as const
+	const readings = keys.map((key) => {
+		if (!Object.hasOwn(record, key)) return undefined
+		const value: unknown = Reflect.get(record, key)
+		return isNonNegativeInteger(value) && value <= Number.MAX_SAFE_INTEGER ? value : undefined
+	})
+	const [total, load, prompt, decode, promptCount, decodeCount, cached] = readings
+	const invalid = keys.filter(
+		(key, index) => readings[index] === undefined && Object.hasOwn(record, key),
+	)
+	return {
+		durations: { total, load, prompt, decode },
+		counts: { prompt: promptCount, decode: decodeCount, cached },
+		invalid,
+	}
 }
 
 /**

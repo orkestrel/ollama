@@ -2,6 +2,7 @@ import type { Message } from '@orkestrel/agent'
 import type { RecorderInterface } from '@orkestrel/test'
 import type { ToolDefinition, ToolInterface } from '@orkestrel/tool'
 import type { WorkspaceInterface } from '@orkestrel/workspace'
+import type { OllamaTiming } from '@src/core'
 import { waitForDelay } from '@orkestrel/test'
 import { isString } from '@orkestrel/contract'
 import { createTool } from '@orkestrel/tool'
@@ -218,6 +219,77 @@ export const PAGE_TOOL: ToolDefinition = Object.freeze({
 		required: ['note'],
 	},
 })
+
+// ── Terminal timing fixtures ──────────────────────────────────────────────────
+//
+// One complete `done: true` record with a distinct value in every timing field, the reading
+// the extractor must produce from it, the field matrix that pairs each wire key with its
+// reading member, and the values the extractor must refuse. Inert data, shared by the
+// timing proofs so no test restates the wire.
+
+/** Pairs one wire key with the group and member of the timing reading that carries it. */
+export type TimingField = readonly [key: string, group: 'durations' | 'counts', member: string]
+
+/**
+ * Holds one complete terminal record in raw nanoseconds and tokens.
+ *
+ * @remarks
+ * Every timing field carries a distinct value, so a swapped mapping fails an assertion.
+ */
+export const TIMING_TERMINAL: Readonly<Record<string, unknown>> = Object.freeze({
+	done: true,
+	total_duration: 1234567890123,
+	load_duration: 2345678,
+	prompt_eval_duration: 345678901,
+	eval_duration: 987654321,
+	prompt_eval_count: 26,
+	eval_count: 298,
+	prompt_eval_cached_count: 12,
+})
+
+/** Holds the reading the extractor produces from {@link TIMING_TERMINAL}. */
+export const TIMING_READING: OllamaTiming = Object.freeze({
+	durations: Object.freeze({
+		total: 1234567890123,
+		load: 2345678,
+		prompt: 345678901,
+		decode: 987654321,
+	}),
+	counts: Object.freeze({ prompt: 26, decode: 298, cached: 12 }),
+	invalid: Object.freeze([]),
+})
+
+/** Lists each wire key of {@link TIMING_TERMINAL} with the reading member that carries it, in wire order. */
+export const TIMING_FIELDS: readonly TimingField[] = Object.freeze<TimingField[]>([
+	['total_duration', 'durations', 'total'],
+	['load_duration', 'durations', 'load'],
+	['prompt_eval_duration', 'durations', 'prompt'],
+	['eval_duration', 'durations', 'decode'],
+	['prompt_eval_count', 'counts', 'prompt'],
+	['eval_count', 'counts', 'decode'],
+	['prompt_eval_cached_count', 'counts', 'cached'],
+])
+
+/** Lists the values no timing field may hold: not a non-negative safe integer. */
+export const TIMING_HOSTILE: readonly unknown[] = Object.freeze<unknown[]>([
+	'5',
+	'',
+	-1,
+	-0,
+	1.5,
+	NaN,
+	Infinity,
+	-Infinity,
+	Number.MAX_SAFE_INTEGER + 1,
+	2 ** 64,
+	5n,
+	true,
+	null,
+	undefined,
+	{},
+	[],
+	[5],
+])
 
 // ── Timer lead ────────────────────────────────────────────────────────────────
 //

@@ -84,6 +84,16 @@ describe('OllamaProvider (wire seams)', () => {
 		})
 	})
 
+	it('sets truncated only on a done record whose reason is length', () => {
+		const provider = new OllamaProvider({ model: 'test-model' })
+
+		expect(provider.read({ done: true, done_reason: 'length' }).truncated).toBe(true)
+		expect(provider.read({ done: true, done_reason: 'stop' })).not.toHaveProperty('truncated')
+		expect(provider.read({ done: true })).not.toHaveProperty('truncated')
+		expect(provider.read({ done: false, done_reason: 'length' })).not.toHaveProperty('truncated')
+		expect(provider.read({ done_reason: 'length' })).not.toHaveProperty('truncated')
+	})
+
 	it('projects a schema and minimal tool without adding absent tool fields', () => {
 		const provider = new OllamaProvider({ model: 'test-model' })
 		const schema = { type: 'object', properties: { answer: { type: 'string' } } }
@@ -882,6 +892,56 @@ describe('OllamaProvider (streaming fold over a canned NDJSON daemon)', () => {
 		expect(await unfinished.generate([], createAbort().signal)).toEqual({ content: 'answer' })
 		expect(await finished.generate([], createAbort().signal)).toEqual({
 			content: 'answer',
+			usage: { prompt: 3, completion: 4, total: 7 },
+		})
+	})
+
+	it('folds a length done reason into a truncated result beside the usage', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"cut"},"done":false}\n',
+				'{"done":true,"done_reason":"length","prompt_eval_count":3,"eval_count":8}\n',
+			]),
+		})
+
+		expect(await provider.generate([], createAbort().signal)).toEqual({
+			content: 'cut',
+			usage: { prompt: 3, completion: 8, total: 11 },
+			truncated: true,
+		})
+	})
+
+	it('folds a length done reason that carries no counts into a truncated result without usage', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"cut"}}\n',
+				'{"done":true,"done_reason":"length"}\n',
+			]),
+		})
+
+		expect(await provider.generate([], createAbort().signal)).toEqual({
+			content: 'cut',
+			truncated: true,
+		})
+	})
+
+	it('leaves the result unchanged for a stop reason and ignores a stray reason on a delta line', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"whole"},"done":false,"done_reason":"length"}\n',
+				'{"done":true,"done_reason":"stop","prompt_eval_count":3,"eval_count":4}\n',
+			]),
+		})
+
+		const { result } = await drive(
+			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
+		)
+
+		expect(result).toEqual({
+			content: 'whole',
 			usage: { prompt: 3, completion: 4, total: 7 },
 		})
 	})

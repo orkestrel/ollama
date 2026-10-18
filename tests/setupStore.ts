@@ -2912,7 +2912,7 @@ export const STORE_THINKING_CHUNKS: readonly AgentChunk[] = Object.freeze([
 	{ category: 'think', content: 'Check ' },
 	{ category: 'token', content: 'Answer' },
 	{ category: 'think', content: 'the cart.' },
-	{ category: 'usage', usage: { prompt: 1, completion: 1, total: 2 } },
-	{ category: 'usage', usage: { prompt: 2, completion: 1, total: 3 } },
+	{ category: 'usage', usage: { prompt: 1, completion: 1, total: 2 }, estimate: 1 },
+	{ category: 'usage', usage: { prompt: 2, completion: 1, total: 3 }, estimate: 1 },
 	{ category: 'think', content: 'Confirm.' },
 ])

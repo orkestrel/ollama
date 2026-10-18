@@ -6,6 +6,7 @@ import {
 	extractThinking,
 	extractTiming,
 	extractTools,
+	extractTruncated,
 	extractUsage,
 	mapMessages,
 	escapeSpecialTokens,
@@ -24,6 +25,8 @@ import {
 	TIMING_HOSTILE,
 	TIMING_READING,
 	TIMING_TERMINAL,
+	TRUNCATED_INVALID_REASONS,
+	TRUNCATED_STRING_REASONS,
 } from '../../setup.js'
 import {
 	JUDGE_NOUL_REQUEST,
@@ -385,6 +388,27 @@ describe('extractUsage', () => {
 	it('yields undefined for a delta line carrying neither count', () => {
 		expect(extractUsage({ message: { content: 'ok' } })).toBeUndefined()
 	})
+})
+
+describe('extractTruncated', () => {
+	it('reads the length reason of a terminal record as true', () => {
+		expect(extractTruncated({ done: true, done_reason: 'length' })).toBe(true)
+	})
+
+	it.each(TRUNCATED_STRING_REASONS)('yields undefined for the %j reason', (reason) => {
+		expect(extractTruncated({ done: true, done_reason: reason })).toBeUndefined()
+	})
+
+	it('yields undefined when the reason is missing', () => {
+		expect(extractTruncated({ done: true })).toBeUndefined()
+	})
+
+	it.each(TRUNCATED_INVALID_REASONS)(
+		'yields undefined when the reason is not a string (%j)',
+		(reason) => {
+			expect(extractTruncated({ done: true, done_reason: reason })).toBeUndefined()
+		},
+	)
 })
 
 describe('extractTiming', () => {

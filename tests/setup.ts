@@ -1,8 +1,9 @@
-import type { Message } from '@orkestrel/agent'
+import type { Message, ProviderRequest } from '@orkestrel/agent'
 import type { RecorderInterface } from '@orkestrel/test'
 import type { ToolDefinition, ToolInterface } from '@orkestrel/tool'
 import type { WorkspaceInterface } from '@orkestrel/workspace'
 import type { OllamaTiming } from '@src/core'
+import { estimateMessages } from '@orkestrel/agent'
 import { waitForDelay } from '@orkestrel/test'
 import { isString } from '@orkestrel/contract'
 import { createTool } from '@orkestrel/tool'
@@ -95,6 +96,42 @@ export function buildTurns(count: number): readonly Message[] {
 		turns.push({ id: crypto.randomUUID(), role, content })
 	}
 	return turns
+}
+
+// ── Window consumers ──────────────────────────────────────────────────────────
+//
+// An agent's `window` budget measures the complete provider request. These two consumers keep
+// the live compaction tests' ceilings on the message text alone, so the tools a request
+// advertises never move a fold the test places by message size.
+
+/**
+ * Counts the characters of every message a provider request carries, ignoring the advertised
+ * tools and the call options.
+ *
+ * @param request - The provider request a window budget measures
+ * @returns The summed `content` length of the request's messages
+ * @example
+ * ```ts
+ * countRequestCharacters({ messages: [createUserMessage('abc')] }) // 3
+ * ```
+ */
+export function countRequestCharacters(request: ProviderRequest): number {
+	return request.messages.reduce((total, message) => total + message.content.length, 0)
+}
+
+/**
+ * Estimates the token footprint of a provider request's messages alone, ignoring the advertised
+ * tools and the call options.
+ *
+ * @param request - The provider request a window budget measures
+ * @returns The estimated token count of the request's messages
+ * @example
+ * ```ts
+ * estimateRequestMessages({ messages: [createUserMessage('hello')] }) // 6
+ * ```
+ */
+export function estimateRequestMessages(request: ProviderRequest): number {
+	return estimateMessages(request.messages)
 }
 
 // ── Summarizer fixtures ───────────────────────────────────────────────────────
@@ -376,3 +413,56 @@ export const OLLAMA_CONTEXT_CASES = Object.freeze([
 		suffix: ',"truncate":true,"shift":false',
 	},
 ] as const)
+
+// ── Truncation reason matrices ────────────────────────────────────────────────
+//
+// The terminal `done_reason` values `extractTruncated` must refuse: every string other than the
+// exact `'length'`, and every value that is not a string. Inert data, so the projection proof
+// restates no wire value.
+
+/** Lists the string `done_reason` values that do not read as truncation: anything but exactly `'length'`. */
+export const TRUNCATED_STRING_REASONS: readonly string[] = Object.freeze([
+	'stop',
+	'load',
+	'unload',
+	'Length',
+	'',
+])
+
+/** Lists the non-string `done_reason` values that do not read as truncation, one single-value case each. */
+export const TRUNCATED_INVALID_REASONS: ReadonlyArray<[unknown]> = Object.freeze<Array<[unknown]>>([
+	[6],
+	[null],
+	[['length']],
+	[{ reason: 'length' }],
+	[false],
+])
+
+// ── Canned chat stream ────────────────────────────────────────────────────────
+//
+// The NDJSON lines a canned daemon transport streams for the budget-layer proofs: three content
+// deltas of eight characters each, then one terminal record whose reported usage (prompt 3,
+// completion 9) differs from the delta estimate.
+
+/** Lists the three content-delta lines of the canned chat stream, in wire order. */
+export const CANNED_STREAM_DELTAS: readonly string[] = Object.freeze([
+	'{"message":{"content":"abcdefgh"},"done":false}\n',
+	'{"message":{"content":"ijklmnop"},"done":false}\n',
+	'{"message":{"content":"qrstuvwx"},"done":false}\n',
+])
+
+/** Holds the terminal line of the canned chat stream: a `stop` reason with reported usage of 3 prompt and 9 completion tokens. */
+export const CANNED_STREAM_DONE =
+	'{"done":true,"done_reason":"stop","prompt_eval_count":3,"eval_count":9}\n'
+
+// ── Live prompts ──────────────────────────────────────────────────────────────
+//
+// The two prompts the live model-layer proofs share: one that invites an answer far longer than
+// the token cap those proofs set, one that a model answers in a single word.
+
+/** Holds the prompt that invites an answer far longer than a small `num_predict` cap. */
+export const LONG_ANSWER_PROMPT =
+	'Write a long, detailed essay about the history of the printing press.'
+
+/** Holds the prompt a model answers in one word, well inside any token cap. */
+export const SHORT_ANSWER_PROMPT = 'Reply with the single word OK.'

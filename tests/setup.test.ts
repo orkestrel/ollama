@@ -20,22 +20,33 @@
 import type { AgentResult, Message } from '@orkestrel/agent'
 import type { RecordedRequest } from './setupServer.js'
 import type { ToolContext, ToolResult } from '@orkestrel/tool'
+import { estimateRequest } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
+import { createNDJSONParser } from '@orkestrel/ndjson'
 import { createRecorder } from '@orkestrel/test'
 import { createWorkspace } from '@orkestrel/workspace'
 import { beforeAll, describe, expect, it } from 'vitest'
 import {
 	buildTurns,
+	CANNED_STREAM_DELTAS,
+	CANNED_STREAM_DONE,
+	countRequestCharacters,
 	createChallengeTools,
 	createRecordingSummarizer,
 	createThrowingSummarizer,
+	createUserMessage,
+	estimateRequestMessages,
 	fillWorkspace,
 	FILLER_SENTENCE,
+	LONG_ANSWER_PROMPT,
 	PAGE_TOOL,
 	RECORDING_SUMMARIZER_DIGEST,
 	sampleTimerSpans,
+	SHORT_ANSWER_PROMPT,
 	THROWING_SUMMARIZER_MESSAGE,
 	TIMER_LEAD,
+	TRUNCATED_INVALID_REASONS,
+	TRUNCATED_STRING_REASONS,
 } from './setup.js'
 import {
 	alignLoopClock,
@@ -398,6 +409,33 @@ describe('buildTurns', () => {
 	})
 })
 
+describe('countRequestCharacters', () => {
+	it('sums the content length of every message', () => {
+		const messages = [createUserMessage('abc'), createUserMessage('de')]
+
+		expect(countRequestCharacters({ messages })).toBe(5)
+	})
+
+	it('counts nothing for a request without messages', () => {
+		expect(countRequestCharacters({ messages: [] })).toBe(0)
+	})
+})
+
+describe('estimateRequestMessages', () => {
+	it('estimates the messages alone, whatever tools the request advertises', () => {
+		const messages = [createUserMessage('hello')]
+		const tools = [{ name: 'weather', description: 'x'.repeat(400) }]
+
+		expect(estimateRequestMessages({ messages })).toBe(6)
+		expect(estimateRequestMessages({ messages, tools })).toBe(6)
+		expect(estimateRequest({ messages, tools })).toBeGreaterThan(6)
+	})
+
+	it('estimates nothing for a request without messages', () => {
+		expect(estimateRequestMessages({ messages: [] })).toBe(0)
+	})
+})
+
 describe('createThrowingSummarizer', () => {
 	it('rejects with the default message', async () => {
 		const summarizer = createThrowingSummarizer()
@@ -483,6 +521,43 @@ describe('PAGE_TOOL', () => {
 		const properties: unknown = parameters.properties
 		if (!isRecord(properties)) throw new Error('PAGE_TOOL declares no parameter properties')
 		expect(Object.keys(properties)).toEqual(['note'])
+	})
+})
+
+describe('TRUNCATED_STRING_REASONS and TRUNCATED_INVALID_REASONS', () => {
+	it('are frozen and hold no case that reads as truncation', () => {
+		expect(Object.isFrozen(TRUNCATED_STRING_REASONS)).toBe(true)
+		expect(Object.isFrozen(TRUNCATED_INVALID_REASONS)).toBe(true)
+		expect(TRUNCATED_STRING_REASONS).not.toContain('length')
+		expect(TRUNCATED_INVALID_REASONS.every(([reason]) => typeof reason !== 'string')).toBe(true)
+	})
+})
+
+describe('CANNED_STREAM_DELTAS and CANNED_STREAM_DONE', () => {
+	it('are frozen NDJSON lines that stream content deltas and end in one stop record with usage', () => {
+		expect(Object.isFrozen(CANNED_STREAM_DELTAS)).toBe(true)
+		const parser = createNDJSONParser()
+
+		const deltas = CANNED_STREAM_DELTAS.flatMap((line) => parser.parse(line))
+		const terminal = parser.parse(CANNED_STREAM_DONE)
+
+		expect(deltas.map((record) => Reflect.get(record, 'done'))).toEqual([false, false, false])
+		expect(deltas.map((record) => Reflect.get(record, 'message'))).toEqual([
+			{ content: 'abcdefgh' },
+			{ content: 'ijklmnop' },
+			{ content: 'qrstuvwx' },
+		])
+		expect(terminal).toEqual([
+			{ done: true, done_reason: 'stop', prompt_eval_count: 3, eval_count: 9 },
+		])
+	})
+})
+
+describe('LONG_ANSWER_PROMPT and SHORT_ANSWER_PROMPT', () => {
+	it('hold two distinct non-empty prompts', () => {
+		expect(LONG_ANSWER_PROMPT).not.toBe('')
+		expect(SHORT_ANSWER_PROMPT).not.toBe('')
+		expect(LONG_ANSWER_PROMPT).not.toBe(SHORT_ANSWER_PROMPT)
 	})
 })
 
@@ -653,7 +728,7 @@ describe('driveAgent', () => {
 				{ category: 'token', content: 'a' },
 				{ category: 'tool', call, result: toolResult },
 				{ category: 'token', content: 'b' },
-				{ category: 'usage', usage },
+				{ category: 'usage', usage, estimate: 2 },
 			],
 			settled,
 		)

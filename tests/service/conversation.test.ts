@@ -3,7 +3,7 @@ import { createAgent, createConversationManager } from '@orkestrel/agent'
 import { createBudget } from '@orkestrel/budget'
 import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createOllama } from '@src/core'
-import { buildTurns, createThrowingSummarizer } from '../setup.js'
+import { buildTurns, countRequestCharacters, createThrowingSummarizer } from '../setup.js'
 import { createRecordingProxy, systemText } from '../setupServer.js'
 import { createLiveOllama, OLLAMA_CONFIG, RETRY_BUDGET } from '../setupService.js'
 
@@ -23,11 +23,7 @@ describe('Agent (live) — a throwing summarizer under auto-compaction is non-fa
 					conversation.add(buildTurns(12))
 					const agent = createAgent(createLiveOllama(), {
 						conversations,
-						window: createBudget({
-							max: 20,
-							consumer: (messages: ReadonlyArray<{ readonly content: string }>) =>
-								messages.reduce((total, message) => total + message.content.length, 0),
-						}),
+						window: createBudget({ max: 20, consumer: countRequestCharacters }),
 						timeout: TIMEOUT,
 					})
 					const faults = createRecorder<[unknown]>()

@@ -15,6 +15,7 @@ import {
 	isProviderAbortError,
 	isProviderError,
 } from '@orkestrel/agent'
+import { createTokenBudget, isBudgetError } from '@orkestrel/budget'
 import { createRecorder, waitForAbort } from '@orkestrel/test'
 import { createNDJSONParser } from '@orkestrel/ndjson'
 import { createToolManager } from '@orkestrel/tool'
@@ -22,6 +23,8 @@ import { createBinaryContent, createFile } from '@orkestrel/workspace'
 import { createOllama } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import {
+	CANNED_STREAM_DELTAS,
+	CANNED_STREAM_DONE,
 	createRecordingSummarizer,
 	createThrowingSummarizer,
 	createUserMessage,
@@ -281,6 +284,97 @@ const TINY_PNG_BASE64 =
 	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 
 // --- Context framing on the wire ---------------------------------------------
+
+describe('Agent model layer (hermetic) — a length done reason through the agent loop', () => {
+	it('stops a run at the model layer with the provider id, the estimate, and the reported usage', async () => {
+		const provider = createOllama({
+			model: 'fixture-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"abcdefgh"},"done":false}\n',
+				'{"done":true,"done_reason":"length","prompt_eval_count":3,"eval_count":8}\n',
+			]),
+		})
+		const agent = createAgent(provider, { timeout: TIMEOUT })
+		agent.context.messages.add({ role: 'user', content: 'Write a long answer.' })
+
+		const result = await agent.generate()
+
+		expect(result.content).toBe('abcdefgh')
+		expect(result.partial).toBe(false)
+		expect(result.stop).toEqual({
+			layer: 'model',
+			id: provider.id,
+			estimate: 2,
+			usage: { prompt: 3, completion: 8, total: 11 },
+		})
+	})
+
+	it('reports no stop for an answer the model ended by itself', async () => {
+		const provider = createOllama({
+			model: 'fixture-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"abcdefgh"},"done":false}\n',
+				'{"done":true,"done_reason":"stop","prompt_eval_count":3,"eval_count":8}\n',
+			]),
+		})
+		const agent = createAgent(provider, { timeout: TIMEOUT })
+		agent.context.messages.add({ role: 'user', content: 'Say hello.' })
+
+		const result = await agent.generate()
+
+		expect(result.partial).toBe(false)
+		expect(result).not.toHaveProperty('stop')
+	})
+})
+
+describe('Agent budget layers (hermetic) — which layer stops a run over a canned stream', () => {
+	it('stops a run at the meter layer mid-stream when the allowance is the budget', async () => {
+		const budget = createTokenBudget({ id: 'tokens', max: 2, scope: 'completion' })
+		const reasons = createRecorder<[reason: unknown]>()
+		const agent = createAgent(
+			createOllama({
+				model: 'fixture-model',
+				fetch: createStreamingTransport([...CANNED_STREAM_DELTAS, CANNED_STREAM_DONE]),
+			}),
+			{ budget, allowance: budget, timeout: TIMEOUT, on: { abort: reasons.handler } },
+		)
+		agent.context.messages.add({ role: 'user', content: 'Write a long answer.' })
+
+		const result = await agent.generate()
+
+		expect(result.partial).toBe(true)
+		expect(result.stop).toMatchObject({ layer: 'meter', id: 'tokens', max: 2, consumed: 2 })
+		expect(result.content.length).toBeLessThan('abcdefghijklmnopqrstuvwx'.length)
+		expect(reasons.calls.map(([reason]) => isBudgetError(reason))).toEqual([true])
+	})
+
+	it('stops a budget-only run at the budget layer on the reported usage, after the whole answer streamed', async () => {
+		const budget = createTokenBudget({ id: 'tokens', max: 5, scope: 'completion' })
+		const reasons = createRecorder<[reason: unknown]>()
+		const agent = createAgent(
+			createOllama({
+				model: 'fixture-model',
+				fetch: createStreamingTransport([...CANNED_STREAM_DELTAS, CANNED_STREAM_DONE]),
+			}),
+			{ budget, timeout: TIMEOUT, on: { abort: reasons.handler } },
+		)
+		agent.context.messages.add({ role: 'user', content: 'Write a long answer.' })
+
+		const result = await agent.generate()
+
+		expect(result.content).toBe('abcdefghijklmnopqrstuvwx')
+		expect(result.partial).toBe(true)
+		expect(result.stop).toEqual({
+			layer: 'budget',
+			id: 'tokens',
+			max: 5,
+			consumed: 9,
+			estimate: 6,
+			usage: { prompt: 3, completion: 9, total: 12 },
+		})
+		expect(reasons.calls.map(([reason]) => isBudgetError(reason))).toEqual([true])
+	})
+})
 
 describe('AgentContext (provider-behavior) — a constraining instruction reaches the wire', () => {
 	it(

@@ -12,6 +12,7 @@ import {
 	extractContent,
 	extractThinking,
 	extractTools,
+	extractTruncated,
 	extractUsage,
 	mapMessages,
 } from './helpers.js'
@@ -22,7 +23,8 @@ import {
  * @remarks
  * Every request uses NDJSON streaming. The base assembles complete turns, separates
  * reasoning, and bounds requests; this class supplies Ollama framing and projections.
- * Usage comes only from a `done: true` record carrying the token counts.
+ * Usage comes only from a `done: true` record carrying the token counts. The `done: true`
+ * record's `done_reason: 'length'` becomes `truncated: true`.
  *
  * @example
  * ```ts
@@ -103,18 +105,21 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 	}
 
 	/**
-	 * Extracts a record's content, reasoning, tools, and completed usage report.
+	 * Extracts a record's content, reasoning, tools, completed usage report, and truncation.
 	 *
 	 * @param record - One parsed Ollama NDJSON record
-	 * @returns The turn increment, omitting usage until `done` and the counts are present
+	 * @returns The turn increment, omitting usage and truncation until `done`
 	 */
 	read(record: Readonly<Record<string, unknown>>): ProviderIncrement {
-		const usage = Reflect.get(record, 'done') === true ? extractUsage(record) : undefined
+		const done = Reflect.get(record, 'done') === true
+		const usage = done ? extractUsage(record) : undefined
+		const truncated = done ? extractTruncated(record) : undefined
 		return {
 			content: extractContent(record),
 			thinking: extractThinking(record),
 			tools: extractTools(record),
 			...(usage === undefined ? {} : { usage }),
+			...(truncated === undefined ? {} : { truncated }),
 		}
 	}
 

@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { createAgent } from '@orkestrel/agent'
-import { createTokenBudget } from '@orkestrel/budget'
+import { createTokenBudget, isBudgetError } from '@orkestrel/budget'
+import { createNDJSONParser } from '@orkestrel/ndjson'
 import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
+import { OLLAMA_CHAT_PATH } from '@src/core'
+import { createUserMessage, LONG_ANSWER_PROMPT, SHORT_ANSWER_PROMPT } from '../setup.js'
 import { createLookupTool, driveAgent } from '../setupServer.js'
-import { createLiveOllama, FAST_OPTIONS, RETRY_BUDGET, TOOL_LOOP_OPTIONS } from '../setupService.js'
+import {
+	createLiveOllama,
+	FAST_OPTIONS,
+	OLLAMA_CONFIG,
+	RETRY_BUDGET,
+	TOOL_LOOP_OPTIONS,
+} from '../setupService.js'
 
 // budget.test.ts — LIVE agent-layer usage accounting + budget enforcement +
 // sequential-reuse, with no mocks for the inference boundary. OllamaProvider.test.ts
@@ -52,21 +61,22 @@ describe('Agent usage (live) — single-turn usage coherence at the agent layer'
 
 describe('Agent budget (live) — an exhausted token budget trips the loop', () => {
 	it(
-		'the run resolves (never rejects) with partial: true and an abort event once the budget is exhausted',
+		'the run resolves (never rejects) with partial: true, a BudgetError abort reason, and a budget-layer stop once the reported usage exhausts the budget',
 		async () => {
 			// A forced multi-turn run (the lookup tool + a steering system prompt, mirroring
 			// context.test.ts's forcing technique) paired with a token budget whose ceiling (5
 			// completion tokens) is tiny relative to a single real completion — the first
 			// provider call alone exceeds it, so the budget's signal is guaranteed exhausted
-			// before the loop can make its second (post-tool) provider call. Bounded retry over
-			// the small model's tool-use nondeterminism: an attempt that answers directly in one
-			// turn (no second call ever attempted) would finish naturally instead of tripping, so
-			// we retry until an attempt genuinely observed the trip.
+			// before the loop can make its second (post-tool) provider call. With no `allowance`
+			// the budget is charged the usage the call reports, so the trip is the budget layer's.
+			// Bounded retry over the small model's tool-use nondeterminism: an attempt whose single
+			// call ended at its own `num_predict` limit is a model-layer stop instead, so we retry
+			// until an attempt genuinely observed the budget layer.
 			const tripped = await retryUntil(
 				'trip the exhausted token budget mid-run',
 				async () => {
-					const recorder = createRecorder<[reason: unknown]>()
-					const budget = createTokenBudget({ max: 5, scope: 'completion' })
+					const reasons = createRecorder<[reason: unknown]>()
+					const budget = createTokenBudget({ id: 'tokens', max: 5, scope: 'completion' })
 					const tools = createToolManager()
 					tools.add(createLookupTool())
 					const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
@@ -77,18 +87,23 @@ describe('Agent budget (live) — an exhausted token budget trips the loop', () 
 						budget,
 						limit: 4,
 						timeout: TIMEOUT,
-						on: { abort: recorder.handler },
+						on: { abort: reasons.handler },
 					})
 					agent.context.messages.add({ role: 'user', content: 'Look up the reference datum.' })
 					const result = await agent.generate()
-					return { partial: result.partial, aborted: recorder.count }
+					return {
+						partial: result.partial,
+						budgeted: reasons.calls.filter(([reason]) => isBudgetError(reason)).length,
+						stop: result.stop,
+					}
 				},
-				(value) => value.partial === true && value.aborted > 0,
+				(value) => value.partial === true && value.budgeted > 0 && value.stop?.layer === 'budget',
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(tripped.partial).toBe(true)
-			expect(tripped.aborted).toBeGreaterThan(0)
+			expect(tripped.budgeted).toBeGreaterThan(0)
+			expect(tripped.stop).toMatchObject({ layer: 'budget', id: 'tokens', max: 5 })
 		},
 		TIMEOUT,
 	)
@@ -96,13 +111,15 @@ describe('Agent budget (live) — an exhausted token budget trips the loop', () 
 
 describe('Agent budget (live) — an exhausted token budget trips MID-GENERATION', () => {
 	it(
-		'a tiny completion-token budget aborts mid-stream (no tool loop needed) with partial: true, an abort event, and content bounded by the budget arithmetic',
+		'a tiny completion-token allowance aborts mid-stream (no tool loop needed) with partial: true, a BudgetError abort reason, a meter-layer stop, and content bounded by the budget arithmetic',
 		async () => {
-			// 0.0.6: content deltas are charged to the budget INCREMENTALLY as estimated tokens
-			// (ceil(chars/4)) DURING a turn — so an exhausted budget now aborts mid-generation, no
-			// tool loop required. Recipe: max: 5 completion tokens (tiny relative to a real
-			// completion), NO tools, a prompt inviting a long answer, num_predict: 512 (headroom so
-			// the daemon would otherwise keep generating well past the budget), temperature: 0.
+			// Content deltas are charged to the `allowance` incrementally as estimated tokens
+			// (ceil(chars/4)) during a turn, and passing the budget itself as the allowance makes
+			// that estimate share the budget's ceiling — a budget with no `allowance` is charged the
+			// reported usage only and cannot trip mid-stream. Recipe: max: 5 completion tokens (tiny
+			// relative to a real completion), NO tools, a prompt inviting a long answer,
+			// num_predict: 512 (headroom so the daemon would otherwise keep generating well past
+			// the budget), temperature: 0.
 			// Content-bound arithmetic: the estimator charges ceil(chars/4) per delta, so the budget
 			// (5 tokens) trips once ~20 chars have streamed; one more in-flight delta may land before
 			// the abort signal is observed. Even a generous few-hundred-char slack keeps this WELL
@@ -112,27 +129,106 @@ describe('Agent budget (live) — an exhausted token budget trips MID-GENERATION
 			const tripped = await retryUntil(
 				'trip the token budget mid-generation (no tool loop)',
 				async () => {
-					const recorder = createRecorder<[reason: unknown]>()
-					const budget = createTokenBudget({ max: 5, scope: 'completion' })
+					const reasons = createRecorder<[reason: unknown]>()
+					const budget = createTokenBudget({ id: 'tokens', max: 5, scope: 'completion' })
 					const agent = createAgent(createLiveOllama({ predict: 512, temperature: 0 }), {
 						budget,
+						allowance: budget,
 						timeout: TIMEOUT,
-						on: { abort: recorder.handler },
+						on: { abort: reasons.handler },
 					})
-					agent.context.messages.add({
-						role: 'user',
-						content: 'Write a long, detailed essay about the history of the printing press.',
-					})
+					agent.context.messages.add({ role: 'user', content: LONG_ANSWER_PROMPT })
 					const { result } = await driveAgent(agent.stream())
-					return { partial: result.partial, aborted: recorder.count, length: result.content.length }
+					return {
+						partial: result.partial,
+						budgeted: reasons.calls.filter(([reason]) => isBudgetError(reason)).length,
+						stop: result.stop,
+						length: result.content.length,
+					}
 				},
-				(value) => value.partial === true && value.aborted > 0,
+				(value) => value.partial === true && value.budgeted > 0 && value.stop?.layer === 'meter',
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(tripped.partial).toBe(true)
-			expect(tripped.aborted).toBeGreaterThan(0)
+			expect(tripped.budgeted).toBeGreaterThan(0)
+			expect(tripped.stop).toMatchObject({ layer: 'meter', id: 'tokens', max: 5 })
 			expect(tripped.length).toBeLessThan(1000)
+		},
+		TIMEOUT,
+	)
+})
+
+describe('Agent model layer (live) — the model ends an answer at its own token limit', () => {
+	it(
+		'a small num_predict cap ends the daemon answer with done_reason length on the terminal record',
+		async () => {
+			// The request body is the exact one the provider sends, so the daemon's terminal
+			// record is the record `read` projects.
+			const provider = createLiveOllama({ predict: FAST_OPTIONS.num_predict, temperature: 0 })
+			const body = provider.encode({ messages: [createUserMessage(LONG_ANSWER_PROMPT)] })
+			const response = await fetch(`${OLLAMA_CONFIG.host}${OLLAMA_CHAT_PATH}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify(body),
+				signal: AbortSignal.timeout(TIMEOUT),
+			})
+			expect(response.ok).toBe(true)
+
+			const records = createNDJSONParser().parse(await response.text())
+			const terminal = records.find((record) => Reflect.get(record, 'done') === true)
+
+			expect(terminal).toMatchObject({ done: true, done_reason: 'length' })
+		},
+		TIMEOUT,
+	)
+
+	it(
+		'provider.generate at a small num_predict cap reports result.truncated',
+		async () => {
+			const provider = createLiveOllama({ predict: FAST_OPTIONS.num_predict, temperature: 0 })
+
+			const result = await provider.generate(
+				[createUserMessage(LONG_ANSWER_PROMPT)],
+				AbortSignal.timeout(TIMEOUT),
+			)
+
+			expect(result.truncated).toBe(true)
+		},
+		TIMEOUT,
+	)
+
+	it(
+		'an agent run ending at a small num_predict cap settles non-partial with a model-layer stop naming the provider',
+		async () => {
+			const provider = createLiveOllama({ predict: FAST_OPTIONS.num_predict, temperature: 0 })
+			const agent = createAgent(provider, { timeout: TIMEOUT })
+			agent.context.messages.add({ role: 'user', content: LONG_ANSWER_PROMPT })
+
+			const result = await agent.generate()
+
+			expect(result.partial).toBe(false)
+			expect(result.stop).toMatchObject({ layer: 'model', id: provider.id })
+		},
+		TIMEOUT,
+	)
+
+	it(
+		'an unconstrained short answer reports no truncation and no stop',
+		async () => {
+			const provider = createLiveOllama({ predict: 256, temperature: 0 })
+
+			const generated = await provider.generate(
+				[createUserMessage(SHORT_ANSWER_PROMPT)],
+				AbortSignal.timeout(TIMEOUT),
+			)
+			const agent = createAgent(provider, { timeout: TIMEOUT })
+			agent.context.messages.add({ role: 'user', content: SHORT_ANSWER_PROMPT })
+			const result = await agent.generate()
+
+			expect(generated).not.toHaveProperty('truncated')
+			expect(result.partial).toBe(false)
+			expect(result).not.toHaveProperty('stop')
 		},
 		TIMEOUT,
 	)

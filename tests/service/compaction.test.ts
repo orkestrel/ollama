@@ -6,13 +6,18 @@ import {
 	createAgent,
 	createConversation,
 	createConversationManager,
-	estimateMessages,
 } from '@orkestrel/agent'
 import { createBudget } from '@orkestrel/budget'
 import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createTool, createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/core'
-import { buildTurns, createChallengeTools, createUserMessage } from '../setup.js'
+import {
+	buildTurns,
+	countRequestCharacters,
+	createChallengeTools,
+	createUserMessage,
+	estimateRequestMessages,
+} from '../setup.js'
 import { createRecordingProxy, driveAgent, wireMessages } from '../setupServer.js'
 import {
 	createLiveSummarizer,
@@ -39,11 +44,7 @@ describe('Agent (live) — compaction retains complete exchanges on the wire', (
 			})
 			const agent = createAgent(provider, {
 				conversations,
-				window: createBudget({
-					max: 20,
-					consumer: (messages: ReadonlyArray<{ readonly content: string }>) =>
-						messages.reduce((total, message) => total + message.content.length, 0),
-				}),
+				window: createBudget({ max: 20, consumer: countRequestCharacters }),
 				timeout: TIMEOUT,
 			})
 			const finalMessage = createUserMessage('Please continue.')
@@ -154,7 +155,7 @@ describe('Agent (live) — automatic compaction folds an older exchange mid-run'
 									'You MUST call the lookup_code tool to obtain the secret access code, then state the code in your final reply. Never invent a code.',
 								tools,
 								conversations,
-								window: createBudget({ max: 48, consumer: estimateMessages }),
+								window: createBudget({ max: 48, consumer: estimateRequestMessages }),
 								timeout: TIMEOUT,
 								limit: 4,
 							},
@@ -282,7 +283,7 @@ describe('Agent (live) — dependent lookups cause repeated mid-run compaction',
 									'You MUST first call lookup_challenge. Wait for its result, then call lookup_secret with the returned challenge. State the secret code in your final reply. Never invent a challenge or code.',
 								tools,
 								conversations,
-								window: createBudget({ max: 40, consumer: estimateMessages }),
+								window: createBudget({ max: 40, consumer: estimateRequestMessages }),
 								timeout: TIMEOUT,
 								limit: 8,
 							},

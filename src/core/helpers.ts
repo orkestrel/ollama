@@ -338,6 +338,29 @@ export function extractUsage(record: Readonly<Record<string, unknown>>): TokenUs
 }
 
 /**
+ * Extracts whether one terminal wire record reports that the model ended its answer at its own
+ * token limit.
+ *
+ * @remarks
+ * Projects the `/api/chat` `done_reason` field onto the domain `truncated` flag: `'length'` (the
+ * `num_predict` cap or a full context window) is `true`, and any other value, or none, yields
+ * `undefined`, so the flag is present only on a truncated answer. It does not read the request's
+ * prompt `truncate` setting.
+ *
+ * @param record - One parsed `/api/chat` NDJSON record
+ * @returns `true` for `'length'`, or `undefined` otherwise
+ *
+ * @example
+ * ```ts
+ * extractTruncated({ done: true, done_reason: 'length' }) // true
+ * extractTruncated({ done: true, done_reason: 'stop' }) // undefined
+ * ```
+ */
+export function extractTruncated(record: Readonly<Record<string, unknown>>): true | undefined {
+	return Reflect.get(record, 'done_reason') === 'length' ? true : undefined
+}
+
+/**
  * Extracts the daemon timing of one terminal wire record.
  *
  * @remarks

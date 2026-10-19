@@ -91,7 +91,7 @@
 		"@orkestrel/timeout": "^0.0.13",
 		"@orkestrel/workspace": "^0.0.12",
 		"@types/node": "^26.6.5",
-		"ollama": "0.6.3",
+		"ollama": "0.6.4",
 		"oxfmt": "^0.74.0",
 		"oxlint": "^1.89.0",
 		"typescript": "^6.0.3",

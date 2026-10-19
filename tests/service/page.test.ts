@@ -41,18 +41,13 @@ import { arrayOf, isString } from '@orkestrel/contract'
 import { createOllama, OLLAMA_CHAT_PATH } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { PAGE_TOOL } from '../setup.js'
-import type {
-	PageAttempt,
-	PageOutcome,
-	PageReceipt,
-	PageSessionInterface,
-	PageSessionOptions,
-} from '../setupServer.js'
+import type { PageAttempt, PageOutcome, PageReceipt, PageSessionInterface } from '../setupServer.js'
 import {
 	acceptPageAttempt,
 	boundPageAttempt,
 	CONTROL_PATH,
 	createPageSession,
+	createPageSessionOptions,
 	createRecordingTransport,
 	describeFailure,
 	DIST_PATH,
@@ -63,64 +58,27 @@ import {
 	MODULES_PATH,
 	OBFUSCATED,
 	PAGE_BOUNDS,
+	PAGE_CAPITAL,
+	PAGE_FAULT,
+	PAGE_INFERENCE_PATH,
 	PAGE_INTERVALS,
+	PAGE_OPERATIONS,
+	PAGE_RUN,
 	readOutcome,
+	requireBuild,
+	requirePageBrowser,
 	wireMessages,
 } from '../setupServer.js'
 import {
 	FAST_OPTIONS,
 	OLLAMA_CONFIG,
-	PAGE_BROWSER_ARGS,
 	PAGE_OPTIONS,
-	requireBuild,
 	requireDaemonOrigin,
-	requirePageBrowser,
 	TOOL_LOOP_OPTIONS,
 } from '../setupService.js'
 
 const BROWSER = requirePageBrowser()
 const BUILD = requireBuild()
-
-/** Holds the session options every case that drives no relay provider acquires with. */
-const SESSION: PageSessionOptions = Object.freeze({
-	executable: BROWSER.executable,
-	args: PAGE_BROWSER_ARGS,
-})
-
-/** Names the note the model is steered to pass to the page tool. */
-const NOTE = 'kyoto'
-
-/** Names the relay route the page dials on the fixture's own origin. */
-const INFERENCE_PATH = '/inference'
-
-/** Names the fault the page is asked to report on both of its error channels. */
-const FAULT = 'deliberate-page-fault'
-
-/** Names the city the direct daemon turn asks for, and the answer that names it. */
-const CAPITAL = Object.freeze({
-	prompt: 'What is the capital city of Japan? Reply with the city name only.',
-	answer: /tokyo/i,
-})
-
-/** Holds the steering and bounds every in-page relay run takes. */
-const RUN = Object.freeze({
-	system:
-		`You MUST call the ${PAGE_TOOL.name} tool with note "${NOTE}" to answer. ` +
-		'After it returns, state the exact value it returned in your final reply.',
-	prompt: `Call the ${PAGE_TOOL.name} tool with note "${NOTE}", then tell me exactly what it returned.`,
-	timeout: PAGE_BOUNDS.run,
-	limit: 4,
-})
-
-/** Names every operation the served page parks for this file, in the order it declares them. */
-const OPERATIONS: readonly string[] = Object.freeze([
-	'run',
-	'control',
-	'fault',
-	'direct',
-	'receipts',
-	'resources',
-])
 
 describe('Agent tool loop in a real page (live) — the published closure', () => {
 	it(
@@ -128,7 +86,7 @@ describe('Agent tool loop in a real page (live) — the published closure', () =
 		async () => {
 			await boundPageAttempt(
 				PAGE_BOUNDS,
-				(signal) => createPageSession({ ...SESSION, signal }),
+				(signal) => createPageSession({ ...createPageSessionOptions(BROWSER), signal }),
 				async (session, signal) => {
 					// No agent has run: this case reads the closure's own evaluation, so a top-level
 					// side effect or an unresolved specifier surfaces as itself rather than as a
@@ -152,7 +110,7 @@ describe('Agent tool loop in a real page (live) — the published closure', () =
 							arrayOf(isString),
 							{ timeout: PAGE_BOUNDS.read, signal },
 						),
-					).toEqual(OPERATIONS)
+					).toEqual(PAGE_OPERATIONS)
 					// The page error recorder and the console recorder are certified by the control
 					// case, which makes each of them, in the same session shape, report a fault the
 					// page deliberately produced.
@@ -182,97 +140,111 @@ describe('Agent tool loop in a real page (live) — a page tool through the rela
 		'executes a page tool through an agent over a live Ollama relay and feeds its result into the next model turn',
 		async () => {
 			const attempts: PageAttempt[] = []
-			let satisfied: PageAttempt | undefined
-			let unsatisfied: unknown
-			try {
-				satisfied = await retryUntil(
-					'have the model call the page tool and carry its receipt into the next turn',
-					async () => {
-						const daemon = createRecordingTransport()
-						let session: PageSessionInterface | undefined
-						let outcome: PageOutcome | undefined
-						let receipts: readonly PageReceipt[] = []
-						let resources: readonly string[] = []
-						let mark = 0
-						let fault: string | undefined
-						// Nothing in this producer throws, because `retryUntil` catches a producer
-						// throw and spends another launch on it. The acquisition, the reads, the
-						// release, and the attempt's own deadline are retained as this attempt's
-						// `fault` instead, and `acceptPageAttempt` decides from the record whether
-						// another launch can change the reading.
-						//
-						// The whole attempt ends within its allowance plus its release share, so an
-						// admissible schedule cannot reach the case bound by spending each inner
-						// share in turn. The session is stashed as it is acquired because the
-						// traffic is read after the release, which `boundPageAttempt` owns.
-						try {
-							await boundPageAttempt(
-								PAGE_BOUNDS,
-								(signal) =>
-									createPageSession({
-										...SESSION,
-										provider: createOllama({
-											model: OLLAMA_CONFIG.model,
-											url: OLLAMA_CONFIG.host,
-											options: TOOL_LOOP_OPTIONS,
-											fetch: daemon.fetch,
-										}),
-										signal,
-									}),
-								async (acquired, signal) => {
-									session = acquired
-									// The window opens after the driver parked its operations, so the
-									// module fetches the page made while loading are outside it.
-									mark = acquired.requests.length
-									outcome = await readOutcome(
-										acquired.page,
-										`page.run(${JSON.stringify({ ...RUN, url: `${acquired.fixture.url}${INFERENCE_PATH}`, authorization: OBFUSCATED })})`,
-										isPageOutcome,
-										{ timeout: PAGE_BOUNDS.evaluate, signal },
-									)
-									receipts = await readOutcome(acquired.page, 'page.receipts()', isPageReceipts, {
-										timeout: PAGE_BOUNDS.read,
-										signal,
-									})
-									resources = await readOutcome(
-										acquired.page,
-										'page.resources()',
-										arrayOf(isString),
-										{ timeout: PAGE_BOUNDS.read, signal },
-									)
-								},
-							)
-						} catch (failure) {
-							fault = String(failure)
-						}
-						// Retained after the release, from recorders the release does not clear, so
-						// this attempt's traffic is asserted whether it was read or not.
-						const requests = session?.requests ?? []
-						const attempt: PageAttempt = {
-							...(outcome === undefined ? {} : { outcome }),
-							receipts,
-							resources,
-							page: requests
-								.slice(mark)
-								.map((request) => `${request.method} ${new URL(request.url).pathname}`),
-							relay:
-								session?.fixture.requests.filter((request) => request.path === INFERENCE_PATH) ??
-								[],
-							daemon: [...daemon.requests],
-							...(fault === undefined ? {} : { fault }),
-						}
-						attempts.push(attempt)
-						return attempt
-					},
-					acceptPageAttempt,
-					{
-						attempts: PAGE_BOUNDS.launches,
-						budget: PAGE_BOUNDS.budget,
-					},
-				)
-			} catch (failure) {
-				unsatisfied = failure
-			}
+			const retried = await retryUntil(
+				'have the model call the page tool and carry its receipt into the next turn',
+				async () => {
+					const daemon = createRecordingTransport()
+					// Nothing in this producer throws, because `retryUntil` catches a producer
+					// throw and spends another launch on it. The acquisition, the reads, the
+					// release, and the attempt's own deadline are retained as this attempt's
+					// `fault` instead, and `acceptPageAttempt` decides from the record whether
+					// another launch can change the reading.
+					//
+					// The whole attempt ends within its allowance plus its release share, so an
+					// admissible schedule cannot reach the case bound by spending each inner
+					// share in turn. The observation appends each read as it completes, because
+					// the traffic is read after the release, which `boundPageAttempt` owns, and a
+					// read or a release that fails still leaves the reads before it.
+					const reads: Array<
+						| {
+								readonly category: 'session'
+								readonly session: PageSessionInterface
+								readonly mark: number
+						  }
+						| { readonly category: 'outcome'; readonly outcome: PageOutcome }
+						| { readonly category: 'receipts'; readonly receipts: readonly PageReceipt[] }
+						| { readonly category: 'resources'; readonly resources: readonly string[] }
+					> = []
+					const fault = await boundPageAttempt(
+						PAGE_BOUNDS,
+						(signal) =>
+							createPageSession({
+								...createPageSessionOptions(BROWSER),
+								provider: createOllama({
+									model: OLLAMA_CONFIG.model,
+									url: OLLAMA_CONFIG.host,
+									options: TOOL_LOOP_OPTIONS,
+									fetch: daemon.fetch,
+								}),
+								signal,
+							}),
+						async (acquired, signal) => {
+							// The window opens after the driver parked its operations, so the
+							// module fetches the page made while loading are outside it.
+							reads.push({
+								category: 'session',
+								session: acquired,
+								mark: acquired.requests.length,
+							})
+							reads.push({
+								category: 'outcome',
+								outcome: await readOutcome(
+									acquired.page,
+									`page.run(${JSON.stringify({ ...PAGE_RUN, url: `${acquired.fixture.url}${PAGE_INFERENCE_PATH}`, authorization: OBFUSCATED })})`,
+									isPageOutcome,
+									{ timeout: PAGE_BOUNDS.evaluate, signal },
+								),
+							})
+							reads.push({
+								category: 'receipts',
+								receipts: await readOutcome(acquired.page, 'page.receipts()', isPageReceipts, {
+									timeout: PAGE_BOUNDS.read,
+									signal,
+								}),
+							})
+							reads.push({
+								category: 'resources',
+								resources: await readOutcome(acquired.page, 'page.resources()', arrayOf(isString), {
+									timeout: PAGE_BOUNDS.read,
+									signal,
+								}),
+							})
+						},
+					).then(
+						() => undefined,
+						(failure: unknown) => String(failure),
+					)
+					// Retained after the release, from recorders the release does not clear, so
+					// this attempt's traffic is asserted whether it was read or not.
+					const opened = reads.find((read) => read.category === 'session')
+					const requests = opened?.session.requests ?? []
+					const outcome = reads.find((read) => read.category === 'outcome')
+					const attempt: PageAttempt = {
+						...(outcome === undefined ? {} : { outcome: outcome.outcome }),
+						receipts: reads.find((read) => read.category === 'receipts')?.receipts ?? [],
+						resources: reads.find((read) => read.category === 'resources')?.resources ?? [],
+						page: requests
+							.slice(opened?.mark ?? 0)
+							.map((request) => `${request.method} ${new URL(request.url).pathname}`),
+						relay:
+							opened?.session.fixture.requests.filter(
+								(request) => request.path === PAGE_INFERENCE_PATH,
+							) ?? [],
+						daemon: [...daemon.requests],
+						...(fault === undefined ? {} : { fault }),
+					}
+					attempts.push(attempt)
+					return attempt
+				},
+				acceptPageAttempt,
+				{
+					attempts: PAGE_BOUNDS.launches,
+					budget: PAGE_BOUNDS.budget,
+				},
+			).then(
+				(accepted) => ({ accepted, failure: undefined }),
+				(failure: unknown) => ({ accepted: undefined, failure }),
+			)
 
 			// ── The request accounting, over EVERY retained attempt ───────────────────
 			// A satisfied attempt never excuses an attempt whose traffic was wrong, so the
@@ -286,7 +258,7 @@ describe('Agent tool loop in a real page (live) — a page tool through the rela
 				const outcome = requireValue(attempt.outcome, `attempt ${index} retained no outcome`)
 				const turns = outcome.turns.length
 				expect(attempt.page, `attempt ${index}`).toEqual(
-					Array.from({ length: turns }, () => `POST ${INFERENCE_PATH}`),
+					Array.from({ length: turns }, () => `POST ${PAGE_INFERENCE_PATH}`),
 				)
 				expect(attempt.relay, `attempt ${index}`).toHaveLength(turns)
 				expect(
@@ -298,8 +270,11 @@ describe('Agent tool loop in a real page (live) — a page tool through the rela
 					`attempt ${index}`,
 				).toBe(true)
 			}
-			if (unsatisfied !== undefined) throw unsatisfied
-			const settled = requireValue(satisfied, 'the bounded retry returned no satisfied attempt')
+			if (retried.failure !== undefined) throw retried.failure
+			const settled = requireValue(
+				retried.accepted,
+				'the bounded retry returned no satisfied attempt',
+			)
 
 			// ── The execution receipt ─────────────────────────────────────────────────
 			const outcome = requireValue(settled.outcome, 'the satisfied attempt retained no outcome')
@@ -323,8 +298,8 @@ describe('Agent tool loop in a real page (live) — a page tool through the rela
 			expect(written.receipt.startsWith('receipt-')).toBe(true)
 			// The receipt was absent from the prompt, so a later request carrying it can only
 			// be the tool result being fed back.
-			expect(RUN.system.includes(written.receipt)).toBe(false)
-			expect(RUN.prompt.includes(written.receipt)).toBe(false)
+			expect(PAGE_RUN.system.includes(written.receipt)).toBe(false)
+			expect(PAGE_RUN.prompt.includes(written.receipt)).toBe(false)
 
 			// ── The feedback, pinned to the turn after the call ────────────────────────
 			// The agent issues one request per turn, so the request that asked for the call is
@@ -379,7 +354,7 @@ describe('Agent tool loop in a real page (live) — a page tool through the rela
 			expect(result.content.length).toBeGreaterThan(0)
 			// The page's own Resource Timing drain corroborates the browser's request log.
 			expect(
-				settled.resources.filter((name) => name.endsWith(INFERENCE_PATH)).length,
+				settled.resources.filter((name) => name.endsWith(PAGE_INFERENCE_PATH)).length,
 			).toBeGreaterThanOrEqual(1)
 		},
 		PAGE_BOUNDS.retry,
@@ -392,7 +367,7 @@ describe('Agent tool loop in a real page (live) — the recorders report a known
 		async () => {
 			await boundPageAttempt(
 				PAGE_BOUNDS,
-				(signal) => createPageSession({ ...SESSION, signal }),
+				(signal) => createPageSession({ ...createPageSessionOptions(BROWSER), signal }),
 				async (session, signal) => {
 					const mark = session.requests.length
 					const control = await readOutcome(session.page, 'page.control()', isPageControl, {
@@ -417,19 +392,19 @@ describe('Agent tool loop in a real page (live) — the recorders report a known
 					// report it. Without this, an unsubscribed channel and a silent page read alike.
 					expect(session.errors).toEqual([])
 					expect(
-						await readOutcome(session.page, `page.fault(${JSON.stringify(FAULT)})`, isString, {
+						await readOutcome(session.page, `page.fault(${JSON.stringify(PAGE_FAULT)})`, isString, {
 							timeout: PAGE_BOUNDS.read,
 							signal,
 						}),
-					).toBe(FAULT)
+					).toBe(PAGE_FAULT)
 					// The wait takes the attempt's own signal beside its budget, so a page that never
 					// reports the fault ends at the attempt's deadline rather than outlasting it.
 					await waitForCondition(
 						'the page error and console recorders to report the deliberate fault',
 						() =>
-							session.errors.some((error) => error.message.includes(FAULT)) &&
+							session.errors.some((error) => error.message.includes(PAGE_FAULT)) &&
 							session.messages.some(
-								(message) => message.level === 'error' && message.text.includes(FAULT),
+								(message) => message.level === 'error' && message.text.includes(PAGE_FAULT),
 							),
 						{ budget: PAGE_BOUNDS.ready, signal },
 					)
@@ -446,7 +421,7 @@ describe('Agent tool loop in a real page (live) — a refused page credential', 
 		async () => {
 			const daemon = createRecordingTransport()
 			const options = {
-				...SESSION,
+				...createPageSessionOptions(BROWSER),
 				provider: createOllama({
 					model: OLLAMA_CONFIG.model,
 					url: OLLAMA_CONFIG.host,
@@ -460,7 +435,7 @@ describe('Agent tool loop in a real page (live) — a refused page credential', 
 				async (session, signal) => {
 					const outcome = await readOutcome(
 						session.page,
-						`page.run(${JSON.stringify({ ...RUN, url: `${session.fixture.url}${INFERENCE_PATH}`, authorization: `${OBFUSCATED}-wrong` })})`,
+						`page.run(${JSON.stringify({ ...PAGE_RUN, url: `${session.fixture.url}${PAGE_INFERENCE_PATH}`, authorization: `${OBFUSCATED}-wrong` })})`,
 						isPageOutcome,
 						{ timeout: PAGE_BOUNDS.evaluate, signal },
 					)
@@ -474,7 +449,7 @@ describe('Agent tool loop in a real page (live) — a refused page credential', 
 					// never called and no `/api/chat` request exists to have been refused later.
 					expect(daemon.requests).toEqual([])
 					expect(
-						session.fixture.requests.filter((request) => request.path === INFERENCE_PATH),
+						session.fixture.requests.filter((request) => request.path === PAGE_INFERENCE_PATH),
 					).toHaveLength(1)
 				},
 			)
@@ -489,7 +464,7 @@ describe('Ollama in a real page (live) — the daemon driven directly', () => {
 		async () => {
 			await boundPageAttempt(
 				PAGE_BOUNDS,
-				(signal) => createPageSession({ ...SESSION, signal }),
+				(signal) => createPageSession({ ...createPageSessionOptions(BROWSER), signal }),
 				async (session, signal) => {
 					// The page dials the daemon from its own ephemeral loopback origin, so the daemon
 					// decides a preflight first. A host that refuses it is a host where the guide's
@@ -498,14 +473,14 @@ describe('Ollama in a real page (live) — the daemon driven directly', () => {
 					const mark = session.requests.length
 					const direct = await readOutcome(
 						session.page,
-						`page.direct(${JSON.stringify({ model: OLLAMA_CONFIG.model, url: OLLAMA_CONFIG.host, options: PAGE_OPTIONS, prompt: CAPITAL.prompt, timeout: PAGE_BOUNDS.run })})`,
+						`page.direct(${JSON.stringify({ model: OLLAMA_CONFIG.model, url: OLLAMA_CONFIG.host, options: PAGE_OPTIONS, prompt: PAGE_CAPITAL.prompt, timeout: PAGE_BOUNDS.run })})`,
 						isPageGeneration,
 						{ timeout: PAGE_BOUNDS.evaluate, signal },
 					)
 					expect(direct.name).toBe('ollama')
 					// A property of an answer, not its length: the daemon answered the question the
 					// page asked. A turn the daemon could not read reports its confusion instead.
-					expect(direct.content).toMatch(CAPITAL.answer)
+					expect(direct.content).toMatch(PAGE_CAPITAL.answer)
 					// Asserted by filtering, never by a total: the browser sends its own preflight to
 					// the daemon origin and that preflight is its own recorded request.
 					const daemonOrigin = new URL(OLLAMA_CONFIG.host).origin
@@ -521,11 +496,11 @@ describe('Ollama in a real page (live) — the daemon driven directly', () => {
 					// The prompt the page passed is what left the page: the recorded POST body carries
 					// it, so the turn exercised the question rather than an empty user message.
 					expect(
-						chats.filter((request) => (request.post ?? '').includes(CAPITAL.prompt)),
+						chats.filter((request) => (request.post ?? '').includes(PAGE_CAPITAL.prompt)),
 					).toHaveLength(1)
 					// Nothing reached the relay: this page talked to the daemon itself.
 					expect(
-						session.fixture.requests.filter((request) => request.path === INFERENCE_PATH),
+						session.fixture.requests.filter((request) => request.path === PAGE_INFERENCE_PATH),
 					).toEqual([])
 				},
 			)
@@ -545,7 +520,7 @@ describe('Agent tool loop in a real page (live) — the attempt bound', () => {
 			const launched = performance.now()
 			const outran = await boundPageAttempt(
 				{ attempt: PAGE_INTERVALS.launch, release: PAGE_BOUNDS.release },
-				(signal) => createPageSession({ ...SESSION, signal }),
+				(signal) => createPageSession({ ...createPageSessionOptions(BROWSER), signal }),
 				() => Promise.resolve(),
 			).then(
 				() => undefined,
@@ -562,13 +537,13 @@ describe('Agent tool loop in a real page (live) — the attempt bound', () => {
 			// parks on a signal of its own rather than the attempt's, because a wait on the
 			// attempt's signal would end at the same instant the deadline fires and leave
 			// nothing in flight for the bound to cut.
-			let acquired: PageSessionInterface | undefined
+			const acquired: PageSessionInterface[] = []
 			const observed = performance.now()
 			const interrupted = await boundPageAttempt(
 				{ attempt: PAGE_INTERVALS.observe, release: PAGE_BOUNDS.release },
-				(signal) => createPageSession({ ...SESSION, signal }),
+				(signal) => createPageSession({ ...createPageSessionOptions(BROWSER), signal }),
 				async (session) => {
-					acquired = session
+					acquired.push(session)
 					await waitForAbort(new AbortController().signal)
 				},
 			).then(
@@ -584,15 +559,17 @@ describe('Agent tool loop in a real page (live) — the attempt bound', () => {
 
 			// The session that attempt acquired is released before the rejection reaches here, so
 			// the page refuses the next call it is given. A browser left running would answer it.
-			const released = requireValue(
+			expect(
 				acquired,
 				`the attempt acquired no session within ${PAGE_INTERVALS.observe} ms`,
-			)
-			const refused = await released.page.evaluate('1', { timeout: PAGE_BOUNDS.read }).then(
-				() => undefined,
-				(thrown: unknown) => thrown,
-			)
-			expect(refused).toBeInstanceOf(Error)
+			).toHaveLength(1)
+			for (const released of acquired) {
+				const refused = await released.page.evaluate('1', { timeout: PAGE_BOUNDS.read }).then(
+					() => undefined,
+					(thrown: unknown) => thrown,
+				)
+				expect(refused).toBeInstanceOf(Error)
+			}
 		},
 		PAGE_BOUNDS.case,
 	)
@@ -604,16 +581,18 @@ describe('Agent tool loop in a real page (live) — the attempt bound', () => {
 			// deliberate delay rather than a wait on anything the host produces: the interleaving
 			// this case exists for is the one where the attempt has already rejected and a live
 			// browser is still on its way back.
-			let delayed: PageSessionInterface | undefined
+			const delayed: PageSessionInterface[] = []
 			const started = performance.now()
 			const outran = await boundPageAttempt(
 				{ attempt: PAGE_INTERVALS.late, release: PAGE_BOUNDS.release },
 				(signal) =>
-					createPageSession({ ...SESSION, signal }).then(async (session) => {
-						delayed = session
-						await waitForDelay(PAGE_INTERVALS.hold)
-						return session
-					}),
+					createPageSession({ ...createPageSessionOptions(BROWSER), signal }).then(
+						async (session) => {
+							delayed.push(session)
+							await waitForDelay(PAGE_INTERVALS.hold)
+							return session
+						},
+					),
 				() => Promise.resolve(),
 			).then(
 				() => undefined,
@@ -632,15 +611,17 @@ describe('Agent tool loop in a real page (live) — the attempt bound', () => {
 			// The browser that acquisition was still holding is released, so the page refuses the
 			// next call it is given. An attempt that abandoned its losing acquisition would leave
 			// this one answering.
-			const released = requireValue(
+			expect(
 				delayed,
 				`the acquisition took no session within ${PAGE_INTERVALS.late + PAGE_INTERVALS.hold} ms`,
-			)
-			const refused = await released.page.evaluate('1', { timeout: PAGE_BOUNDS.read }).then(
-				() => undefined,
-				(thrown: unknown) => thrown,
-			)
-			expect(refused).toBeInstanceOf(Error)
+			).toHaveLength(1)
+			for (const released of delayed) {
+				const refused = await released.page.evaluate('1', { timeout: PAGE_BOUNDS.read }).then(
+					() => undefined,
+					(thrown: unknown) => thrown,
+				)
+				expect(refused).toBeInstanceOf(Error)
+			}
 		},
 		PAGE_BOUNDS.case,
 	)
@@ -651,13 +632,13 @@ describe('Agent tool loop in a real page (live) — the attempt bound', () => {
 			// The observation completes while the allowance holds and the release crosses it. The
 			// attempt's elapsed total is what the allowance is about, so this is a failure naming
 			// the release rather than the success the observation on its own would report.
-			let crossed: PageSessionInterface | undefined
+			const crossed: PageSessionInterface[] = []
 			const started = performance.now()
 			const late = await boundPageAttempt(
 				{ attempt: PAGE_INTERVALS.late, release: PAGE_BOUNDS.release },
 				(signal) =>
-					createPageSession({ ...SESSION, signal }).then((session) => {
-						crossed = session
+					createPageSession({ ...createPageSessionOptions(BROWSER), signal }).then((session) => {
+						crossed.push(session)
 						return {
 							...session,
 							async destroy() {
@@ -680,15 +661,17 @@ describe('Agent tool loop in a real page (live) — the attempt bound', () => {
 
 			// The release the attempt waited for still ran, so the failure reports a crossed
 			// allowance rather than a browser nobody released.
-			const released = requireValue(
+			expect(
 				crossed,
 				`the acquisition took no session within ${PAGE_INTERVALS.late} ms`,
-			)
-			const refused = await released.page.evaluate('1', { timeout: PAGE_BOUNDS.read }).then(
-				() => undefined,
-				(thrown: unknown) => thrown,
-			)
-			expect(refused).toBeInstanceOf(Error)
+			).toHaveLength(1)
+			for (const released of crossed) {
+				const refused = await released.page.evaluate('1', { timeout: PAGE_BOUNDS.read }).then(
+					() => undefined,
+					(thrown: unknown) => thrown,
+				)
+				expect(refused).toBeInstanceOf(Error)
+			}
 		},
 		PAGE_BOUNDS.case,
 	)

@@ -2,6 +2,7 @@ import { createAgent } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
 import { retryUntil } from '@orkestrel/test'
 import { describe, expect, it } from 'vitest'
+import { CASE_TIMEOUT } from '../setup.js'
 import { createLiveOllama, RETRY_BUDGET } from '../setupService.js'
 
 // Agent-level structured output (live) — AgentRunOptions.schema (0.0.6) forwards a
@@ -11,8 +12,6 @@ import { createLiveOllama, RETRY_BUDGET } from '../setupService.js'
 // num_predict 64, temperature 0 yields exactly-shaped compact JSON. Warmed, no
 // skipIf.
 
-const TIMEOUT = 60_000
-
 describe('Agent (live) — run({ schema }) constrains output to the requested JSON shape', () => {
 	it(
 		'a { city, population } schema yields content that parses to an object with a string city and numeric population, resolving non-partial',
@@ -21,7 +20,7 @@ describe('Agent (live) — run({ schema }) constrains output to the requested JS
 				'produce content that parses as JSON under a schema constraint',
 				async () => {
 					const provider = createLiveOllama({ predict: 64, temperature: 0 })
-					const agent = createAgent(provider, { timeout: TIMEOUT })
+					const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
 					agent.context.messages.add({
 						role: 'user',
 						content: 'Give me a city and its population.',
@@ -52,6 +51,6 @@ describe('Agent (live) — run({ schema }) constrains output to the requested JS
 			expect(typeof parsed.population).toBe('number')
 			expect(partial).toBe(false)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })

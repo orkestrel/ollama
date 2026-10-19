@@ -1,5 +1,6 @@
 import type {
 	AgentChunk,
+	AgentContextInterface,
 	AgentStreamInterface,
 	AgentResult,
 	Message,
@@ -43,8 +44,10 @@ import {
 import { createContract, isRecord, schemaToShape } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
+import { requireValue, waitForDelay } from '@orkestrel/test'
 import { createScratch, readInventory } from '@orkestrel/test/server'
-import { createToolManager } from '@orkestrel/tool'
+import { createTool, createToolManager } from '@orkestrel/tool'
+import { createOllama } from '@src/core'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
@@ -53,11 +56,12 @@ import {
 	createThrowingTool,
 	describeFailure,
 	driveAgent,
+	PAGE_BROWSER_ARGS,
+	requirePageBrowser,
 	reservePort,
 	rootToPath,
 	WORKSPACE_ROOT,
 } from './setupServer.js'
-import { PAGE_BROWSER_ARGS, requirePageBrowser } from './setupService.js'
 
 /** Represents one product the store fixture sells. */
 export interface StoreProduct {
@@ -100,6 +104,16 @@ export interface StoreTiming {
 	readonly start: number
 	readonly end: number
 }
+
+/**
+ * Represents one entry of a reasoning log: the `think` text of a chunk, or the `usage` that closes a turn.
+ *
+ * @remarks The entry holds only what {@link deriveTurnThinking} reads, so a `usage` entry carries no
+ * token counts.
+ */
+export type StoreThought =
+	| { readonly category: 'think'; readonly content: string }
+	| { readonly category: 'usage' }
 
 /** Represents one tool call a store run dispatched, as the transcript records it. */
 export interface StoreCall {
@@ -812,6 +826,68 @@ export function buildPageResponse(html: string, status = 200): Response {
 }
 
 /**
+ * Records what one store server's pages changed: the cart, the submitted searches, and the
+ * checkout names.
+ *
+ * @remarks One store server creates one record, so two servers never share state. The reader
+ * copies each collection, so later requests cannot change an earlier reading.
+ */
+export class StoreActivity {
+	readonly #cart: string[]
+	readonly #searches: string[] = []
+	readonly #orders: string[] = []
+
+	/**
+	 * Creates a record whose cart already holds products.
+	 *
+	 * @param initial - The product names the cart holds before any request, in order. Default: none
+	 */
+	constructor(initial: readonly string[] = []) {
+		this.#cart = [...initial]
+	}
+
+	/**
+	 * Adds a product to the cart.
+	 *
+	 * @param name - The product's name
+	 */
+	add(name: string): void {
+		this.#cart.push(name)
+	}
+
+	/**
+	 * Records one submitted search query.
+	 *
+	 * @param query - The submitted text
+	 */
+	search(query: string): void {
+		this.#searches.push(query)
+	}
+
+	/**
+	 * Records one checkout name.
+	 *
+	 * @param name - The name the checkout submitted
+	 */
+	order(name: string): void {
+		this.#orders.push(name)
+	}
+
+	/**
+	 * Reads what the pages changed.
+	 *
+	 * @returns Copies of the cart, the searches, and the orders, each in submission order
+	 */
+	read(): StoreState {
+		return {
+			cart: [...this.#cart],
+			searches: [...this.#searches],
+			orders: [...this.#orders],
+		}
+	}
+}
+
+/**
  * Starts the store fixture on an ephemeral loopback port.
  *
  * @param port - The port supplied through the instrument seam. Default: 0, an ephemeral port
@@ -825,9 +901,7 @@ export async function createStoreServer(
 	port = 0,
 	initial: readonly string[] = [],
 ): Promise<StoreServerInterface> {
-	const cart: string[] = [...initial]
-	const searches: string[] = []
-	const orders: string[] = []
+	const activity = new StoreActivity(initial)
 	const dispatcher = createDispatcher<Record<string, never>>()
 	dispatcher.add({ method: 'GET', path: '/', handler: () => buildPageResponse(renderCatalogue()) })
 	dispatcher.add({
@@ -835,7 +909,7 @@ export async function createStoreServer(
 		path: '/search',
 		handler(request) {
 			const query = new URL(request.url).searchParams.get('q') ?? ''
-			searches.push(query)
+			activity.search(query)
 			return buildPageResponse(renderSearch(query))
 		},
 	})
@@ -851,7 +925,7 @@ export async function createStoreServer(
 	dispatcher.add({
 		method: 'GET',
 		path: '/cart',
-		handler: () => buildPageResponse(renderCart(cart)),
+		handler: () => buildPageResponse(renderCart(activity.read().cart)),
 	})
 	dispatcher.add({
 		method: 'POST',
@@ -860,7 +934,7 @@ export async function createStoreServer(
 			const id = new URLSearchParams(await request.text()).get('product')
 			const product = findStoreProduct(id)
 			if (product === undefined) return buildMissingResponse()
-			cart.push(product.name)
+			activity.add(product.name)
 			return new Response(null, { status: 303, headers: { location: '/cart' } })
 		},
 	})
@@ -873,7 +947,7 @@ export async function createStoreServer(
 		method: 'POST',
 		path: '/order',
 		async handler(request) {
-			orders.push(await request.text())
+			activity.order(await request.text())
 			return buildUncachedResponse(STORE_CODE, 'text/plain; charset=utf-8')
 		},
 	})
@@ -886,7 +960,7 @@ export async function createStoreServer(
 	const bound = await server.start()
 	return {
 		url: `http://127.0.0.1:${bound}`,
-		read: () => ({ cart: [...cart], searches: [...searches], orders: [...orders] }),
+		read: () => activity.read(),
 		stop: () => server.stop(),
 	}
 }
@@ -962,14 +1036,43 @@ export const STORE_JOURNEY_BOUNDS = Object.freeze({
 })
 
 /**
+ * Records the monotonic intervals of one store conversation in the order they finished.
+ *
+ * @remarks One conversation creates one timer, because the provider wrapper and every pending tool
+ * dispatch of that conversation record into it concurrently. The reader copies the list, so a
+ * later interval cannot change an earlier reading.
+ */
+export class StoreTimer {
+	readonly #timings: StoreTiming[] = []
+
+	/**
+	 * Records one finished interval.
+	 *
+	 * @param timing - The operation's name and monotonic start and end
+	 */
+	record(timing: StoreTiming): void {
+		this.#timings.push(timing)
+	}
+
+	/**
+	 * Reads the intervals recorded so far.
+	 *
+	 * @returns A copy of the intervals in the order they were recorded
+	 */
+	read(): readonly StoreTiming[] {
+		return [...this.#timings]
+	}
+}
+
+/**
  * Records provider intervals without changing generated content or advertised definitions.
  * @param provider - The provider to drive
- * @param timings - The owned interval recorder
+ * @param timer - The conversation's interval recorder
  * @returns A provider that records each completed or failed generation
  */
 export function createTimedProvider(
 	provider: ProviderInterface,
-	timings: StoreTiming[],
+	timer: StoreTimer,
 ): ProviderInterface {
 	return {
 		id: provider.id,
@@ -980,7 +1083,7 @@ export function createTimedProvider(
 			try {
 				return await provider.generate(messages, signal, tools, options)
 			} finally {
-				timings.push({ operation: 'generation', name: provider.id, start, end: performance.now() })
+				timer.record({ operation: 'generation', name: provider.id, start, end: performance.now() })
 			}
 		},
 		async *stream(messages, signal, tools, options) {
@@ -988,7 +1091,7 @@ export function createTimedProvider(
 			try {
 				return yield* provider.stream(messages, signal, tools, options)
 			} finally {
-				timings.push({ operation: 'generation', name: provider.id, start, end: performance.now() })
+				timer.record({ operation: 'generation', name: provider.id, start, end: performance.now() })
 			}
 		},
 	}
@@ -997,19 +1100,19 @@ export function createTimedProvider(
 /**
  * Records each dispatched tool interval while preserving its definition and execution context.
  * @param tools - The registered browser tools
- * @param timings - The owned interval recorder
+ * @param timer - The conversation's interval recorder
  * @returns A live registry view that times every dispatch
  */
 export function createTimedTools(
 	tools: ToolManagerInterface,
-	timings: StoreTiming[],
+	timer: StoreTimer,
 ): ToolManagerInterface {
 	return new Proxy(tools, {
 		get(target, key) {
 			if (key === 'execute')
 				return (calls: ToolCall | readonly ToolCall[], context?: ToolContext) => {
-					if ('name' in calls) return executeTimedTool(target, calls, timings, context)
-					return Promise.all(calls.map((call) => executeTimedTool(target, call, timings, context)))
+					if ('name' in calls) return executeTimedTool(target, calls, timer, context)
+					return Promise.all(calls.map((call) => executeTimedTool(target, call, timer, context)))
 				}
 			const value: unknown = Reflect.get(target, key, target)
 			return typeof value === 'function' ? value.bind(target) : value
@@ -1021,21 +1124,21 @@ export function createTimedTools(
  * Records one registry dispatch, including a refusal or a thrown call.
  * @param tools - The live registry
  * @param call - The model's call
- * @param timings - The owned recorder
+ * @param timer - The conversation's interval recorder
  * @param context - The execution context. Default: none
  * @returns The unchanged tool result
  */
 export async function executeTimedTool(
 	tools: ToolManagerInterface,
 	call: ToolCall,
-	timings: StoreTiming[],
+	timer: StoreTimer,
 	context?: ToolContext,
 ): Promise<ToolResult> {
 	const start = performance.now()
 	try {
 		return await tools.execute(call, context)
 	} finally {
-		timings.push({ operation: 'tool', name: call.name, start, end: performance.now() })
+		timer.record({ operation: 'tool', name: call.name, start, end: performance.now() })
 	}
 }
 
@@ -1051,6 +1154,43 @@ export function renderToolText(result: ToolResult): string {
 }
 
 /**
+ * Counts the assistant turns of one conversation and pairs each assistant message with the thinking
+ * its turn surfaced.
+ *
+ * @remarks One {@link attachThinking} call creates one counter, because the count of assistant
+ * messages seen so far changes with every message the call visits. A message is read once, in the
+ * order the list holds them, and a message already visited is never read again.
+ */
+export class StoreThinking {
+	readonly #thoughts: readonly string[]
+	#turn = 0
+
+	/**
+	 * Creates a counter that has seen no assistant message.
+	 *
+	 * @param thoughts - The thinking each provider turn surfaced, in turn order; `''` string for a
+	 * silent turn
+	 */
+	constructor(thoughts: readonly string[]) {
+		this.#thoughts = thoughts
+	}
+
+	/**
+	 * Pairs one message with the thinking of its turn.
+	 *
+	 * @param message - The next message of the conversation
+	 * @returns The message itself when it is not an assistant message or its turn was silent;
+	 * otherwise a copy that carries the turn's thinking
+	 */
+	attach(message: Message): StoreMessage {
+		if (message.role !== 'assistant') return message
+		const thinking = this.#thoughts[this.#turn] ?? ''
+		this.#turn += 1
+		return thinking === '' ? message : { ...message, thinking }
+	}
+}
+
+/**
  * Pairs each assistant message with the thinking its turn surfaced.
  *
  * @param messages - The conversation's messages, in order
@@ -1062,13 +1202,8 @@ export function attachThinking(
 	messages: readonly Message[],
 	thoughts: readonly string[],
 ): readonly StoreMessage[] {
-	let turn = 0
-	return messages.map((message) => {
-		if (message.role !== 'assistant') return message
-		const thinking = thoughts[turn] ?? ''
-		turn += 1
-		return thinking === '' ? message : { ...message, thinking }
-	})
+	const thinking = new StoreThinking(thoughts)
+	return messages.map((message) => thinking.attach(message))
 }
 
 /** Names the arguments of the `read` call a store run is seeded with. */
@@ -1102,11 +1237,175 @@ export const STORE_ANSWER_SCOPE: ScopeInterface = createScope({ name: 'answer', 
  * is counted apart.
  */
 export function computeRefusals(calls: readonly StoreCall[]): number {
-	const counts = new Map<string, number>()
-	for (const call of calls) {
-		if (!call.success) counts.set(call.name, (counts.get(call.name) ?? 0) + 1)
+	const tally = new StoreRefusals()
+	for (const call of calls) tally.count(call)
+	return tally.largest
+}
+
+/**
+ * Tallies the refused calls of one user turn by tool name.
+ *
+ * @remarks One {@link computeRefusals} call creates one tally, because each call it visits adds to
+ * the count of its tool name. A call is read once, in the order the turn made them.
+ */
+export class StoreRefusals {
+	readonly #counts = new Map<string, number>()
+
+	/** The largest number of refused calls one tool name has; zero when none was refused. */
+	get largest(): number {
+		return Math.max(0, ...this.#counts.values())
 	}
-	return Math.max(0, ...counts.values())
+
+	/**
+	 * Adds one call to the tally.
+	 *
+	 * @param call - The next call of the turn; a successful call leaves the tally unchanged
+	 */
+	count(call: StoreCall): void {
+		if (!call.success) this.#counts.set(call.name, (this.#counts.get(call.name) ?? 0) + 1)
+	}
+}
+
+/**
+ * Creates the agent context a store conversation's scope applies to.
+ *
+ * @returns The context of a fresh agent whose provider never receives a request, owned by the caller
+ */
+export function createStoreContext(): AgentContextInterface {
+	return createAgent(createOllama({ model: 'fixture', url: 'http://127.0.0.1:9' }), {
+		system: STORE_SYSTEM_PROMPT,
+	}).context
+}
+
+/**
+ * Builds a call list whose second slot rewrites the first call when the second slot is read.
+ *
+ * @param first - The first call; the list holds a copy and leaves this call unchanged
+ * @param second - The call the second slot yields
+ * @param change - The properties the read of the second slot gives the first call's copy
+ * @returns The two-call list. A consumer that obtains the second call before it processes the first
+ * sees the first call changed; one that processes the first call before it obtains the second sees it
+ * as it was
+ */
+export function buildLazyCalls(
+	first: StoreCall,
+	second: StoreCall,
+	change: Readonly<Partial<StoreCall>>,
+): readonly StoreCall[] {
+	const edited = { ...first }
+	const calls: StoreCall[] = [edited]
+	Object.defineProperty(calls, 1, {
+		enumerable: true,
+		get() {
+			for (const [key, value] of Object.entries(change)) {
+				Object.defineProperty(edited, key, { value, enumerable: true })
+			}
+			return second
+		},
+	})
+	return calls
+}
+
+/** Represents how one guarded store run ended. */
+export interface StoreOutcome {
+	/** True if the run threw; false if it settled. */
+	readonly failed: boolean
+	/** The value the run threw; `undefined` value when the run settled. */
+	readonly failure: unknown
+}
+
+/**
+ * Runs one store step and captures what it throws instead of letting it escape.
+ *
+ * @param run - The step to run
+ * @returns Whether the step threw and the value it threw
+ */
+export async function settleStoreRun(run: () => Promise<void>): Promise<StoreOutcome> {
+	try {
+		await run()
+		return { failed: false, failure: undefined }
+	} catch (error) {
+		return { failed: true, failure: error }
+	}
+}
+
+/** Represents the one user turn a {@link StoreCallRecord} has bound. */
+export interface StoreTurnWindow {
+	/** How many calls the conversation had recorded when the turn began. */
+	readonly start: number
+	/** True for the conversation's first user turn; false for a later one. */
+	readonly opening: boolean
+}
+
+/**
+ * Records the tool calls of one store conversation and applies the answer scope when a user turn
+ * reaches its bound.
+ *
+ * @remarks One conversation creates one record, and the record binds one user turn at a time:
+ * `begin` binds it, `end` releases it. Refusals count within the bound turn, and a later turn's
+ * first successful call ends the turn's tool use. The calls and the count of ended turns continue
+ * across turns.
+ */
+export class StoreCallRecord {
+	readonly #calls: StoreCall[] = []
+	#turn: StoreTurnWindow | undefined
+	#ended = 0
+
+	/** Every call recorded so far, in dispatch order. */
+	get calls(): readonly StoreCall[] {
+		return this.#calls
+	}
+
+	/** How many user turns went on with no tool advertised after their bound. */
+	get ended(): number {
+		return this.#ended
+	}
+
+	/**
+	 * Binds one user turn.
+	 *
+	 * @param index - The user turn's position among the conversation's turns, counted from 0
+	 * @throws Thrown when a user turn is still bound
+	 */
+	begin(index: number): void {
+		if (this.#turn !== undefined) throw new Error('A user turn is still bound')
+		this.#turn = { start: this.#calls.length, opening: index === 0 }
+	}
+
+	/** Releases the bound user turn. */
+	end(): void {
+		this.#turn = undefined
+	}
+
+	/**
+	 * Records one dispatched call and applies {@link STORE_ANSWER_SCOPE} when the call ends the
+	 * turn's tool use.
+	 *
+	 * @param call - The model's call
+	 * @param result - The result the agent loop produced for the call
+	 * @param context - The agent context that takes the scope
+	 * @throws Thrown when no user turn is bound
+	 * @remarks A later turn ends at its first successful call; any turn ends when one tool's
+	 * refusals reach the `STORE_BOUNDS.refusals` bound. A context already holding the scope keeps it.
+	 */
+	observe(call: ToolCall, result: ToolResult, context: AgentContextInterface): void {
+		const turn = this.#turn
+		if (turn === undefined) throw new Error('No user turn is bound')
+		this.#calls.push({
+			name: call.name,
+			arguments: call.arguments,
+			success: result.success,
+			text: renderToolText(result),
+		})
+		if (
+			context.scope !== STORE_ANSWER_SCOPE &&
+			((!turn.opening && result.success) ||
+				computeRefusals(this.#calls.slice(turn.start)) >= STORE_BOUNDS.refusals)
+		) {
+			context.apply(STORE_ANSWER_SCOPE)
+			this.#ended += 1
+		}
+	}
 }
 
 /**
@@ -1126,77 +1425,55 @@ export function computeRefusals(calls: readonly StoreCall[]): number {
  * An error ends the conversation and is returned rather than thrown.
  */
 export async function converseStore(options: StoreConversationOptions): Promise<StoreConversation> {
-	const calls: StoreCall[] = []
-	const timings: StoreTiming[] = []
+	const record = new StoreCallRecord()
+	const timer = new StoreTimer()
 	const usages: TokenUsage[] = []
-	const thoughts: string[] = ['']
-	let start = 0
-	let opening = true
-	let ended = 0
-	const agent = createAgent(createTimedProvider(options.provider, timings), {
+	const thoughts: StoreThought[] = []
+	const results: AgentResult[] = []
+	const agent = createAgent(createTimedProvider(options.provider, timer), {
 		system: options.system,
-		tools: createTimedTools(options.tools, timings),
+		tools: createTimedTools(options.tools, timer),
 		timeout: STORE_BOUNDS.run,
 		limit: STORE_BOUNDS.limit,
 		on: {
-			tool: (call, result) => {
-				calls.push({
-					name: call.name,
-					arguments: call.arguments,
-					success: result.success,
-					text: renderToolText(result),
-				})
-				if (
-					agent.context.scope !== STORE_ANSWER_SCOPE &&
-					((!opening && result.success) ||
-						computeRefusals(calls.slice(start)) >= STORE_BOUNDS.refusals)
-				) {
-					agent.context.apply(STORE_ANSWER_SCOPE)
-					ended += 1
-				}
-			},
+			tool: (call, result) => record.observe(call, result, agent.context),
 			usage: (usage) => void usages.push(usage),
 		},
 	})
-	let result: AgentResult | undefined
-	let partial = false
-	let failure: unknown
-	try {
+	const outcome = await settleStoreRun(async () => {
 		for (const [index, turn] of options.turns.entries()) {
-			start = calls.length
-			opening = index === 0
-			agent.context.apply(undefined)
-			agent.context.messages.add({
-				role: 'user',
-				content: typeof turn === 'string' ? turn : turn(calls),
-			})
-			// The opening turn carries the task's flow, so it takes the task's own budget; each later
-			// turn asks for one call and takes the shared bound.
-			const stream = agent.stream({
-				limit: index === 0 ? (options.limit ?? STORE_BOUNDS.limit) : STORE_BOUNDS.limit,
-			})
-			result = (
-				await driveAgent({
+			record.begin(index)
+			try {
+				agent.context.apply(undefined)
+				agent.context.messages.add({
+					role: 'user',
+					content: typeof turn === 'string' ? turn : turn(record.calls),
+				})
+				// The opening turn carries the task's flow, so it takes the task's own budget; each later
+				// turn asks for one call and takes the shared bound.
+				const stream = agent.stream({
+					limit: index === 0 ? (options.limit ?? STORE_BOUNDS.limit) : STORE_BOUNDS.limit,
+				})
+				const settled = await driveAgent({
 					events: collectTurnThinking(stream.events, thoughts),
 					result: stream.result,
 					abort: (reason) => stream.abort(reason),
 				})
-			).result
-			partial ||= result.partial
+				results.push(settled.result)
+			} finally {
+				record.end()
+			}
 		}
-	} catch (error) {
-		result = undefined
-		failure = error
-	}
+	})
 	return {
-		timings,
-		messages: attachThinking(agent.context.messages.messages(), thoughts),
-		calls,
+		timings: timer.read(),
+		messages: attachThinking(agent.context.messages.messages(), deriveTurnThinking(thoughts)),
+		calls: record.calls,
 		usages,
-		result,
-		partial,
-		ended,
-		failure,
+		result: outcome.failed ? undefined : results.at(-1),
+		partial: results.some((turn) => turn.partial),
+		ended: record.ended,
+		failure: outcome.failure,
 	}
 }
 
@@ -1336,6 +1613,16 @@ export function extractReferences(text: string): readonly string[] {
 	return [...text.matchAll(/\[ref=(e[1-9]\d*)\]/g)].map((match) => match[1] ?? '')
 }
 
+/** Represents which element references a run's results exposed, as {@link findUnlistedReferences} reads it. */
+export interface StoreExposure {
+	/** The references the results since the page last changed listed. */
+	readonly listed: ReadonlySet<string>
+	/** The page header the last successful result carried; `undefined` value when none carried one. */
+	readonly header: string | undefined
+	/** The calls so far that named a reference outside {@link StoreExposure.listed}, in order. */
+	readonly unlisted: readonly StoreCall[]
+}
+
 /**
  * Returns calls naming references absent from the results since the page last changed.
  *
@@ -1351,36 +1638,84 @@ export function findUnlistedReferences(
 	seed: string,
 	calls: readonly StoreCall[],
 ): readonly StoreCall[] {
-	const listed = new Set(extractReferences(seed))
-	let header = extractPageHeader(seed)
-	const unlisted: StoreCall[] = []
-	for (const call of calls) {
+	const trace = new StoreExposureTrace({
+		listed: new Set(extractReferences(seed)),
+		header: extractPageHeader(seed),
+		unlisted: [],
+	})
+	for (const call of calls) trace.visit(call)
+	return trace.exposure.unlisted
+}
+
+/**
+ * Carries the exposure of one run from call to call.
+ *
+ * @remarks One {@link findUnlistedReferences} call creates one trace, because each call it visits
+ * starts from the exposure the earlier calls left. The trace applies a call before the caller
+ * obtains the next one, so a call whose reading changes a later call is read as it stands then,
+ * and it changes its own sets in place, so the work stays linear in the number of calls. The
+ * exposure it reads out is a copy.
+ */
+export class StoreExposureTrace {
+	readonly #listed: Set<string>
+	readonly #unlisted: StoreCall[]
+	#header: string | undefined
+
+	/**
+	 * Creates a trace at the exposure a run starts with.
+	 *
+	 * @param start - The exposure before the first call; the trace copies it
+	 */
+	constructor(start: StoreExposure) {
+		this.#listed = new Set(start.listed)
+		this.#unlisted = [...start.unlisted]
+		this.#header = start.header
+	}
+
+	/** The exposure after the calls visited so far, as copies the trace's later calls cannot change. */
+	get exposure(): StoreExposure {
+		return {
+			listed: new Set(this.#listed),
+			header: this.#header,
+			unlisted: [...this.#unlisted],
+		}
+	}
+
+	/**
+	 * Applies one call to the exposure.
+	 *
+	 * @param call - The next call of the run
+	 * @remarks A call whose `ref` argument is unreadable, unlisted, or refused as not in view joins
+	 * `unlisted`. A failed call changes nothing else. A successful call that is a journey action, a
+	 * replay, carries a change note, or opens another page clears `listed`; every successful call
+	 * then adds the references its result lists.
+	 */
+	visit(call: StoreCall): void {
 		const argument = call.arguments['ref']
 		if (argument !== undefined) {
 			const reference = typeof argument === 'string' ? parseBrowserReference(argument) : undefined
 			if (
 				reference === undefined ||
-				!listed.has(reference) ||
+				!this.#listed.has(reference) ||
 				(!call.success &&
 					(call.text.includes('not in the current view') ||
 						call.text.includes('is not on this page')))
 			)
-				unlisted.push(call)
+				this.#unlisted.push(call)
 		}
-		if (!call.success) continue
+		if (!call.success) return
 		const page = extractPageHeader(call.text)
 		if (
 			BROWSER_JOURNEY_ACTIONS.some((name) => name === call.name) ||
 			call.name === 'replay' ||
 			call.text.includes(BROWSER_READ_CHANGED_NOTE) ||
 			call.text.includes(BROWSER_TOOL_CHANGED_NOTE) ||
-			(page !== undefined && page !== header)
+			(page !== undefined && page !== this.#header)
 		)
-			listed.clear()
-		if (page !== undefined) header = page
-		for (const reference of extractReferences(call.text)) listed.add(reference)
+			this.#listed.clear()
+		if (page !== undefined) this.#header = page
+		for (const reference of extractReferences(call.text)) this.#listed.add(reference)
 	}
-	return unlisted
 }
 
 /**
@@ -1662,20 +1997,26 @@ export function parseWindowLine(text: string): number | undefined {
  * @returns The window rows joined by newlines; empty when there are no rows
  */
 export function extractWindowText(text: string): string {
-	const rows: string[] = []
-	let quoted = false
-	for (const line of text.split(/\r\n|\n/)) {
-		if (quoted) {
-			quoted = false
-			continue
-		}
-		if (/^No line from .*; the best match is line \d+:$/.test(line)) {
-			quoted = true
-			continue
-		}
-		if (/^[1-9]\d*: /.test(line)) rows.push(line)
-	}
-	return rows.join('\n')
+	return text
+		.split(/\r\n|\n/)
+		.reduce<StoreWindow>(
+			(window, line) => {
+				if (window.quoted) return { rows: window.rows, quoted: false }
+				if (/^No line from .*; the best match is line \d+:$/.test(line))
+					return { rows: window.rows, quoted: true }
+				return /^[1-9]\d*: /.test(line) ? { rows: [...window.rows, line], quoted: false } : window
+			},
+			{ rows: [], quoted: false },
+		)
+		.rows.join('\n')
+}
+
+/** Represents the numbered rows {@link extractWindowText} has read and whether the next line is a quoted row. */
+export interface StoreWindow {
+	/** The window rows read so far, in order. */
+	readonly rows: readonly string[]
+	/** True if the previous line announced a best match, so the next line is the quoted row. */
+	readonly quoted: boolean
 }
 
 /**
@@ -1693,33 +2034,69 @@ export function findContinuedRead(
 	calls: readonly StoreCall[],
 	text: string,
 ): StoreCall | undefined {
-	const lines = new Set<number>()
-	let header: string | undefined
+	const walk = new StoreContinuationWalk(text)
 	for (const call of calls) {
+		const found = walk.visit(call)
+		if (found !== undefined) return found
+	}
+	return undefined
+}
+
+/**
+ * Remembers the footer lines one run's reads named and the page they named them under.
+ *
+ * @remarks One {@link findContinuedRead} call creates one walk, because each call it visits
+ * changes which lines the next call may continue. A call is read once, in order, and the walk
+ * keeps no call it has visited.
+ */
+export class StoreContinuationWalk {
+	readonly #text: string
+	readonly #lines = new Set<number>()
+	#header: string | undefined
+
+	/**
+	 * Creates a walk that has visited no call.
+	 *
+	 * @param text - The text the continued slice must contain
+	 */
+	constructor(text: string) {
+		this.#text = text
+	}
+
+	/**
+	 * Visits one call.
+	 *
+	 * @param call - The next call of the run
+	 * @returns The call when it is a successful `read` whose numeric `from` equals both its first
+	 * row and a line an earlier successful read's footer named under the same page header, and whose
+	 * rows contain the text; `undefined` value otherwise. An action, a change note, or another page
+	 * empties the named lines, and a failed `read` changes nothing else.
+	 */
+	visit(call: StoreCall): StoreCall | undefined {
 		if (call.name !== 'read') {
-			lines.clear()
-			header = undefined
-			continue
+			this.#lines.clear()
+			this.#header = undefined
+			return undefined
 		}
-		if (call.text.includes(BROWSER_READ_CHANGED_NOTE)) lines.clear()
-		if (!call.success) continue
+		if (call.text.includes(BROWSER_READ_CHANGED_NOTE)) this.#lines.clear()
+		if (!call.success) return undefined
 		const from = call.arguments['from']
 		const first = parseWindowLine(call.text)
 		const page = extractPageHeader(call.text)
-		if (page !== header) lines.clear()
-		header = page
+		if (page !== this.#header) this.#lines.clear()
+		this.#header = page
 		if (
 			typeof from === 'number' &&
-			lines.has(from) &&
+			this.#lines.has(from) &&
 			first === from &&
 			page !== undefined &&
-			extractWindowText(call.text).includes(text)
+			extractWindowText(call.text).includes(this.#text)
 		)
 			return call
 		const line = parseFooterLine(call.text)
-		if (page !== undefined && line !== undefined) lines.add(line)
+		if (page !== undefined && line !== undefined) this.#lines.add(line)
+		return undefined
 	}
-	return undefined
 }
 
 /**
@@ -2022,6 +2399,65 @@ export function renderJourneyEdit(calls: readonly StoreCall[]): string {
 	)
 }
 
+/** Represents one tool invocation a journey proof dispatches: the tool and its arguments. */
+export interface StoreInvocation {
+	/** The tool's name. */
+	readonly name: string
+	/** The arguments the proof supplies. */
+	readonly input: Readonly<Record<string, unknown>>
+}
+
+/**
+ * Builds the invocation one of the journey proof's {@link STORE_JOURNEY_ACTIONS} dispatches.
+ *
+ * @param action - A journey tool's name, or the accessible name of the element to act on
+ * @param calls - The proof's calls so far, in order
+ * @param seed - The seeded `read` result the first action reads its element from
+ * @returns The journey tool the action names, with its arguments; a `type` invocation with `submit`
+ * for the {@link STORE_NAME_FIELD} name and a `click` invocation for any other element name, each
+ * reading the element's reference from the listing the last call returned
+ * @throws Thrown when the listing holds no row for the element or the row carries no reference
+ */
+export function buildJourneyInvocation(
+	action: string,
+	calls: readonly StoreCall[],
+	seed: string,
+): StoreInvocation {
+	if (action === 'record') return { name: action, input: { journey: STORE_JOURNEY_NAME } }
+	if (action === 'save')
+		return { name: action, input: { description: 'Open the cart and place one order.' } }
+	if (action === 'journeys') return { name: action, input: { from: 1 } }
+	if (action === 'edit') {
+		const instruction = renderJourneyEdit(calls)
+		return {
+			name: action,
+			input: {
+				journey: STORE_JOURNEY_NAME,
+				edits: parseStoreJSON(
+					instruction.slice(instruction.indexOf('['), instruction.lastIndexOf(']') + 1),
+				),
+			},
+		}
+	}
+	if (action === 'replay')
+		return {
+			name: action,
+			input: {
+				journey: STORE_JOURNEY_NAME,
+				inputs: { [STORE_JOURNEY_PARAMETER]: STORE_JOURNEY_BUYER },
+			},
+		}
+	const text = calls.at(-1)?.text ?? seed
+	const line = requireValue(
+		text.split(/\r\n|\n/).find((row) => row.includes(`"${action}"`)),
+		`The last result lists no row for "${action}"`,
+	)
+	const ref = requireValue(extractReferences(line)[0], `The row for "${action}" lists no reference`)
+	return action === STORE_NAME_FIELD
+		? { name: 'type', input: { ref, text: STORE_BUYER, submit: true } }
+		: { name: 'click', input: { ref } }
+}
+
 /**
  * Parses an `edit` call's `edits` argument the way the `edit` tool reads it.
  *
@@ -2083,19 +2519,20 @@ export const STORE_JOURNEY_SEQUENCE: readonly string[] = Object.freeze([
  * `inputs` argument; false otherwise
  */
 export function matchesJourneySequence(calls: readonly StoreCall[]): boolean {
-	let index = -1
-	for (const name of STORE_JOURNEY_SEQUENCE) {
-		index = calls.findIndex(
-			(call, position) =>
-				position > index &&
-				call.success &&
-				call.name === name &&
-				(name !== 'edit' || matchesJourneyBatch(call)) &&
-				(name !== 'replay' || isRecord(call.arguments['inputs'])),
-		)
-		if (index === -1) return false
-	}
-	return true
+	return (
+		STORE_JOURNEY_SEQUENCE.reduce<number | undefined>((previous, name) => {
+			if (previous === undefined) return undefined
+			const index = calls.findIndex(
+				(call, position) =>
+					position > previous &&
+					call.success &&
+					call.name === name &&
+					(name !== 'edit' || matchesJourneyBatch(call)) &&
+					(name !== 'replay' || isRecord(call.arguments['inputs'])),
+			)
+			return index === -1 ? undefined : index
+		}, -1) !== undefined
+	)
 }
 
 /**
@@ -2207,21 +2644,46 @@ export function buildMissingResponse(): Response {
 }
 
 /**
- * Collects reasoning into the owned recorder while forwarding every stream chunk.
+ * Logs the reasoning chunks of one stream while forwarding every stream chunk.
  * @param events - The agent's stream of chunks
- * @param thoughts - The owned reasoning recorder, initialized with an empty string
+ * @param thoughts - The conversation's reasoning log, which this stream appends each `think` and `usage` chunk to
  * @returns The unchanged chunks in their original order
- * @remarks Each usage chunk starts the next provider turn's reasoning slot.
+ * @remarks The log keeps the `category` of each entry and the `content` of each `think` chunk, read
+ * once as the chunk arrived, in emission order, so a consumer that changes a chunk after receiving
+ * it changes nothing the log holds, and no other property of a chunk is read. {@link deriveTurnThinking}
+ * reads the log whole.
  */
 export async function* collectTurnThinking(
 	events: AgentStreamInterface['events'],
-	thoughts: string[],
+	thoughts: StoreThought[],
 ): AsyncGenerator<AgentChunk> {
 	for await (const chunk of events) {
-		if (chunk.category === 'think') thoughts[thoughts.length - 1] += chunk.content
-		else if (chunk.category === 'usage') thoughts.push('')
+		if (chunk.category === 'think') thoughts.push({ category: 'think', content: chunk.content })
+		else if (chunk.category === 'usage') thoughts.push({ category: 'usage' })
 		yield chunk
 	}
+}
+
+/**
+ * Derives the reasoning each provider turn surfaced from a reasoning log.
+ *
+ * @param thoughts - The log {@link collectTurnThinking} appended to, in emission order
+ * @returns One text per provider turn: the joined `think` contents up to the first `usage` chunk,
+ * then those between each pair of `usage` chunks, and those after the last; `''` string for a
+ * silent turn, and one empty text for an empty log
+ * @remarks A `usage` chunk closes a turn, so a log with n `usage` chunks yields n + 1 texts.
+ */
+export function deriveTurnThinking(thoughts: readonly StoreThought[]): readonly string[] {
+	const starts = [
+		-1,
+		...thoughts.flatMap((chunk, index) => (chunk.category === 'usage' ? [index] : [])),
+	]
+	return starts.map((start, turn) =>
+		thoughts
+			.slice(start + 1, starts[turn + 1])
+			.flatMap((chunk) => (chunk.category === 'think' ? [chunk.content] : []))
+			.join(''),
+	)
 }
 
 /**
@@ -2318,7 +2780,7 @@ export const STORE_CONTINUED_SLICE =
 	'\n[lines 31–80 of 80; 30 above; end of page]'
 
 /** Names the seeded catalogue view the search fixtures open on. */
-const STORE_SEARCH_SEED =
+export const STORE_SEARCH_SEED =
 	'page "Harbor Goods — Catalogue" http://127.0.0.1/\n1: searchbox "Search products" [ref=e35]\n2: button "Search" [ref=e36]'
 
 /** Holds the result text of a submitted search that lists both kettles. */
@@ -2676,6 +3138,28 @@ export const STORE_STALE_CONTINUATIONS: ReadonlyArray<
 	],
 ])
 
+/**
+ * Lists successful calls that make a {@link StoreContinuationWalk} forget the lines an earlier
+ * footer named, each with the reason it does.
+ *
+ * @remarks The calls follow the first page slice of the policy page. A refused read is not here,
+ * because it keeps the named lines.
+ */
+export const STORE_CONTINUATION_INTERRUPTIONS: ReadonlyArray<
+	readonly [reason: string, call: StoreCall]
+> = Object.freeze([
+	['an action', buildStoreCall('click', { ref: 'e1' })],
+	[
+		'a change note',
+		buildStoreCall(
+			'read',
+			{ from: 2 },
+			`page "Policy" http://store/policy (80 lines)\n${BROWSER_READ_CHANGED_NOTE}`,
+		),
+	],
+	['another page', buildStoreCall('read', { from: 2 }, 'page "Other" http://store/other\n2: x')],
+])
+
 /** Lists invalid continuation arguments and results. */
 export const STORE_INVALID_CONTINUATIONS: ReadonlyArray<
 	readonly [
@@ -2802,6 +3286,12 @@ export const STORE_LOOKUP_TURN = Object.freeze({
 	tool_calls: Object.freeze([{ function: { name: 'lookup', arguments: { query: 'kettle' } } }]),
 })
 
+/** Holds a provider turn that streams native reasoning and answers behind an inline reasoning span. */
+export const STORE_MIXED_TURN = Object.freeze({
+	thinking: 'native ',
+	content: '<think>span</think>Answer.',
+})
+
 /** Lists the turns that reach the consecutive-refusal bound. */
 export const STORE_REFUSAL_TURNS = Object.freeze(
 	Array.from({ length: STORE_BOUNDS.refusals }, () => STORE_FAIL_TURN),
@@ -2823,6 +3313,78 @@ export const STORE_TIMED_CALLS: readonly ToolCall[] = Object.freeze([
 	{ id: 'lookup', name: 'lookup', arguments: { query: 'kettle' } },
 	{ id: 'missing', name: 'missing', arguments: {} },
 ])
+
+/** Lists the staggered tools' names and real delays in milliseconds, in dispatch order; the last finishes first. */
+export const STORE_STAGGERED_DELAYS: ReadonlyArray<readonly [name: string, delay: number]> =
+	Object.freeze([
+		['slow', 120],
+		['mid', 40],
+		['fast', 0],
+	])
+
+/** Lists one call to each staggered tool, in dispatch order. */
+export const STORE_STAGGERED_CALLS: readonly ToolCall[] = Object.freeze(
+	STORE_STAGGERED_DELAYS.map(([name]) => ({ id: name, name, arguments: {} })),
+)
+
+/** Names the call that {@link createRejectingTools} rejects. */
+export const STORE_BROKEN_CALL: ToolCall = Object.freeze({
+	id: 'broken',
+	name: 'broken',
+	arguments: {},
+})
+
+/** Lists the slow staggered call, then the call a rejecting registry rejects, then the fast staggered call. */
+export const STORE_BROKEN_CALLS: readonly ToolCall[] = Object.freeze([
+	{ id: 'slow', name: 'slow', arguments: {} },
+	STORE_BROKEN_CALL,
+	{ id: 'fast', name: 'fast', arguments: {} },
+])
+
+/**
+ * Builds a registry whose tools answer after different real delays.
+ * @returns A registry of the {@link STORE_STAGGERED_DELAYS} tools, each returning its own name, owned by the caller
+ */
+export function createStaggeredTools(): ToolManagerInterface {
+	const tools = createToolManager()
+	tools.add(
+		STORE_STAGGERED_DELAYS.map(([name, delay]) =>
+			createTool({
+				name,
+				description: 'Answers with its own name after a fixed real delay.',
+				parameters: { type: 'object', properties: {} },
+				execute: async () => {
+					await waitForDelay(delay)
+					return name
+				},
+			}),
+		),
+	)
+	return tools
+}
+
+/**
+ * Wraps a registry so that dispatching one named call rejects instead of returning a refusal.
+ * @param tools - The registry every other call reaches
+ * @param name - The name of the call to reject
+ * @param failure - The error the named call rejects with
+ * @returns A live registry view whose `execute` method rejects for the named call
+ */
+export function createRejectingTools(
+	tools: ToolManagerInterface,
+	name: string,
+	failure: Error,
+): ToolManagerInterface {
+	return new Proxy(tools, {
+		get(target, key) {
+			if (key === 'execute')
+				return (call: ToolCall, context?: ToolContext) =>
+					call.name === name ? Promise.reject(failure) : target.execute(call, context)
+			const value: unknown = Reflect.get(target, key, target)
+			return typeof value === 'function' ? value.bind(target) : value
+		},
+	})
+}
 
 /** Lists calls using references exposed by the preceding page view. */
 export const STORE_REFERENCE_CALLS: readonly StoreCall[] = Object.freeze([
@@ -2915,4 +3477,59 @@ export const STORE_THINKING_CHUNKS: readonly AgentChunk[] = Object.freeze([
 	{ category: 'usage', usage: { prompt: 1, completion: 1, total: 2 }, estimate: 1 },
 	{ category: 'usage', usage: { prompt: 2, completion: 1, total: 3 }, estimate: 1 },
 	{ category: 'think', content: 'Confirm.' },
+])
+
+/** Represents one reasoning log and the per-turn texts {@link deriveTurnThinking} derives from it. */
+export interface StoreThoughtCase {
+	/** What the case exercises. */
+	readonly label: string
+	/** The reasoning log, in emission order. */
+	readonly log: readonly StoreThought[]
+	/** The texts the derivation returns, one per provider turn. */
+	readonly turns: readonly string[]
+}
+
+/** Lists reasoning logs with the texts each yields, including silent and trailing turns. */
+export const STORE_THOUGHT_CASES: readonly StoreThoughtCase[] = Object.freeze([
+	{ label: 'an empty log', log: [], turns: [''] },
+	{
+		label: 'one turn that is still open',
+		log: [{ category: 'think', content: 'Plan.' }],
+		turns: ['Plan.'],
+	},
+	{
+		label: 'chunks joined within one turn',
+		log: [
+			{ category: 'think', content: 'Check ' },
+			{ category: 'think', content: 'the ' },
+			{ category: 'think', content: 'cart.' },
+		],
+		turns: ['Check the cart.'],
+	},
+	{
+		label: 'a closed silent turn',
+		log: [{ category: 'usage' }],
+		turns: ['', ''],
+	},
+	{
+		label: 'a silent turn between voiced turns',
+		log: [
+			{ category: 'think', content: 'Check ' },
+			{ category: 'think', content: 'the cart.' },
+			{ category: 'usage' },
+			{ category: 'usage' },
+			{ category: 'think', content: 'Confirm.' },
+		],
+		turns: ['Check the cart.', '', 'Confirm.'],
+	},
+	{
+		label: 'reasoning that ends on a usage chunk',
+		log: [
+			{ category: 'think', content: 'Search.' },
+			{ category: 'usage' },
+			{ category: 'think', content: 'Answer.' },
+			{ category: 'usage' },
+		],
+		turns: ['Search.', 'Answer.', ''],
+	},
 ])

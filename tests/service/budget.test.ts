@@ -5,7 +5,12 @@ import { createNDJSONParser } from '@orkestrel/ndjson'
 import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
 import { OLLAMA_CHAT_PATH } from '@src/core'
-import { createUserMessage, LONG_ANSWER_PROMPT, SHORT_ANSWER_PROMPT } from '../setup.js'
+import {
+	CASE_TIMEOUT,
+	createUserMessage,
+	LONG_ANSWER_PROMPT,
+	SHORT_ANSWER_PROMPT,
+} from '../setup.js'
 import { createLookupTool, driveAgent } from '../setupServer.js'
 import {
 	createLiveOllama,
@@ -25,15 +30,13 @@ import {
 // model. Assertions are invariants only (sums, monotonicity, resolution semantics, partial
 // flags) — never exact token counts or prose.
 
-const TIMEOUT = 60_000
-
 describe('Agent usage (live) — single-turn usage coherence at the agent layer', () => {
 	it(
 		'the single usage chunk reconciles with result.usage, and prompt + completion === total',
 		async () => {
 			// Recipe: FAST_OPTIONS (num_predict:8) — one provider turn, one usage chunk.
 			const agent = createAgent(createLiveOllama({ predict: FAST_OPTIONS.num_predict }), {
-				timeout: TIMEOUT,
+				timeout: CASE_TIMEOUT,
 			})
 			agent.context.messages.add({ role: 'user', content: 'Say hello.' })
 
@@ -55,7 +58,7 @@ describe('Agent usage (live) — single-turn usage coherence at the agent layer'
 			expect(result.usage.completion).toBeGreaterThan(0)
 			expect(result.usage.prompt + result.usage.completion).toBe(result.usage.total)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -86,7 +89,7 @@ describe('Agent budget (live) — an exhausted token budget trips the loop', () 
 						tools,
 						budget,
 						limit: 4,
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 						on: { abort: reasons.handler },
 					})
 					agent.context.messages.add({ role: 'user', content: 'Look up the reference datum.' })
@@ -105,7 +108,7 @@ describe('Agent budget (live) — an exhausted token budget trips the loop', () 
 			expect(tripped.budgeted).toBeGreaterThan(0)
 			expect(tripped.stop).toMatchObject({ layer: 'budget', id: 'tokens', max: 5 })
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -134,7 +137,7 @@ describe('Agent budget (live) — an exhausted token budget trips MID-GENERATION
 					const agent = createAgent(createLiveOllama({ predict: 512, temperature: 0 }), {
 						budget,
 						allowance: budget,
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 						on: { abort: reasons.handler },
 					})
 					agent.context.messages.add({ role: 'user', content: LONG_ANSWER_PROMPT })
@@ -155,7 +158,7 @@ describe('Agent budget (live) — an exhausted token budget trips MID-GENERATION
 			expect(tripped.stop).toMatchObject({ layer: 'meter', id: 'tokens', max: 5 })
 			expect(tripped.length).toBeLessThan(1000)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -171,7 +174,7 @@ describe('Agent model layer (live) — the model ends an answer at its own token
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify(body),
-				signal: AbortSignal.timeout(TIMEOUT),
+				signal: AbortSignal.timeout(CASE_TIMEOUT),
 			})
 			expect(response.ok).toBe(true)
 
@@ -180,7 +183,7 @@ describe('Agent model layer (live) — the model ends an answer at its own token
 
 			expect(terminal).toMatchObject({ done: true, done_reason: 'length' })
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 
 	it(
@@ -190,19 +193,19 @@ describe('Agent model layer (live) — the model ends an answer at its own token
 
 			const result = await provider.generate(
 				[createUserMessage(LONG_ANSWER_PROMPT)],
-				AbortSignal.timeout(TIMEOUT),
+				AbortSignal.timeout(CASE_TIMEOUT),
 			)
 
 			expect(result.truncated).toBe(true)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 
 	it(
 		'an agent run ending at a small num_predict cap settles non-partial with a model-layer stop naming the provider',
 		async () => {
 			const provider = createLiveOllama({ predict: FAST_OPTIONS.num_predict, temperature: 0 })
-			const agent = createAgent(provider, { timeout: TIMEOUT })
+			const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
 			agent.context.messages.add({ role: 'user', content: LONG_ANSWER_PROMPT })
 
 			const result = await agent.generate()
@@ -210,7 +213,7 @@ describe('Agent model layer (live) — the model ends an answer at its own token
 			expect(result.partial).toBe(false)
 			expect(result.stop).toMatchObject({ layer: 'model', id: provider.id })
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 
 	it(
@@ -220,9 +223,9 @@ describe('Agent model layer (live) — the model ends an answer at its own token
 
 			const generated = await provider.generate(
 				[createUserMessage(SHORT_ANSWER_PROMPT)],
-				AbortSignal.timeout(TIMEOUT),
+				AbortSignal.timeout(CASE_TIMEOUT),
 			)
-			const agent = createAgent(provider, { timeout: TIMEOUT })
+			const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
 			agent.context.messages.add({ role: 'user', content: SHORT_ANSWER_PROMPT })
 			const result = await agent.generate()
 
@@ -230,7 +233,7 @@ describe('Agent model layer (live) — the model ends an answer at its own token
 			expect(result.partial).toBe(false)
 			expect(result).not.toHaveProperty('stop')
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -253,7 +256,7 @@ describe('Agent usage (live) — multi-turn usage accumulates across provider ca
 							'then state it in your final reply. Never invent a value.',
 						tools,
 						limit: 4,
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 					})
 					agent.context.messages.add({ role: 'user', content: 'Look up the reference datum.' })
 					const { usages, result } = await driveAgent(agent.stream())
@@ -271,21 +274,17 @@ describe('Agent usage (live) — multi-turn usage accumulates across provider ca
 			// The documented contract (AgentResult TSDoc): "usage summed across the turn's provider
 			// calls" — verify the SUM matches, not a monotonic bound alone, because the source
 			// explicitly commits to accumulation (not last-turn-wins).
-			let summedPrompt = 0
-			let summedCompletion = 0
-			let summedTotal = 0
 			for (const usage of attempt.usages) {
-				summedPrompt += usage.prompt
-				summedCompletion += usage.completion
-				summedTotal += usage.total
 				// Monotonic bound: the final summed total is at least each individual chunk's total.
 				expect(total.total).toBeGreaterThanOrEqual(usage.total)
 			}
-			expect(total.prompt).toBe(summedPrompt)
-			expect(total.completion).toBe(summedCompletion)
-			expect(total.total).toBe(summedTotal)
+			expect(total.prompt).toBe(attempt.usages.reduce((sum, usage) => sum + usage.prompt, 0))
+			expect(total.completion).toBe(
+				attempt.usages.reduce((sum, usage) => sum + usage.completion, 0),
+			)
+			expect(total.total).toBe(attempt.usages.reduce((sum, usage) => sum + usage.total, 0))
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -296,7 +295,7 @@ describe('Agent reuse (live) — sequential generate() calls on ONE agent stay i
 			// ONE agent, three sequential generate() calls (resident-model keep-alive + no
 			// cross-run state bleed at the agent layer). Distinct tiny prompts, FAST_OPTIONS.
 			const agent = createAgent(createLiveOllama({ predict: FAST_OPTIONS.num_predict }), {
-				timeout: TIMEOUT,
+				timeout: CASE_TIMEOUT,
 			})
 
 			const prompts = ['Say hello.', 'Say goodbye.', 'Say thanks.']
@@ -307,6 +306,6 @@ describe('Agent reuse (live) — sequential generate() calls on ONE agent stay i
 				expect(result.content.trim().length).toBeGreaterThan(0)
 			}
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })

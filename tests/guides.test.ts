@@ -47,7 +47,6 @@ await new GuideCommand({
 		createSystemOneJudge,
 		createRelay,
 		createRelayProvider,
-		isProviderAbortError,
 		isProviderError,
 		isJudgeAbortError,
 		JudgeError,
@@ -69,10 +68,11 @@ await new GuideCommand({
 		renderJudgePrompt,
 	} = barrel
 	const {
-		createOpenTransport,
 		createRelayServer,
 		createStreamingTransport,
 		createRecordingTransport,
+		drive,
+		extractStreamFences,
 		JUDGE_RAW_NOUL,
 		JUDGE_SYSTEM_ONE,
 		JUDGE_NOUL_REQUEST,
@@ -84,8 +84,11 @@ await new GuideCommand({
 		JUDGE_INVALID_QUESTIONS,
 		MICA_SYSTEM,
 		MICA_CALIBRATION,
+		observeFence,
 		OBFUSCATED,
 	} = await import('./setupServer.js')
+	const { buildFenceObservation, FENCE_MODEL, GUIDE_FENCE_PROMPT, HELLO_TURN, STREAM_FENCE_CASES } =
+		await import('./setup.js')
 	const { describe, expect, it } = await import('vitest')
 	const manifest = parseJSON(requireValue(files['package.json'], 'Missing inventory: package.json'))
 	if (!isRecord(manifest)) throw new Error('Invalid package manifest: package.json')
@@ -520,149 +523,95 @@ await new GuideCommand({
 		})
 		const guideText = requireValue(files[GUIDE_SPEC], `Missing file: ${GUIDE_SPEC}`)
 		const readmeText = requireValue(files[README_SPEC], `Missing file: ${README_SPEC}`)
-
-		// The daemon's side of a whole turn, as newline-delimited records: the `Hel` and
-		// `lo` content spans, the `weighing it` reasoning span, and the `done` line
-		// carrying the token counts.
-		const TURN = Object.freeze([
-			'{"message":{"content":"Hel"}}\n',
-			'{"message":{"thinking":"weighing it"}}\n{"message":{"content":"lo"}}\n',
-			'{"done":true,"prompt_eval_count":3,"eval_count":4}\n',
-		])
-
-		// The same turn from a daemon that opens its reasoning inline without a `<think>`
-		// marker: the reasoning streams as content, and the bare `</think>` that follows
-		// reclassifies the prefix the stream has already yielded.
-		const RECLASSIFIED = Object.freeze([
-			'{"message":{"content":"reasoning"}}\n',
-			'{"message":{"content":"</think>answer"}}\n',
-			'{"done":true,"prompt_eval_count":3,"eval_count":4}\n',
-		])
+		const fences = extractStreamFences(guideText, readmeText)
 
 		// `guides/ollama.md` § Surface: the primary fence creates a provider, then generates.
 		it('createOllama returns a named provider exposing generate and stream', () => {
-			const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M' })
+			const provider = createOllama({ model: FENCE_MODEL })
 
 			expect(provider.name).toBe('ollama')
 			expect(typeof provider.generate).toBe('function')
 			expect(typeof provider.stream).toBe('function')
 		})
 
-		// `guides/ollama.md` § Surface: the streaming fence separates the channels and reads
-		// the answer off the settled result.
-		it('settles the content the stream fence reads, with the plain turn joining to it', async () => {
-			const provider = createOllama({
-				model: 'qwen3.5:2b-q4_K_M',
-				fetch: createStreamingTransport(TURN),
+		// `guides/ollama.md` § Surface: the streaming fence, from its first import to the end of its
+		// `catch` arm, executed as the guide shows it over a plain turn, a turn the daemon
+		// reclassifies, a turn the caller cancels after its first delta, and a turn the daemon
+		// refuses. The fence runs with its real imports and the global `fetch` replaced by the
+		// scenario's transport. It logs what it reads, so `console` is the recorder those
+		// `console.log` calls reach; every other line is the consumer's code. The observation holds the
+		// logged values, the deltas, the fence's message list, the whole body of each request, and what
+		// the fence threw. The plain turn joins to its settled content, the reclassified one settles
+		// to content the joined deltas no longer match, the cancelled one reaches the `catch` arm,
+		// which reads `error.partial.content` on its own rather than appended onto the accumulated
+		// deltas, so it is not duplicated, and the refused one is not an abort, so the `else` arm
+		// rethrows the daemon's 404.
+		for (const scenario of STREAM_FENCE_CASES) {
+			it(scenario.title, async () => {
+				const observed = await observeFence(fences.guide, scenario)
+
+				expect(observed).toEqual(buildFenceObservation(scenario, 'guide'))
 			})
-			const answer: string[] = []
-			const reasoning: string[] = []
+		}
 
-			const generator = provider.stream(
-				[{ id: '1', role: 'user', content: 'Say hello.' }],
-				new AbortController().signal,
-			)
-			let step = await generator.next()
-			while (!step.done) {
-				if (step.value.channel === 'content') answer.push(step.value.text)
-				if (step.value.channel === 'thinking') reasoning.push(step.value.text)
-				step = await generator.next()
-			}
+		// `README.md`: the usage fence and the streaming fence after it, executed as one flow over the
+		// two turns that settle. The usage fence's `generate` call and the streaming fence's `stream`
+		// call each send the README's prompt, and the observation holds both whole request bodies.
+		for (const scenario of STREAM_FENCE_CASES.filter(
+			(candidate) => candidate.settled !== undefined,
+		)) {
+			it(`executes the README streaming fence over ${scenario.label}`, async () => {
+				const observed = await observeFence(fences.readme, scenario)
 
-			expect(answer).toEqual(['Hel', 'lo'])
-			expect(reasoning).toEqual(['weighing it'])
-			expect(answer.join('')).toBe(step.value.content)
-			expect(step.value).toEqual({
-				content: 'Hello',
-				thinking: 'weighing it',
-				usage: { prompt: 3, completion: 4, total: 7 },
+				expect(observed).toEqual(buildFenceObservation(scenario, 'readme'))
 			})
-		})
+		}
 
-		// `guides/ollama.md` § Surface, the paragraph under the streaming fence: a turn whose
-		// reasoning the daemon opened without a `<think>` marker settles content the yielded
-		// deltas no longer join to, which is why the fence reads the settled result.
-		it('settles the reclassified turn to content the joined deltas no longer match', async () => {
-			const provider = createOllama({
-				model: 'qwen3.5:2b-q4_K_M',
-				fetch: createStreamingTransport(RECLASSIFIED),
+		// The guide's streaming fence reads the same boundaries and the same settled result the
+		// stream yields: the deltas split where the daemon's records do, the reasoning arrives on its
+		// own channel, and the settled result carries the content, the reasoning, and the usage. A
+		// reclassified turn settles to the content after the bare close and the reasoning before it.
+		for (const scenario of STREAM_FENCE_CASES.filter(
+			(candidate) => candidate.settled !== undefined,
+		)) {
+			it(`settles ${scenario.label} to the result the fences read`, async () => {
+				const driven = await drive(
+					createOllama({
+						model: FENCE_MODEL,
+						fetch: createStreamingTransport(scenario.chunks),
+					}).stream(
+						[{ id: '1', role: 'user', content: GUIDE_FENCE_PROMPT }],
+						new AbortController().signal,
+					),
+				)
+
+				expect(driven).toEqual({
+					deltas: (scenario.deltas ?? [])
+						.filter((delta) => delta.channel === 'content')
+						.map((delta) => delta.text),
+					thoughts: (scenario.deltas ?? [])
+						.filter((delta) => delta.channel === 'thinking')
+						.map((delta) => delta.text),
+					result: scenario.settled,
+				})
 			})
-			const answer: string[] = []
-			const reasoning: string[] = []
+		}
 
-			const generator = provider.stream(
-				[{ id: '1', role: 'user', content: 'Say hello.' }],
-				new AbortController().signal,
-			)
-			let step = await generator.next()
-			while (!step.done) {
-				if (step.value.channel === 'content') answer.push(step.value.text)
-				if (step.value.channel === 'thinking') reasoning.push(step.value.text)
-				step = await generator.next()
-			}
-
-			// The reasoning prefix streamed as content before the bare close revealed it,
-			// so the join carries it and the settled content does not.
-			expect(answer.join('')).toBe('reasoninganswer')
-			expect(reasoning).toEqual([])
-			expect(answer.join('')).not.toBe(step.value.content)
-			expect(step.value).toEqual({
-				content: 'answer',
-				thinking: 'reasoning',
-				usage: { prompt: 3, completion: 4, total: 7 },
-			})
-		})
-
-		it('carries the stream fence lines the transcription copies', () => {
+		// The comments that carry the claim each executed fence proves stay in the fences, beside the
+		// executed assertions above, so a fence that drops its claim fails here.
+		it('keeps the comment on each streaming fence line that states what the line returns', () => {
 			expect(guideText).toContain(
-				'result.content // the answer — the settled content is the authoritative one',
+				'console.log(result.content) // the answer — the settled content is the authoritative one',
 			)
 			expect(guideText).toContain(
-				"answer.join('') // what arrived on the content channel, which a reclassified <think> span leaves longer",
+				"console.log(answer.join('')) // what arrived on the content channel, which a reclassified <think> span leaves longer",
 			)
 			expect(readmeText).toContain(
-				'streamed.content // the answer — the settled content is the authoritative one',
+				'console.log(streamed.content) // the answer — the settled content is the authoritative one',
 			)
-			expect(readmeText).toContain("answer.join('') // what arrived on the content channel")
-		})
-
-		// `guides/ollama.md` § Surface: the streaming fence's `catch` arm — the daemon stays
-		// open after one delta, the caller cancels, and the recovered content is that one
-		// delta, read from `error.partial.content` on its own rather than appended onto the
-		// accumulated deltas, so it is not duplicated.
-		it('recovers the partial the catch arm reads, undoubled, when the stream is cancelled', async () => {
-			const open = createOpenTransport('{"message":{"content":"Hel"}}\n')
-			const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M', fetch: open.fetch })
-			const abort = new AbortController()
-			const answer: string[] = []
-			const reasoning: string[] = []
-			let recovered = ''
-
-			try {
-				const generator = provider.stream(
-					[{ id: '1', role: 'user', content: 'Say hello.' }],
-					abort.signal,
-				)
-				let step = await generator.next()
-				while (!step.done) {
-					if (step.value.channel === 'content') answer.push(step.value.text)
-					if (step.value.channel === 'thinking') reasoning.push(step.value.text)
-					abort.abort()
-					try {
-						step = await generator.next()
-					} catch (error) {
-						if (!isProviderAbortError(error)) throw error
-						recovered = error.partial.content // everything that streamed before the cancel
-						break
-					}
-				}
-			} finally {
-				await open.cancelled
-			}
-
-			expect(answer).toEqual(['Hel'])
-			expect(recovered).toBe('Hel')
-			expect(reasoning).toEqual([])
+			expect(readmeText).toContain(
+				"console.log(answer.join('')) // what arrived on the content channel",
+			)
 		})
 
 		// `guides/ollama.md` § Projecting the wire without a daemon: the seam members,
@@ -731,7 +680,7 @@ await new GuideCommand({
 		// url the server half bound with that same bearer. Only the daemon is canned.
 		it('round trips the relay fences over a real loopback server the browser half dials', async () => {
 			const server = await createRelayServer(
-				createOllama({ model: 'qwen3.5:2b-q4_K_M', fetch: createStreamingTransport(TURN) }),
+				createOllama({ model: 'qwen3.5:2b-q4_K_M', fetch: createStreamingTransport(HELLO_TURN) }),
 			)
 			try {
 				const browser = createRelayProvider({
@@ -760,19 +709,12 @@ await new GuideCommand({
 		})
 
 		// The refusal the prose under the fences states. The served composition is the case
-		// preceding; this one calls the dispatcher directly to count the daemon transport's
-		// calls, which is what proves the provider is never entered.
+		// preceding; this one calls the dispatcher directly to read the daemon transport's
+		// recorded requests, which is what proves the provider is never entered.
 		it('refuses the relay hop with an HTTP 401 when the credential does not match', async () => {
-			const daemon = createStreamingTransport(TURN)
-			const calls: string[] = []
+			const daemon = createRecordingTransport(createStreamingTransport(HELLO_TURN))
 			const handler = createRelay({
-				provider: createOllama({
-					model: 'qwen3.5:2b-q4_K_M',
-					fetch: (input, init) => {
-						calls.push(String(input))
-						return daemon(input, init)
-					},
-				}),
+				provider: createOllama({ model: 'qwen3.5:2b-q4_K_M', fetch: daemon.fetch }),
 				authorize: (request) => request.headers.get('authorization') === 'Bearer session-token',
 			})
 			const dispatcher = createDispatcher({
@@ -792,7 +734,7 @@ await new GuideCommand({
 			// server is never entered.
 			expect(isProviderError(refused)).toBe(true)
 			expect(refused).toMatchObject({ code: 'HTTP', status: 401 })
-			expect(calls).toEqual([])
+			expect(daemon.requests).toEqual([])
 		})
 
 		it('carries the relay fence lines the transcription copies', () => {

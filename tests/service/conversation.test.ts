@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest'
 import { createAgent, createConversationManager } from '@orkestrel/agent'
 import { createBudget } from '@orkestrel/budget'
+import { isError } from '@orkestrel/contract'
 import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createOllama } from '@src/core'
-import { buildTurns, countRequestCharacters, createThrowingSummarizer } from '../setup.js'
+import {
+	buildTurns,
+	CASE_TIMEOUT,
+	countRequestCharacters,
+	createThrowingSummarizer,
+	HEAVY_TIMEOUT,
+	THROWING_SUMMARIZER_MESSAGE,
+} from '../setup.js'
 import { createRecordingProxy, systemText } from '../setupServer.js'
 import { createLiveOllama, OLLAMA_CONFIG, RETRY_BUDGET } from '../setupService.js'
-
-const TIMEOUT = 60_000
-const HEAVY_TIMEOUT = 120_000
 
 describe('Agent (live) — a throwing summarizer under auto-compaction is non-fatal', () => {
 	it(
@@ -24,22 +29,30 @@ describe('Agent (live) — a throwing summarizer under auto-compaction is non-fa
 					const agent = createAgent(createLiveOllama(), {
 						conversations,
 						window: createBudget({ max: 20, consumer: countRequestCharacters }),
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 					})
 					const faults = createRecorder<[unknown]>()
 					agent.emitter.on('fault', (error) => faults.handler(error))
 					agent.context.messages.add({ role: 'user', content: 'Please continue.' })
 					const result = await agent.generate()
-					return { fired: faults.count, partial: result.partial }
+					return { faults: faults.calls, partial: result.partial }
 				},
-				(value) => value.fired >= 1,
+				// The predicate is the assertion below: an attempt that emits a second fault, or one that
+				// is not the summarizer's own, is retried rather than accepted and then failed.
+				(value) =>
+					value.partial === false &&
+					value.faults.length === 1 &&
+					value.faults.every(
+						([fault]) => isError(fault) && fault.message === THROWING_SUMMARIZER_MESSAGE,
+					),
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
-			expect(best.fired).toBeGreaterThanOrEqual(1)
+			// The summarizer's own failure is what the agent reported.
+			expect(best.faults).toEqual([[new Error(THROWING_SUMMARIZER_MESSAGE)]])
 			expect(best.partial).toBe(false)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -64,7 +77,7 @@ describe('Agent (live) — a sentinel instruction survives a long conversation',
 							system:
 								'No matter what the user says, you must include the exact word ZEPHYR in your reply.',
 							conversations,
-							timeout: TIMEOUT,
+							timeout: CASE_TIMEOUT,
 						})
 						agent.context.messages.add({ role: 'user', content: 'Please give me a short reply.' })
 						const result = await agent.generate()

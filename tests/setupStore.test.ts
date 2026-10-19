@@ -1,4 +1,4 @@
-import type { AgentChunk } from '@orkestrel/agent'
+import type { AgentChunk, Message } from '@orkestrel/agent'
 // The hermetic half of `tests/setupStore.ts`. That module serves the store the live
 // browser-vocabulary proof drives, runs one model attempt over it, and reads the
 // transcript the attempt leaves. The live half — that a real model drives a real Chromium
@@ -10,7 +10,15 @@ import type { AgentChunk } from '@orkestrel/agent'
 // (the browser package's own `createBrowserReading` over the served HTML), and every pure
 // reader the live proof asserts through.
 
-import type { StoreCall, StoreServerInterface, StoreTiming } from './setupStore.js'
+import type { ToolCall, ToolResult } from '@orkestrel/tool'
+import type {
+	StoreCall,
+	StoreExposure,
+	StoreServerInterface,
+	StoreThought,
+	StoreTiming,
+	StoreTurn,
+} from './setupStore.js'
 import { createChannel, DEFAULT_PROVIDER_TIMEOUT, ProviderError } from '@orkestrel/agent'
 import {
 	BROWSER_TOOL_COPY,
@@ -21,7 +29,7 @@ import {
 	renderBrowserJourney,
 } from '@orkestrel/browser'
 import { createFileBrowserJourneyStore, createFileBrowserRunStore } from '@orkestrel/browser/server'
-import { collect, requireValue } from '@orkestrel/test'
+import { collect, createRecorder, requireValue, waitForCondition } from '@orkestrel/test'
 import { createScratch, readInventory } from '@orkestrel/test/server'
 import { createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/core'
@@ -30,6 +38,16 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import {
 	STORE_TIMED_CALLS,
+	STORE_STAGGERED_CALLS,
+	STORE_STAGGERED_DELAYS,
+	STORE_BROKEN_CALL,
+	STORE_BROKEN_CALLS,
+	STORE_THOUGHT_CASES,
+	createStaggeredTools,
+	createRejectingTools,
+	deriveTurnThinking,
+	executeTimedTool,
+	StoreTimer,
 	STORE_REFERENCE_CALLS,
 	STORE_MALFORMED_CALLS,
 	STORE_EDIT_DEFINITION,
@@ -75,13 +93,28 @@ import {
 	STORE_REFUSED_CARTS,
 	STORE_REFUSED_ORDERS,
 	buildExposureChanges,
+	buildJourneyInvocation,
+	buildLazyCalls,
+	StoreContinuationWalk,
+	StoreExposureTrace,
+	StoreRefusals,
+	StoreThinking,
+	STORE_SEARCH_SEED,
+	createStoreContext,
+	extractWindowText,
+	settleStoreRun,
+	StoreActivity,
+	StoreCallRecord,
+	STORE_ANSWER_SCOPE,
 	STORE_STALE_CONTINUATIONS,
+	STORE_CONTINUATION_INTERRUPTIONS,
 	STORE_INVALID_CONTINUATIONS,
 	STORE_UNBATCHED_LISTINGS,
 	STORE_REFUSED_RECORD,
 	STORE_REFUSED_SAVE,
 	STORE_FAIL_TURN,
 	STORE_LOOKUP_TURN,
+	STORE_MIXED_TURN,
 	STORE_REFUSAL_TURNS,
 	STORE_REFUSAL_TOOLS,
 	STORE_THINKING_MESSAGES,
@@ -153,6 +186,14 @@ import {
 	writeTranscript,
 } from './setupStore.js'
 import {
+	buildClosingList,
+	buildIteratorlessList,
+	buildSparseList,
+	buildTracedRecord,
+	buildWatched,
+	CASE_TIMEOUT,
+} from './setup.js'
+import {
 	LOOKUP_DATUM,
 	THROWING_TOOL_MESSAGE,
 	createLookupTool,
@@ -162,279 +203,281 @@ import {
 	wireTools,
 } from './setupServer.js'
 
-let store: StoreServerInterface
+const staging = Promise.withResolvers<StoreServerInterface>()
 
 describe('real line projection', () => {
-	it('accepts the measured cart path through refused type calls', async () => {
-		const fresh = await createStoreServer()
-		const browser = await createPageBrowser()
-		try {
-			await browser.connect()
-			const context = await browser.isolate()
-			const page = await context.create()
-			await page.navigate(fresh.url)
-			const toolset = createBrowserToolset(page)
+	it(
+		'accepts the measured cart path through refused type calls',
+		async () => {
+			const fresh = await createStoreServer()
+			const browser = await createPageBrowser()
 			try {
-				await toolset.start()
-				const seed = renderToolText(
-					await toolset.tools.execute({
-						id: 'seed',
-						name: 'read',
-						arguments: STORE_SEED_ARGUMENTS,
-					}),
-				)
-				const calls: StoreCall[] = []
-				for (const call of STORE_CART_CALLS) {
-					calls.push(
-						await executeStoreCall(toolset.tools, String(calls.length), call.name, call.arguments),
-					)
-				}
-				expect(calls.map((call) => call.success)).toEqual([true, false, true, false, true])
-				for (const call of calls.filter((entry) => !entry.success))
-					expect(call.text).toContain('takes no text;')
-				expect(fresh.read().cart).toEqual([STORE_NAMED_PRODUCT])
-				expect(findUnlistedReferences(seed, calls)).toEqual([])
-				expect(
-					matchesCartOracle({
-						...buildStoreTranscript(calls, seed),
-						state: fresh.read(),
-					}),
-				).toBe(true)
-			} finally {
-				await toolset.destroy()
-			}
-		} finally {
-			await browser.destroy()
-			await fresh.stop()
-		}
-	}, 60_000)
-	it('applies the reference-exposure rule to successful reads, page changes, actions, and refusals', async () => {
-		const fresh = await createStoreServer()
-		const browser = await createPageBrowser()
-		try {
-			await browser.connect()
-			for (const scenario of STORE_EXPOSURE_SCENARIOS) {
+				await browser.connect()
 				const context = await browser.isolate()
+				const page = await context.create()
+				await page.navigate(fresh.url)
+				const toolset = createBrowserToolset(page)
 				try {
-					const page = await context.create()
-					await page.navigate(fresh.url)
-					const toolset = createBrowserToolset(page)
-					try {
-						await toolset.start()
-						const seed = renderToolText(
-							await toolset.tools.execute({
-								id: 'seed',
-								name: 'read',
-								arguments: STORE_SEED_ARGUMENTS,
-							}),
-						)
-						const calls: StoreCall[] = []
-						if (scenario === 'changed' || scenario === 'refused')
-							await page.navigate(`${fresh.url}/policy`)
-						if (scenario === 'unchanged' || scenario === 'bestmatch' || scenario === 'changed') {
-							const input =
-								scenario === 'bestmatch'
-									? { from: 46, to: 52, search: STORE_NAMED_PRODUCT }
-									: { from: 46, to: 52 }
-							calls.push(await executeStoreCall(toolset.tools, 'read', 'read', input))
-						}
-						for (const call of calls) expect(call.success).toBe(true)
-						for (const call of calls.filter(
-							(entry) => entry.arguments['search'] === STORE_NAMED_PRODUCT,
-						)) {
-							expect(call.text).toContain('the best match is line 11:')
-							expect(extractReferences(call.text)).toEqual(['e7'])
-							expect(parseWindowLine(call.text)).toBe(46)
-						}
-						// A fresh read after the out-of-band navigation invalidates the tool's own reference map.
-						if (scenario === 'refused')
-							await toolset.tools.execute({ id: 'refresh', name: 'read', arguments: { from: 1 } })
-						const input = { ref: scenario === 'invented' ? 'e99999' : 'e7' }
-						const action = await executeStoreCall(toolset.tools, 'click', 'click', input)
-						calls.push(action)
-						const accepted = STORE_ACCEPTED_EXPOSURES.includes(scenario)
-						expect(action.success).toBe(accepted)
-						expect(/not in the current view|is not on this page/.test(action.text)).toBe(!accepted)
-						expect(findUnlistedReferences(seed, calls)).toEqual(accepted ? [] : [action])
-					} finally {
-						await toolset.destroy()
-					}
-				} finally {
-					await context.close()
-				}
-			}
-		} finally {
-			await browser.destroy()
-			await fresh.stop()
-		}
-	}, 60_000)
-	it('records a cart click and one submission, removes the click, and replays exactly one order for the other buyer', async () => {
-		mkdirSync(resolveJourneyPath(), { recursive: true })
-		const fresh = await createStoreServer()
-		const root = createScratch({ parent: resolveJourneyPath(), prefix: 'journey-proof-' })
-		const browser = await createPageBrowser()
-		try {
-			await browser.connect()
-			const context = await browser.isolate()
-			const page = await context.create()
-			await page.navigate(fresh.url)
-			const tools = createBrowserToolset(page, {
-				journeys: {
-					store: createFileBrowserJourneyStore({ root: root.path }),
-					runs: createFileBrowserRunStore({ root: root.path }),
-				},
-			})
-			try {
-				await tools.start()
-				const seed = renderToolText(
-					await tools.tools.execute({ id: 'seed', name: 'read', arguments: { from: 1 } }),
-				)
-				const calls: StoreCall[] = []
-				for (const action of STORE_JOURNEY_ACTIONS) {
-					let name = action
-					let input: Readonly<Record<string, unknown>> = {}
-					if (action === 'record') input = { journey: STORE_JOURNEY_NAME }
-					else if (action === 'save') input = { description: 'Open the cart and place one order.' }
-					else if (action === 'journeys') input = { from: 1 }
-					else if (action === 'edit') {
-						const instruction = renderJourneyEdit(calls)
-						input = {
-							journey: STORE_JOURNEY_NAME,
-							edits: parseStoreJSON(
-								instruction.slice(instruction.indexOf('['), instruction.lastIndexOf(']') + 1),
+					await toolset.start()
+					const seed = renderToolText(
+						await toolset.tools.execute({
+							id: 'seed',
+							name: 'read',
+							arguments: STORE_SEED_ARGUMENTS,
+						}),
+					)
+					const calls: StoreCall[] = []
+					for (const call of STORE_CART_CALLS) {
+						calls.push(
+							await executeStoreCall(
+								toolset.tools,
+								String(calls.length),
+								call.name,
+								call.arguments,
 							),
-						}
-					} else if (action === 'replay')
-						input = {
-							journey: STORE_JOURNEY_NAME,
-							inputs: { [STORE_JOURNEY_PARAMETER]: STORE_JOURNEY_BUYER },
-						}
-					else {
-						const text = calls.at(-1)?.text ?? seed
-						const line = requireValue(
-							text.split(/\r\n|\n/).find((row) => row.includes(`"${action}"`)),
 						)
-						const ref = requireValue(extractReferences(line)[0])
-						name = action === 'Full name' ? 'type' : 'click'
-						input = action === 'Full name' ? { ref, text: STORE_BUYER, submit: true } : { ref }
 					}
-					const call = await executeStoreCall(tools.tools, action, name, input)
-					expect(call).toMatchObject({ success: true })
-					calls.push(call)
+					expect(calls.map((call) => call.success)).toEqual([true, false, true, false, true])
+					for (const call of calls.filter((entry) => !entry.success))
+						expect(call.text).toContain('takes no text;')
+					expect(fresh.read().cart).toEqual([STORE_NAMED_PRODUCT])
+					expect(findUnlistedReferences(seed, calls)).toEqual([])
+					expect(
+						matchesCartOracle({
+							...buildStoreTranscript(calls, seed),
+							state: fresh.read(),
+						}),
+					).toBe(true)
+				} finally {
+					await toolset.destroy()
 				}
-				const transcript = {
-					...buildStoreTranscript(calls, seed),
-					name: 'journey',
-					files: readInventory(root.path, ['.'], { extensions: ['.json'] }),
-					state: fresh.read(),
-				}
-				expect(transcript.state.orders).toEqual([STORE_BUYER, STORE_JOURNEY_BUYER])
-				expect(matchesJourneyOracle(transcript)).toBe(true)
-				expect(
-					filterSubmissionLines(requireValue(calls.find((call) => call.name === 'save')).text),
-				).toHaveLength(1)
-				for (const refused of buildRefusedTranscripts(
-					transcript,
-					(STORE_TASKS.journey.limit ?? STORE_BOUNDS.limit) +
-						STORE_TASKS.journey.followups.length * STORE_BOUNDS.limit,
-				))
-					expect(matchesJourneyOracle(refused)).toBe(false)
 			} finally {
-				await tools.destroy()
+				await browser.destroy()
+				await fresh.stop()
 			}
-		} finally {
-			await browser.destroy()
-			root.destroy()
-			await fresh.stop()
-		}
-	}, 60_000)
-
-	it('places the fact beyond the seed and the token in the third default window', async () => {
-		const browser = await createPageBrowser()
-		try {
-			await browser.connect()
-			const context = await browser.isolate()
-			const page = await context.create()
-			await page.navigate(store.url)
-			const tools = createBrowserToolset(page)
+		},
+		CASE_TIMEOUT,
+	)
+	it(
+		'applies the reference-exposure rule to successful reads, page changes, actions, and refusals',
+		async () => {
+			const fresh = await createStoreServer()
+			const browser = await createPageBrowser()
 			try {
-				await tools.start()
-
-				const seed = renderToolText(
-					await tools.tools.execute({ id: 'seed', name: 'read', arguments: STORE_SEED_ARGUMENTS }),
-				)
-				expect(seed).not.toContain(STORE_FACT)
-				expect(seed).not.toContain(STORE_POLICY_TOKEN)
-				const catalogueNext = requireValue(parseFooterLine(seed))
-				const shipping = renderToolText(
-					await tools.tools.execute({
-						id: 'shipping',
-						name: 'read',
-						arguments: { from: 1, search: 'shipping cutoff' },
-					}),
-				)
-				expect(shipping).toContain(STORE_FACT)
-				const fact = Number(
-					requireValue(shipping.split(/\r\n|\n/).find((line) => line.includes(STORE_FACT))).split(
-						': ',
-					)[0],
-				)
-				expect(fact).toBeGreaterThan(catalogueNext - 1)
-				expect(fact).toBe(52)
-				expect(catalogueNext).toBe(46)
-				await page.navigate(`${store.url}/policy`)
-				const policy = renderToolText(
-					await tools.tools.execute({
-						id: 'policy',
-						name: 'read',
-						arguments: STORE_SEED_ARGUMENTS,
-					}),
-				)
-				const second = requireValue(parseFooterLine(policy))
-				const middle = renderToolText(
-					await tools.tools.execute({ id: 'middle', name: 'read', arguments: { from: second } }),
-				)
-				const third = requireValue(parseFooterLine(middle))
-				const last = renderToolText(
-					await tools.tools.execute({ id: 'last', name: 'read', arguments: { from: third } }),
-				)
-				expect(policy).not.toContain(STORE_POLICY_TOKEN)
-				expect(middle).not.toContain(STORE_POLICY_TOKEN)
-				expect(last).toContain(STORE_POLICY_TOKEN)
-				const token = Number(
-					requireValue(
-						last.split(/\r\n|\n/).find((line) => line.includes(STORE_POLICY_TOKEN)),
-					).split(': ')[0],
-				)
-				expect(token).toBeGreaterThan(third - 1)
-				expect(token).toBe(80)
-				expect(second).toBe(33)
-				expect(third).toBe(61)
-				expect(
-					matchesPagingOracle(
-						buildStoreTranscript(
-							[
-								buildStoreCall('read', { from: second }, middle),
-								buildStoreCall('read', { from: third }, last),
-							],
-							policy,
-						),
-					),
-				).toBe(true)
-				expect(
-					matchesPagingOracle(
-						buildStoreTranscript([buildStoreCall('read', { from: second }, middle)], policy),
-					),
-				).toBe(false)
-				for (const text of [seed, shipping, policy, middle, last])
-					expect(text.length).toBeLessThanOrEqual(BROWSER_TOOL_LIMIT)
+				await browser.connect()
+				for (const scenario of STORE_EXPOSURE_SCENARIOS) {
+					const context = await browser.isolate()
+					try {
+						const page = await context.create()
+						await page.navigate(fresh.url)
+						const toolset = createBrowserToolset(page)
+						try {
+							await toolset.start()
+							const seed = renderToolText(
+								await toolset.tools.execute({
+									id: 'seed',
+									name: 'read',
+									arguments: STORE_SEED_ARGUMENTS,
+								}),
+							)
+							const calls: StoreCall[] = []
+							if (scenario === 'changed' || scenario === 'refused')
+								await page.navigate(`${fresh.url}/policy`)
+							if (scenario === 'unchanged' || scenario === 'bestmatch' || scenario === 'changed') {
+								const input =
+									scenario === 'bestmatch'
+										? { from: 46, to: 52, search: STORE_NAMED_PRODUCT }
+										: { from: 46, to: 52 }
+								calls.push(await executeStoreCall(toolset.tools, 'read', 'read', input))
+							}
+							for (const call of calls) expect(call.success).toBe(true)
+							for (const call of calls.filter(
+								(entry) => entry.arguments['search'] === STORE_NAMED_PRODUCT,
+							)) {
+								expect(call.text).toContain('the best match is line 11:')
+								expect(extractReferences(call.text)).toEqual(['e7'])
+								expect(parseWindowLine(call.text)).toBe(46)
+							}
+							// A fresh read after the out-of-band navigation invalidates the tool's own reference map.
+							if (scenario === 'refused')
+								await toolset.tools.execute({ id: 'refresh', name: 'read', arguments: { from: 1 } })
+							const input = { ref: scenario === 'invented' ? 'e99999' : 'e7' }
+							const action = await executeStoreCall(toolset.tools, 'click', 'click', input)
+							calls.push(action)
+							const accepted = STORE_ACCEPTED_EXPOSURES.includes(scenario)
+							expect(action.success).toBe(accepted)
+							expect(/not in the current view|is not on this page/.test(action.text)).toBe(
+								!accepted,
+							)
+							expect(findUnlistedReferences(seed, calls)).toEqual(accepted ? [] : [action])
+						} finally {
+							await toolset.destroy()
+						}
+					} finally {
+						await context.close()
+					}
+				}
 			} finally {
-				await tools.destroy()
+				await browser.destroy()
+				await fresh.stop()
 			}
-		} finally {
-			await browser.destroy()
-		}
-	}, 60_000)
+		},
+		CASE_TIMEOUT,
+	)
+	it(
+		'records a cart click and one submission, removes the click, and replays exactly one order for the other buyer',
+		async () => {
+			mkdirSync(resolveJourneyPath(), { recursive: true })
+			const fresh = await createStoreServer()
+			const root = createScratch({ parent: resolveJourneyPath(), prefix: 'journey-proof-' })
+			const browser = await createPageBrowser()
+			try {
+				await browser.connect()
+				const context = await browser.isolate()
+				const page = await context.create()
+				await page.navigate(fresh.url)
+				const tools = createBrowserToolset(page, {
+					journeys: {
+						store: createFileBrowserJourneyStore({ root: root.path }),
+						runs: createFileBrowserRunStore({ root: root.path }),
+					},
+				})
+				try {
+					await tools.start()
+					const seed = renderToolText(
+						await tools.tools.execute({ id: 'seed', name: 'read', arguments: { from: 1 } }),
+					)
+					const calls: StoreCall[] = []
+					for (const action of STORE_JOURNEY_ACTIONS) {
+						const { name, input } = buildJourneyInvocation(action, calls, seed)
+						const call = await executeStoreCall(tools.tools, action, name, input)
+						expect(call).toMatchObject({ success: true })
+						calls.push(call)
+					}
+					const transcript = {
+						...buildStoreTranscript(calls, seed),
+						name: 'journey',
+						files: readInventory(root.path, ['.'], { extensions: ['.json'] }),
+						state: fresh.read(),
+					}
+					expect(transcript.state.orders).toEqual([STORE_BUYER, STORE_JOURNEY_BUYER])
+					expect(matchesJourneyOracle(transcript)).toBe(true)
+					expect(
+						filterSubmissionLines(requireValue(calls.find((call) => call.name === 'save')).text),
+					).toHaveLength(1)
+					for (const refused of buildRefusedTranscripts(
+						transcript,
+						(STORE_TASKS.journey.limit ?? STORE_BOUNDS.limit) +
+							STORE_TASKS.journey.followups.length * STORE_BOUNDS.limit,
+					))
+						expect(matchesJourneyOracle(refused)).toBe(false)
+				} finally {
+					await tools.destroy()
+				}
+			} finally {
+				await browser.destroy()
+				root.destroy()
+				await fresh.stop()
+			}
+		},
+		CASE_TIMEOUT,
+	)
+
+	it(
+		'places the fact beyond the seed and the token in the third default window',
+		async () => {
+			const store = await staging.promise
+			const browser = await createPageBrowser()
+			try {
+				await browser.connect()
+				const context = await browser.isolate()
+				const page = await context.create()
+				await page.navigate(store.url)
+				const tools = createBrowserToolset(page)
+				try {
+					await tools.start()
+
+					const seed = renderToolText(
+						await tools.tools.execute({
+							id: 'seed',
+							name: 'read',
+							arguments: STORE_SEED_ARGUMENTS,
+						}),
+					)
+					expect(seed).not.toContain(STORE_FACT)
+					expect(seed).not.toContain(STORE_POLICY_TOKEN)
+					const catalogueNext = requireValue(parseFooterLine(seed))
+					const shipping = renderToolText(
+						await tools.tools.execute({
+							id: 'shipping',
+							name: 'read',
+							arguments: { from: 1, search: 'shipping cutoff' },
+						}),
+					)
+					expect(shipping).toContain(STORE_FACT)
+					const fact = Number(
+						requireValue(shipping.split(/\r\n|\n/).find((line) => line.includes(STORE_FACT))).split(
+							': ',
+						)[0],
+					)
+					expect(fact).toBeGreaterThan(catalogueNext - 1)
+					expect(fact).toBe(52)
+					expect(catalogueNext).toBe(46)
+					await page.navigate(`${store.url}/policy`)
+					const policy = renderToolText(
+						await tools.tools.execute({
+							id: 'policy',
+							name: 'read',
+							arguments: STORE_SEED_ARGUMENTS,
+						}),
+					)
+					const second = requireValue(parseFooterLine(policy))
+					const middle = renderToolText(
+						await tools.tools.execute({ id: 'middle', name: 'read', arguments: { from: second } }),
+					)
+					const third = requireValue(parseFooterLine(middle))
+					const last = renderToolText(
+						await tools.tools.execute({ id: 'last', name: 'read', arguments: { from: third } }),
+					)
+					expect(policy).not.toContain(STORE_POLICY_TOKEN)
+					expect(middle).not.toContain(STORE_POLICY_TOKEN)
+					expect(last).toContain(STORE_POLICY_TOKEN)
+					const token = Number(
+						requireValue(
+							last.split(/\r\n|\n/).find((line) => line.includes(STORE_POLICY_TOKEN)),
+						).split(': ')[0],
+					)
+					expect(token).toBeGreaterThan(third - 1)
+					expect(token).toBe(80)
+					expect(second).toBe(33)
+					expect(third).toBe(61)
+					expect(
+						matchesPagingOracle(
+							buildStoreTranscript(
+								[
+									buildStoreCall('read', { from: second }, middle),
+									buildStoreCall('read', { from: third }, last),
+								],
+								policy,
+							),
+						),
+					).toBe(true)
+					expect(
+						matchesPagingOracle(
+							buildStoreTranscript([buildStoreCall('read', { from: second }, middle)], policy),
+						),
+					).toBe(false)
+					for (const text of [seed, shipping, policy, middle, last])
+						expect(text.length).toBeLessThanOrEqual(BROWSER_TOOL_LIMIT)
+				} finally {
+					await tools.destroy()
+				}
+			} finally {
+				await browser.destroy()
+			}
+		},
+		CASE_TIMEOUT,
+	)
 
 	it('gives the token section no prefix-rule word from the paging prompt', () => {
 		const section = requireValue(STORE_POLICY.at(-1)).join(' ')
@@ -495,30 +538,44 @@ describe('monotonic operation timing', () => {
 	it('records successful and refused tools without freezing the advertised registry', async () => {
 		const tools = createToolManager()
 		tools.add(createLookupTool())
-		const timings: StoreTiming[] = []
-		const measured = createTimedTools(tools, timings)
+		const timer = new StoreTimer()
+		const measured = createTimedTools(tools, timer)
 		expect(measured.definitions()).toEqual(tools.definitions())
 		tools.add(createThrowingTool())
 		expect(measured.definitions()).toEqual(tools.definitions())
 		const calls = STORE_TIMED_CALLS
 		const result = await measured.execute(calls)
 		expect(result.map((entry) => entry.success)).toEqual([true, false])
+		const timings = timer.read()
 		expect(timings.map((timing) => timing.name).sort()).toEqual(['lookup', 'missing'])
 		for (const timing of timings) {
 			expect(timing.operation).toBe('tool')
-			expect(timing.end).toBeGreaterThanOrEqual(timing.start)
+			expect(timing.end).toBeGreaterThan(timing.start)
+		}
+		tools.destroy()
+	})
+
+	it('records an interval that spans the real delay of each parallel call', async () => {
+		const tools = createStaggeredTools()
+		const timer = new StoreTimer()
+		await createTimedTools(tools, timer).execute(STORE_STAGGERED_CALLS)
+		const spans = new Map(timer.read().map((timing) => [timing.name, timing.end - timing.start]))
+		for (const [name, delay] of STORE_STAGGERED_DELAYS) {
+			const span = requireValue(spans.get(name), `the timer lost the ${name} interval`)
+			expect(span).toBeGreaterThan(0)
+			expect(span).toBeGreaterThanOrEqual(delay / 2)
 		}
 		tools.destroy()
 	})
 
 	it('records a generation and a failed stream without changing their result or error', async () => {
-		const timings: StoreTiming[] = []
+		const timer = new StoreTimer()
 		const provider = createTimedProvider(
 			createOllama({
 				model: 'fixture',
 				fetch: createScriptedTransport([{ content: 'Measured.' }]),
 			}),
-			timings,
+			timer,
 		)
 		const signal = AbortSignal.timeout(5000)
 		expect(
@@ -526,20 +583,99 @@ describe('monotonic operation timing', () => {
 		).toBe('Measured.')
 		const stream = provider.stream([{ id: '2', role: 'user', content: 'Answer again.' }], signal)
 		await expect(stream.next()).rejects.toThrow('the script holds 1 turns')
+		const timings = timer.read()
 		expect(timings).toHaveLength(2)
 		for (const timing of timings) {
 			expect(timing.operation).toBe('generation')
-			expect(timing.end).toBeGreaterThanOrEqual(timing.start)
+			expect(timing.end).toBeGreaterThan(timing.start)
 		}
+	})
+
+	it('records parallel tool calls in the order they finish, not the order they were dispatched', async () => {
+		const tools = createStaggeredTools()
+		const timer = new StoreTimer()
+		const results = await createTimedTools(tools, timer).execute(STORE_STAGGERED_CALLS)
+		expect(results.map((entry) => entry.success && entry.value)).toEqual(
+			STORE_STAGGERED_CALLS.map((call) => call.name),
+		)
+		expect(timer.read().map((timing) => timing.name)).toEqual(
+			STORE_STAGGERED_DELAYS.map(([name]) => name).toReversed(),
+		)
+		tools.destroy()
+	})
+
+	it('records the interval of a rejected call and of the calls still pending when it rejects', async () => {
+		const tools = createStaggeredTools()
+		const failure = new Error('Dispatch refused')
+		const timer = new StoreTimer()
+		const measured = createTimedTools(
+			createRejectingTools(tools, STORE_BROKEN_CALL.name, failure),
+			timer,
+		)
+		await expect(measured.execute(STORE_BROKEN_CALLS)).rejects.toBe(failure)
+		await waitForCondition(
+			'every dispatched call to record its interval',
+			() => timer.read().length === STORE_BROKEN_CALLS.length,
+		)
+		const timings = timer.read()
+		expect(timings.map((timing) => timing.name)).toEqual(['broken', 'fast', 'slow'])
+		for (const timing of timings) {
+			expect(timing.operation).toBe('tool')
+			expect(timing.end).toBeGreaterThan(timing.start)
+		}
+		tools.destroy()
+	})
+
+	it('records the interval of one call that rejects and returns the registry result of one that does not', async () => {
+		const tools = createStaggeredTools()
+		const failure = new Error('Dispatch refused')
+		const timer = new StoreTimer()
+		const rejecting = createRejectingTools(tools, STORE_BROKEN_CALL.name, failure)
+		await expect(executeTimedTool(rejecting, STORE_BROKEN_CALL, timer)).rejects.toBe(failure)
+		const accepted = requireValue(STORE_STAGGERED_CALLS.at(-1))
+		const result = await executeTimedTool(rejecting, accepted, timer)
+		expect(result).toMatchObject({ success: true, value: 'fast' })
+		expect(timer.read().map((timing) => [timing.operation, timing.name])).toEqual([
+			['tool', 'broken'],
+			['tool', 'fast'],
+		])
+		tools.destroy()
+	})
+})
+
+describe('StoreTimer', () => {
+	it('reads nothing before an interval is recorded', () => {
+		expect(new StoreTimer().read()).toEqual([])
+	})
+
+	it('reads the intervals in the order they were recorded with every field', () => {
+		const timer = new StoreTimer()
+		const later: StoreTiming = { operation: 'seed', name: 'read', start: 5, end: 9 }
+		const earlier: StoreTiming = { operation: 'tool', name: 'click', start: 1, end: 12 }
+		timer.record(later)
+		timer.record(earlier)
+		expect(timer.read()).toEqual([later, earlier])
+	})
+
+	it('reads a copy, so a later interval leaves an earlier reading unchanged', () => {
+		const timer = new StoreTimer()
+		const first: StoreTiming = { operation: 'generation', name: 'fixture', start: 0, end: 2 }
+		const second: StoreTiming = { operation: 'reload', name: 'page', start: 3, end: 4 }
+		timer.record(first)
+		const reading = timer.read()
+		timer.record(second)
+		expect(reading).toEqual([first])
+		expect(timer.read()).toEqual([first, second])
+		expect(timer.read()).not.toBe(timer.read())
 	})
 })
 
 beforeAll(async () => {
-	store = await createStoreServer()
+	staging.resolve(await createStoreServer())
 })
 
 afterAll(async () => {
-	await store.stop()
+	await (await staging.promise).stop()
 })
 
 describe('createStoreServer', () => {
@@ -561,11 +697,13 @@ describe('createStoreServer', () => {
 		}
 	})
 
-	it('listens on the IPv4 loopback on an ephemeral port', () => {
+	it('listens on the IPv4 loopback on an ephemeral port', async () => {
+		const store = await staging.promise
 		expect(store.url).toMatch(/^http:\/\/127\.0\.0\.1:[1-9]\d*$/)
 	})
 
 	it('serves the catalogue with the search form and every featured product with its price', async () => {
+		const store = await staging.promise
 		const response = await fetch(`${store.url}/`)
 		const html = await response.text()
 		expect(response.status).toBe(200)
@@ -585,6 +723,7 @@ describe('createStoreServer', () => {
 	})
 
 	it('lists none of the products the search task must find, so only a search names them', async () => {
+		const store = await staging.promise
 		const html = await (await fetch(`${store.url}/`)).text()
 		const matches = filterProducts(STORE_QUERY)
 		expect(matches.length).toBeGreaterThan(0)
@@ -592,6 +731,7 @@ describe('createStoreServer', () => {
 	})
 
 	it('states the shipping cutoff once, after the customer notes, beyond the first read slice', async () => {
+		const store = await staging.promise
 		const html = await (await fetch(`${store.url}/`)).text()
 		expect(html.split(STORE_FACT)).toHaveLength(2)
 		expect(html.indexOf(STORE_FACT)).toBeGreaterThan(html.indexOf('</aside>'))
@@ -603,6 +743,7 @@ describe('createStoreServer', () => {
 	})
 
 	it('records each submitted query and lists exactly the products whose name matches it', async () => {
+		const store = await staging.promise
 		const before = store.read().searches.length
 		const response = await fetch(`${store.url}/search?q=${STORE_QUERY}`)
 		const html = await response.text()
@@ -629,12 +770,14 @@ describe('createStoreServer', () => {
 	})
 
 	it('answers a query nothing matches with a page that names no product', async () => {
+		const store = await staging.promise
 		const html = await (await fetch(`${store.url}/search?q=anchor`)).text()
 		expect(html).toContain('No products match.')
 		for (const product of STORE_PRODUCTS) expect(html).not.toContain(product.name)
 	})
 
 	it('serves each product page with its add-to-cart form, and 404 for an unknown product', async () => {
+		const store = await staging.promise
 		for (const product of STORE_PRODUCTS) {
 			const response = await fetch(`${store.url}/product/${product.id}`)
 			const html = await response.text()
@@ -649,6 +792,7 @@ describe('createStoreServer', () => {
 	})
 
 	it('adds a posted product to this server cart alone, redirects to the cart, and lists it there', async () => {
+		const store = await staging.promise
 		const other = await createStoreServer()
 		try {
 			const named = STORE_PRODUCTS.find((product) => product.name === STORE_NAMED_PRODUCT)
@@ -684,6 +828,7 @@ describe('createStoreServer', () => {
 	})
 
 	it('serves a checkout whose script inserts the code only after an order, and records the order', async () => {
+		const store = await staging.promise
 		const html = await (await fetch(`${store.url}/checkout`)).text()
 		expect(html).toContain('<form id="checkout">')
 		expect(html).toContain('<input id="name" type="text" name="name" autocomplete="off">')
@@ -696,6 +841,7 @@ describe('createStoreServer', () => {
 	})
 
 	it('states the policy token past the first 4 000 characters of the whole-page policy', async () => {
+		const store = await staging.promise
 		const response = await fetch(`${store.url}/policy`)
 		const html = await response.text()
 		expect(response.status).toBe(200)
@@ -708,6 +854,7 @@ describe('createStoreServer', () => {
 	})
 
 	it('serves the page every task starts on', async () => {
+		const store = await staging.promise
 		for (const task of Object.values(STORE_TASKS)) {
 			expect((await fetch(`${store.url}${task.path}`)).status).toBe(200)
 		}
@@ -967,6 +1114,24 @@ describe('findUnlistedReferences', () => {
 	it('flags nothing for calls that carry no reference', () => {
 		expect(findUnlistedReferences('', [buildStoreCall('read', { search: 'x' })])).toEqual([])
 	})
+
+	it('applies each call before it obtains the next, so a later slot cannot rewrite an earlier call', () => {
+		const read = buildStoreCall(
+			'read',
+			{ from: 1 },
+			'page "A" http://store/a\n1: link "Cart" [ref=e1]',
+		)
+		const click = buildStoreCall('click', { ref: 'e1' })
+		expect(
+			findUnlistedReferences('', buildLazyCalls(read, click, { text: 'page "A" http://store/a' })),
+		).toEqual([])
+	})
+
+	it('refuses a list that has no iterator as for…of does', () => {
+		expect(() =>
+			findUnlistedReferences('', buildIteratorlessList([buildStoreCall('click', { ref: 'e1' })])),
+		).toThrow(TypeError)
+	})
 })
 
 describe('splitResultFooter', () => {
@@ -1111,6 +1276,26 @@ describe('line continuation', () => {
 			expect(matchesPagingOracle(transcript)).toBe(false)
 		},
 	)
+	it('walks 100 000 calls without a stack that grows with them', () => {
+		const calls = Array.from({ length: 100_000 }, () => buildStoreCall('click', { ref: 'e1' }))
+		expect(findContinuedRead(calls, STORE_POLICY_TOKEN)).toBeUndefined()
+	})
+	it('stops at the match and closes the iterator it opened, as for…of does', () => {
+		const first = buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE)
+		const continued = buildStoreCall('read', { from: 31 }, STORE_CONTINUED_SLICE)
+		const closed = createRecorder<[]>()
+		const calls = buildClosingList(
+			[first, continued, buildStoreCall('click', { ref: 'e1' })],
+			closed.handler,
+		)
+		expect(findContinuedRead(calls, STORE_POLICY_TOKEN)).toBe(continued)
+		expect(closed.calls).toEqual([[]])
+	})
+	it('refuses a list that has no iterator as for…of does', () => {
+		expect(() =>
+			findContinuedRead(buildIteratorlessList([buildStoreCall('read', { from: 1 })]), 'token'),
+		).toThrow(TypeError)
+	})
 })
 
 describe('STORE_BOUNDS', () => {
@@ -1230,6 +1415,22 @@ describe('attachThinking', () => {
 			undefined,
 		])
 		expect(recorded[3]).toBe(STORE_THINKING_MESSAGES[3])
+	})
+
+	it('reads the roles in one pass, with no rescan of the earlier messages', () => {
+		const reads = createRecorder<[string]>()
+		const messages = STORE_THINKING_MESSAGES.map((message) =>
+			buildWatched(message, 'role', () => reads.handler(message.id)),
+		)
+		const recorded = attachThinking(messages, ['I will search.', ''])
+		// The check of each role, then the spread that copies the message when its turn has thinking.
+		expect(reads.calls).toEqual([['m1'], ['m2'], ['m2'], ['m3'], ['m4']])
+		expect(recorded.map((message) => message.thinking)).toEqual([
+			undefined,
+			'I will search.',
+			undefined,
+			undefined,
+		])
 	})
 })
 
@@ -1714,6 +1915,42 @@ describe('computeRefusals', () => {
 		expect(computeRefusals([])).toBe(0)
 		expect(computeRefusals([buildStoreCall('look', {}), buildStoreCall('look', {})])).toBe(0)
 	})
+
+	it('reads each call a bounded number of times, so the work stays linear in the calls', () => {
+		const reads = createRecorder<[number]>()
+		const refused = Array.from({ length: 50 }, (_, index) =>
+			buildWatched(buildRefusedCall('save'), 'name', () => reads.handler(index)),
+		)
+		expect(computeRefusals(refused)).toBe(50)
+		// The key of the count, then the read of the earlier count, for each call in turn.
+		expect(reads.calls).toEqual(refused.flatMap((_, index) => [[index], [index]]))
+	})
+
+	it('counts a call before it obtains the next one', () => {
+		const calls = buildLazyCalls(buildRefusedCall('save'), buildRefusedCall('save'), {
+			success: true,
+		})
+		expect(computeRefusals(calls)).toBe(2)
+	})
+
+	it('refuses a list that has no iterator as for…of does', () => {
+		expect(() => computeRefusals(buildIteratorlessList([buildRefusedCall('save')]))).toThrow(
+			TypeError,
+		)
+	})
+})
+
+describe('StoreRefusals', () => {
+	it('tallies refused calls by tool name, counts a success as nothing, and starts at zero', () => {
+		const tally = new StoreRefusals()
+		expect(tally.largest).toBe(0)
+		tally.count(buildStoreCall('save', {}))
+		expect(tally.largest).toBe(0)
+		tally.count(buildRefusedCall('save'))
+		tally.count(buildRefusedCall('record'))
+		tally.count(buildRefusedCall('save'))
+		expect(tally.largest).toBe(2)
+	})
 })
 
 describe('converseStore', () => {
@@ -1846,6 +2083,55 @@ describe('converseStore', () => {
 		expect(conversation.result).toBeUndefined()
 		expect(String(conversation.failure)).toContain('the script holds 1 turns')
 		expect(conversation.calls.map((call) => [call.name, call.success])).toEqual([['lookup', true]])
+	})
+
+	it('returns the timings, the usages, and the partial flag over a history whose turns differ', async () => {
+		const provider = createOllama({
+			model: 'fixture-model',
+			fetch: createScriptedTransport([STORE_LOOKUP_TURN, STORE_LOOKUP_TURN, { content: 'Done.' }]),
+		})
+		const conversation = await converseStore({
+			provider,
+			system: STORE_SYSTEM_PROMPT,
+			tools: createRefusalTools(),
+			turns: ['Look up the kettle.', 'Say that you are done.'],
+			limit: 1,
+		})
+		// The opening turn stops at its limit, so it is partial; the later turn answers whole.
+		expect(conversation.partial).toBe(true)
+		expect(conversation.result).toMatchObject({ content: 'Done.', partial: false })
+		expect(conversation.timings.map((timing) => [timing.operation, timing.name])).toEqual([
+			['generation', provider.id],
+			['tool', 'lookup'],
+			['generation', provider.id],
+			['tool', 'lookup'],
+			['generation', provider.id],
+		])
+		expect(conversation.timings.every((timing) => timing.end >= timing.start)).toBe(true)
+		const ends = conversation.timings.map((timing) => timing.end)
+		expect(ends).toEqual([...ends].sort((left, right) => left - right))
+		expect(conversation.usages).toEqual(
+			Array.from({ length: 3 }, () => ({ prompt: 3, completion: 4, total: 7 })),
+		)
+	})
+
+	it('records the thinking the turn streamed, not the text the agent joined, when native and inline reasoning mix', async () => {
+		const conversation = await converseStore({
+			provider: createOllama({
+				model: 'fixture-model',
+				fetch: createScriptedTransport([STORE_MIXED_TURN]),
+			}),
+			system: STORE_SYSTEM_PROMPT,
+			tools: createRefusalTools(),
+			turns: ['Say hello.'],
+		})
+		// The agent's own record of this turn holds the inline span ahead of the native text.
+		expect(conversation.failure).toBeUndefined()
+		expect(
+			conversation.messages
+				.filter((message) => message.role === 'assistant')
+				.map((message) => [message.content, message.thinking]),
+		).toEqual([['Answer.', 'native ']])
 	})
 })
 
@@ -2003,23 +2289,505 @@ describe('collectTurnThinking', () => {
 		const channel = createChannel<AgentChunk>()
 		for (const chunk of STORE_THINKING_CHUNKS) channel.push(chunk)
 		channel.close()
-		const thoughts = ['']
+		const thoughts: StoreThought[] = []
 		const chunks = await collect(collectTurnThinking(channel.drain(), thoughts))
 		expect(chunks).toEqual(STORE_THINKING_CHUNKS)
 		expect(chunks[0]).toBe(STORE_THINKING_CHUNKS[0])
-		expect(thoughts).toEqual(['Check the cart.', '', 'Confirm.'])
+		expect(deriveTurnThinking(thoughts)).toEqual(['Check the cart.', '', 'Confirm.'])
 	})
 
 	it('preserves an empty stream and propagates a stream failure', async () => {
 		const empty = createChannel<AgentChunk>()
 		empty.close()
-		const thoughts = ['']
+		const thoughts: StoreThought[] = []
 		expect(await collect(collectTurnThinking(empty.drain(), thoughts))).toEqual([])
-		expect(thoughts).toEqual([''])
+		expect(deriveTurnThinking(thoughts)).toEqual([''])
 		const failed = createChannel<AgentChunk>()
 		const failure = new Error('Stream refused')
 		failed.fail(failure)
 		await expect(collect(collectTurnThinking(failed.drain(), thoughts))).rejects.toBe(failure)
-		expect(thoughts).toEqual([''])
+		expect(deriveTurnThinking(thoughts)).toEqual([''])
+	})
+
+	it('logs each reasoning and usage chunk unchanged in emission order and no answer chunk', async () => {
+		const channel = createChannel<AgentChunk>()
+		for (const chunk of STORE_THINKING_CHUNKS) channel.push(chunk)
+		channel.close()
+		const thoughts: StoreThought[] = []
+		await collect(collectTurnThinking(channel.drain(), thoughts))
+		expect(thoughts).toEqual([
+			{ category: 'think', content: 'Check ' },
+			{ category: 'think', content: 'the cart.' },
+			{ category: 'usage' },
+			{ category: 'usage' },
+			{ category: 'think', content: 'Confirm.' },
+		])
+	})
+
+	it('reads only the category of each chunk and the content of a think chunk, as the category check did', async () => {
+		const reads: string[] = []
+		const channel = createChannel<AgentChunk>()
+		for (const chunk of STORE_THINKING_CHUNKS.slice(0, 4)) {
+			channel.push(
+				buildTracedRecord(chunk, (key) => {
+					reads.push(`${chunk.category}:${key}`)
+				}),
+			)
+		}
+		channel.close()
+		const thoughts: StoreThought[] = []
+		await collect(collectTurnThinking(channel.drain(), thoughts))
+		expect(reads).toEqual([
+			'think:category',
+			'think:content',
+			'token:category',
+			'token:category',
+			'think:category',
+			'think:content',
+			'usage:category',
+			'usage:category',
+		])
+		expect(deriveTurnThinking(thoughts)).toEqual(['Check the cart.', ''])
+	})
+
+	it('captures each chunk at emission, so a consumer that changes a chunk later changes nothing the log holds', async () => {
+		const channel = createChannel<AgentChunk>()
+		channel.push({ category: 'think', content: 'Plan.' })
+		channel.push({ category: 'usage', usage: { prompt: 1, completion: 1, total: 2 }, estimate: 1 })
+		channel.push({ category: 'think', content: 'Answer.' })
+		channel.close()
+		const thoughts: StoreThought[] = []
+		for await (const chunk of collectTurnThinking(channel.drain(), thoughts)) {
+			Object.defineProperty(chunk, chunk.category === 'usage' ? 'category' : 'content', {
+				value: 'changed',
+			})
+		}
+		expect(deriveTurnThinking(thoughts)).toEqual(['Plan.', 'Answer.'])
+	})
+
+	it('keeps the log of a stream the consumer leaves early up to the last chunk it received', async () => {
+		const channel = createChannel<AgentChunk>()
+		for (const chunk of STORE_THINKING_CHUNKS) channel.push(chunk)
+		channel.close()
+		const thoughts: StoreThought[] = []
+		for await (const chunk of collectTurnThinking(channel.drain(), thoughts)) {
+			if (chunk.category === 'usage') break
+		}
+		expect(deriveTurnThinking(thoughts)).toEqual(['Check the cart.', ''])
+	})
+})
+
+describe('deriveTurnThinking', () => {
+	for (const scenario of STORE_THOUGHT_CASES) {
+		it(`derives one text per provider turn from ${scenario.label}`, () => {
+			expect(deriveTurnThinking(scenario.log)).toEqual(scenario.turns)
+		})
+	}
+})
+
+describe('StoreActivity', () => {
+	it('records the cart, searches, and orders in submission order and reads copies of them', () => {
+		const activity = new StoreActivity([STORE_NAMED_PRODUCT])
+		activity.add('Linen Apron')
+		activity.search('kettle')
+		activity.search('mug')
+		activity.order(STORE_BUYER)
+		const reading = activity.read()
+		expect(reading).toEqual({
+			cart: [STORE_NAMED_PRODUCT, 'Linen Apron'],
+			searches: ['kettle', 'mug'],
+			orders: [STORE_BUYER],
+		})
+		activity.add('Stoneware Mug')
+		expect(reading.cart).toEqual([STORE_NAMED_PRODUCT, 'Linen Apron'])
+		expect(activity.read().cart).toEqual([STORE_NAMED_PRODUCT, 'Linen Apron', 'Stoneware Mug'])
+	})
+
+	it('starts empty by default and copies the cart it starts with', () => {
+		const initial = [STORE_NAMED_PRODUCT]
+		const seeded = new StoreActivity(initial)
+		seeded.add('Linen Apron')
+		expect(initial).toEqual([STORE_NAMED_PRODUCT])
+		expect(new StoreActivity().read()).toEqual({ cart: [], searches: [], orders: [] })
+	})
+
+	it('keeps the state of two records apart', () => {
+		const first = new StoreActivity()
+		const second = new StoreActivity()
+		first.order(STORE_BUYER)
+		expect(first.read().orders).toEqual([STORE_BUYER])
+		expect(second.read().orders).toEqual([])
+	})
+})
+
+describe('StoreCallRecord', () => {
+	const refused: ToolResult = { id: '1', name: 'fail', success: false, error: 'gone' }
+	const succeeded: ToolResult = { id: '2', name: 'lookup', success: true, value: 'found' }
+	const failing: ToolCall = { id: '1', name: 'fail', arguments: {} }
+	const looking: ToolCall = { id: '2', name: 'lookup', arguments: { query: 'kettle' } }
+
+	it('records each call with its rendered result and ends the opening turn at the refusal bound', () => {
+		const record = new StoreCallRecord()
+		const context = createStoreContext()
+		record.begin(0)
+		for (const _ of Array.from({ length: STORE_BOUNDS.refusals - 1 }))
+			record.observe(failing, refused, context)
+		expect(context.scope).toBeUndefined()
+		expect(record.ended).toBe(0)
+		record.observe(failing, refused, context)
+		expect(context.scope).toBe(STORE_ANSWER_SCOPE)
+		expect(record.ended).toBe(1)
+		record.observe(failing, refused, context)
+		expect(record.ended).toBe(1)
+		expect(record.calls).toEqual(
+			Array.from({ length: STORE_BOUNDS.refusals + 1 }, () => ({
+				name: 'fail',
+				arguments: {},
+				success: false,
+				text: 'gone',
+			})),
+		)
+	})
+
+	it('ends a later turn at its first successful call and the opening turn at no success', () => {
+		const record = new StoreCallRecord()
+		const opening = createStoreContext()
+		record.begin(0)
+		record.observe(looking, succeeded, opening)
+		expect(opening.scope).toBeUndefined()
+		expect(record.ended).toBe(0)
+		const later = createStoreContext()
+		record.end()
+		record.begin(1)
+		record.observe(failing, refused, later)
+		expect(later.scope).toBeUndefined()
+		record.observe(looking, succeeded, later)
+		expect(later.scope).toBe(STORE_ANSWER_SCOPE)
+		expect(record.ended).toBe(1)
+		expect(record.calls.map((call) => [call.name, call.success, call.text])).toEqual([
+			['lookup', true, 'found'],
+			['fail', false, 'gone'],
+			['lookup', true, 'found'],
+		])
+	})
+
+	it('counts refusals from the calls the turn began after', () => {
+		const record = new StoreCallRecord()
+		const context = createStoreContext()
+		record.begin(0)
+		record.observe(failing, refused, context)
+		record.observe(failing, refused, context)
+		record.end()
+		record.begin(0)
+		record.observe(failing, refused, context)
+		record.observe(failing, refused, context)
+		expect(context.scope).toBeUndefined()
+		expect(record.ended).toBe(0)
+		record.observe(failing, refused, context)
+		expect(context.scope).toBe(STORE_ANSWER_SCOPE)
+		expect(record.ended).toBe(1)
+	})
+
+	it('refuses to bind a second turn while one is bound and to observe a call with none bound', () => {
+		const record = new StoreCallRecord()
+		const context = createStoreContext()
+		expect(() => record.observe(failing, refused, context)).toThrow('No user turn is bound')
+		record.begin(0)
+		expect(() => record.begin(1)).toThrow('A user turn is still bound')
+		record.end()
+		expect(() => record.observe(failing, refused, context)).toThrow('No user turn is bound')
+		record.begin(1)
+		record.observe(looking, succeeded, context)
+		expect(record.calls).toHaveLength(1)
+	})
+})
+
+describe('settleStoreRun', () => {
+	it('reports a settled run without a failure', async () => {
+		expect(await settleStoreRun(async () => {})).toEqual({ failed: false, failure: undefined })
+	})
+
+	it('captures a thrown value, including a thrown undefined value, instead of letting it escape', async () => {
+		const refusal = new Error('step refused')
+		expect(
+			await settleStoreRun(async () => {
+				await Promise.resolve()
+				throw refusal
+			}),
+		).toEqual({ failed: true, failure: refusal })
+		expect(
+			await settleStoreRun(async () => {
+				throw undefined
+			}),
+		).toEqual({ failed: true, failure: undefined })
+	})
+})
+
+describe('StoreExposureTrace', () => {
+	const start: StoreExposure = {
+		listed: new Set(['e1']),
+		header: 'page "A" http://store/a',
+		unlisted: [],
+	}
+
+	it('adds the references of a successful result and clears them when the page header changes', () => {
+		const trace = new StoreExposureTrace(start)
+		trace.visit(buildStoreCall('read', {}, 'page "A" http://store/a\n2: button "Y" [ref=e2]'))
+		const same = trace.exposure
+		expect([...same.listed]).toEqual(['e1', 'e2'])
+		trace.visit(buildStoreCall('read', {}, 'page "B" http://store/b\n3: link "Z" [ref=e3]'))
+		const moved = trace.exposure
+		expect([...moved.listed]).toEqual(['e3'])
+		expect(moved.header).toBe('page "B" http://store/b')
+		expect([...start.listed]).toEqual(['e1'])
+		expect([...same.listed]).toEqual(['e1', 'e2'])
+	})
+
+	it('records an unlisted reference apart from the earlier exposure and ignores a failed result', () => {
+		const invented = buildRefusedCall('click', { ref: 'e9' }, 'Not in the current view.')
+		const trace = new StoreExposureTrace(start)
+		trace.visit(invented)
+		const flagged = trace.exposure
+		expect(flagged.unlisted).toEqual([invented])
+		expect([...flagged.listed]).toEqual(['e1'])
+		expect(start.unlisted).toEqual([])
+		trace.visit(buildRefusedCall('read', {}, 'page "C" http://store/c\n4: link "W" [ref=e4]'))
+		const failed = trace.exposure
+		expect([...failed.listed]).toEqual(['e1'])
+		expect(failed.header).toBe('page "A" http://store/a')
+		expect(failed.unlisted).toEqual([invented])
+	})
+
+	it('reads out copies that its later calls cannot change', () => {
+		const trace = new StoreExposureTrace(start)
+		const before = trace.exposure
+		trace.visit(buildStoreCall('read', {}, 'page "B" http://store/b\n3: link "Z" [ref=e3]'))
+		trace.visit(buildStoreCall('click', { ref: 'e9' }))
+		expect([...before.listed]).toEqual(['e1'])
+		expect(before.header).toBe('page "A" http://store/a')
+		expect(before.unlisted).toEqual([])
+	})
+})
+
+describe('StoreContinuationWalk', () => {
+	const first = buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE)
+	const continued = buildStoreCall('read', { from: 31 }, STORE_CONTINUED_SLICE)
+
+	it('returns the call that continued at a line an earlier footer named, and nothing before it', () => {
+		const walk = new StoreContinuationWalk(STORE_POLICY_TOKEN)
+		expect(walk.visit(first)).toBeUndefined()
+		expect(walk.visit(continued)).toBe(continued)
+	})
+
+	it.each(STORE_CONTINUATION_INTERRUPTIONS)(
+		'forgets the named lines at %s',
+		(_reason, interruption) => {
+			const walk = new StoreContinuationWalk(STORE_POLICY_TOKEN)
+			walk.visit(first)
+			walk.visit(interruption)
+			expect(walk.visit(continued)).toBeUndefined()
+		},
+	)
+
+	it('names each interruption the walk forgets at, every one a successful call', () => {
+		expect(
+			STORE_CONTINUATION_INTERRUPTIONS.map(([reason, call]) => [reason, call.success]),
+		).toEqual([
+			['an action', true],
+			['a change note', true],
+			['another page', true],
+		])
+		expect(STORE_CONTINUATION_INTERRUPTIONS.map(([, call]) => call.name)).toEqual([
+			'click',
+			'read',
+			'read',
+		])
+	})
+
+	it('keeps the named lines across a refused read', () => {
+		const walk = new StoreContinuationWalk(STORE_POLICY_TOKEN)
+		walk.visit(first)
+		walk.visit(buildRefusedCall('read', { from: 2 }, 'Refused.'))
+		expect(walk.visit(continued)).toBe(continued)
+	})
+})
+
+describe('StoreThinking', () => {
+	it('gives the n-th assistant message the n-th turn thinking and passes the others through', () => {
+		const user: Message = { id: 'u', role: 'user', content: '' }
+		const assistant: Message = { id: 'a', role: 'assistant', content: '' }
+		const thinking = new StoreThinking(['first', ''])
+		expect(thinking.attach(user)).toBe(user)
+		expect(thinking.attach(assistant)).toEqual({ ...assistant, thinking: 'first' })
+		expect(thinking.attach(assistant)).toBe(assistant)
+		expect(thinking.attach(assistant)).toBe(assistant)
+	})
+
+	it('advances past a silent turn, so a later turn keeps its own thinking', () => {
+		const assistant: Message = { id: 'a', role: 'assistant', content: '' }
+		const thinking = new StoreThinking(['', 'second', '', 'fourth'])
+		expect(thinking.attach(assistant)).toBe(assistant)
+		expect(thinking.attach(assistant)).toEqual({ ...assistant, thinking: 'second' })
+		expect(thinking.attach(assistant)).toBe(assistant)
+		expect(thinking.attach(assistant)).toEqual({ ...assistant, thinking: 'fourth' })
+	})
+})
+
+describe('STORE_SEARCH_SEED', () => {
+	it('opens the catalogue with the search box and its button, and seeds the stalled search', () => {
+		expect(extractReferences(STORE_SEARCH_SEED)).toEqual(['e35', 'e36'])
+		expect(STORE_SEARCH_SEED).toMatch(/^page "Harbor Goods — Catalogue" /)
+		expect(STORE_STALLED_SEARCH.seed).toBe(STORE_SEARCH_SEED)
+		expect(STORE_COMPLETED_SEARCH.seed).toBe(STORE_SEARCH_SEED)
+	})
+})
+
+describe('hole handling of the call readers', () => {
+	const first = buildStoreCall('read', { from: 1 }, STORE_FIRST_SLICE)
+	const continued = buildStoreCall('read', { from: 31 }, STORE_CONTINUED_SLICE)
+
+	it('visits a hole in the calls as undefined, so findUnlistedReferences and computeRefusals throw on it', () => {
+		const calls = buildSparseList([buildStoreCall('click', { ref: 'e1' }), undefined])
+		expect(() => findUnlistedReferences('1: link "Cart" [ref=e1]', calls)).toThrow(TypeError)
+		expect(() => computeRefusals(buildSparseList([buildRefusedCall('save'), undefined]))).toThrow(
+			TypeError,
+		)
+	})
+
+	it('reads findContinuedRead only as far as the match, so a hole after it is never visited and one before it throws', () => {
+		expect(
+			findContinuedRead(buildSparseList([first, continued, undefined]), STORE_POLICY_TOKEN),
+		).toBe(continued)
+		expect(() =>
+			findContinuedRead(buildSparseList([first, undefined, continued]), STORE_POLICY_TOKEN),
+		).toThrow(TypeError)
+	})
+
+	it('reads matchesJourneySequence only as far as the sequence, so a hole after it is never visited and one before it throws', () => {
+		expect(matchesJourneySequence(buildSparseList([...STORE_JOURNEY_CALLS, undefined]))).toBe(true)
+		expect(() =>
+			matchesJourneySequence(buildSparseList([undefined, ...STORE_JOURNEY_CALLS])),
+		).toThrow(TypeError)
+	})
+
+	it('counts only assistant messages as turns, however many tool messages lie between them', () => {
+		const user: Message = { id: 'u', role: 'user', content: '' }
+		const assistant: Message = { id: 'a', role: 'assistant', content: '' }
+		const tool: Message = { id: 't', role: 'tool', content: 'results' }
+		const recorded = attachThinking([user, assistant, tool, tool, assistant], ['first', 'second'])
+		expect(recorded.map((message) => message.thinking)).toEqual([
+			undefined,
+			'first',
+			undefined,
+			undefined,
+			'second',
+		])
+	})
+
+	it('keeps a hole in the messages a hole and counts assistant turns across it', () => {
+		const user: Message = { id: 'u', role: 'user', content: '' }
+		const assistant: Message = { id: 'a', role: 'assistant', content: '' }
+		const recorded = attachThinking(buildSparseList([user, undefined, assistant, assistant]), [
+			'first',
+			'second',
+		])
+		expect(Object.keys(recorded)).toEqual(['0', '2', '3'])
+		expect(recorded.map((message) => message.thinking)).toEqual([
+			undefined,
+			undefined,
+			'first',
+			'second',
+		])
+	})
+
+	it('reads a quoted best-match row once, even when the row before it announced another', () => {
+		const text = [
+			'No line from 3 on matches "a"; the best match is line 1:',
+			'No line from 3 on matches "a"; the best match is line 2:',
+			'5: x',
+			'6: y',
+		].join('\n')
+		expect(extractWindowText(text)).toBe('5: x\n6: y')
+	})
+})
+
+describe('buildJourneyInvocation', () => {
+	it('names each journey tool with the arguments the proof supplies', () => {
+		expect(buildJourneyInvocation('record', [], '')).toEqual({
+			name: 'record',
+			input: { journey: STORE_JOURNEY_NAME },
+		})
+		expect(buildJourneyInvocation('save', [], '')).toEqual({
+			name: 'save',
+			input: { description: 'Open the cart and place one order.' },
+		})
+		expect(buildJourneyInvocation('journeys', [], '')).toEqual({
+			name: 'journeys',
+			input: { from: 1 },
+		})
+		expect(buildJourneyInvocation('replay', [], '')).toEqual({
+			name: 'replay',
+			input: {
+				journey: STORE_JOURNEY_NAME,
+				inputs: { [STORE_JOURNEY_PARAMETER]: STORE_JOURNEY_BUYER },
+			},
+		})
+	})
+
+	it('reads the batch the edit turn spells out from the last listing', () => {
+		const { name, input } = buildJourneyInvocation('edit', STORE_JOURNEY_CALLS.slice(0, 4), '')
+		expect(name).toBe('edit')
+		expect(input['journey']).toBe(STORE_JOURNEY_NAME)
+		expect(matchesJourneyBatch(buildStoreCall('edit', input))).toBe(true)
+	})
+
+	it('acts on an element through the reference its row lists in the last result, or in the seed', () => {
+		const seed = 'page "Store" http://store/ (2 lines)\n1: link "Cart" [ref=e1]'
+		expect(buildJourneyInvocation('Cart', [], seed)).toEqual({
+			name: 'click',
+			input: { ref: 'e1' },
+		})
+		const listing = buildStoreCall('click', {}, '3: textbox "Full name" [ref=e4]')
+		expect(buildJourneyInvocation('Full name', [listing], seed)).toEqual({
+			name: 'type',
+			input: { ref: 'e4', text: STORE_BUYER, submit: true },
+		})
+		expect(() => buildJourneyInvocation('Checkout', [listing], seed)).toThrow(
+			'The last result lists no row for "Checkout"',
+		)
+	})
+})
+
+describe('converseStore with a failing user turn', () => {
+	it('keeps the partial flag of a settled turn when a later turn fails', async () => {
+		const conversation = await converseStore({
+			provider: createOllama({
+				model: 'fixture-model',
+				fetch: createScriptedTransport([STORE_LOOKUP_TURN]),
+			}),
+			system: STORE_SYSTEM_PROMPT,
+			tools: createRefusalTools(),
+			turns: ['Look up the kettle.', 'Look up the kettle again.'],
+			limit: 1,
+		})
+		expect(conversation.result).toBeUndefined()
+		expect(conversation.partial).toBe(true)
+		expect(String(conversation.failure)).toContain('the script holds 1 turns')
+		expect(conversation.calls.map((call) => [call.name, call.success])).toEqual([['lookup', true]])
+	})
+
+	it('ends the conversation with the error a hole in the turns raises, after the turns before it', async () => {
+		const conversation = await converseStore({
+			provider: createOllama({
+				model: 'fixture-model',
+				fetch: createScriptedTransport([{ content: 'One.' }, { content: 'Two.' }]),
+			}),
+			system: STORE_SYSTEM_PROMPT,
+			tools: createRefusalTools(),
+			turns: buildSparseList<StoreTurn>(['First.', undefined, 'Third.']),
+		})
+		expect(conversation.result).toBeUndefined()
+		expect(conversation.failure).toBeInstanceOf(TypeError)
+		expect(conversation.messages.map((message) => message.content)).toEqual(['First.', 'One.'])
 	})
 })

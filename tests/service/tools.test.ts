@@ -1,8 +1,10 @@
 import { createAgent, createAuthority } from '@orkestrel/agent'
 import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
+import type { ToolCall } from '@orkestrel/tool'
 import { createOllama } from '@src/core'
 import { describe, expect, it } from 'vitest'
+import { CASE_TIMEOUT } from '../setup.js'
 import {
 	createInsatiableTool,
 	createLookupTool,
@@ -29,20 +31,15 @@ import {
 // reliably choose to call a tool on every single attempt. `tools` is a cross-cutting
 // suffix (structure-exempt). Warmed, no skipIf.
 
-const TIMEOUT = 60_000
-
 describe('Agent tool loop (live) — dispatch by name', () => {
 	it(
 		'a steered call to the registered `lookup` tool dispatches by name, feeds its result back, and never touches the sibling `fail` tool',
 		async () => {
-			const lookupRecorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-			const failRecorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-
-			const driven = await retryUntil(
+			const { driven, lookups, failures } = await retryUntil(
 				'call the lookup tool by name',
 				async () => {
-					lookupRecorder.clear()
-					failRecorder.clear()
+					const lookupRecorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+					const failRecorder = createRecorder<[Readonly<Record<string, unknown>>]>()
 					const tools = createToolManager()
 					tools.add(createLookupTool(lookupRecorder))
 					tools.add(createThrowingTool(failRecorder))
@@ -50,7 +47,7 @@ describe('Agent tool loop (live) — dispatch by name', () => {
 						system:
 							'You MUST call the lookup tool with query "datum" to answer. Never call the fail tool.',
 						tools,
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 						limit: 4,
 					})
 					agent.context.messages.add({
@@ -59,19 +56,28 @@ describe('Agent tool loop (live) — dispatch by name', () => {
 							'Call the lookup tool with query "datum", then tell me exactly what it returned.',
 					})
 					const stream = agent.stream()
-					return driveAgent(stream)
+					return {
+						driven: await driveAgent(stream),
+						lookups: lookupRecorder.calls,
+						failures: failRecorder.calls,
+					}
 				},
-				(value) => value.tools.some((tool) => tool.call.name === 'lookup'),
+				(value) => value.driven.tools.some((tool) => tool.call.name === 'lookup'),
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			const dispatched = driven.tools.find((tool) => tool.call.name === 'lookup')
 			expect(dispatched).toBeDefined()
 			expect(dispatched?.result).toMatchObject({ success: true, value: LOOKUP_DATUM })
-			expect(lookupRecorder.count).toBeGreaterThanOrEqual(1)
-			expect(failRecorder.count).toBe(0)
+			// The tool ran once for each lookup call the loop dispatched, with the arguments the call carried.
+			expect(lookups).toEqual(
+				driven.tools
+					.filter((tool) => tool.call.name === 'lookup')
+					.map((tool) => [tool.call.arguments]),
+			)
+			expect(failures).toEqual([])
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -95,7 +101,7 @@ describe('Agent tool loop (live) — tool-result feedback reaches the wire', () 
 							system:
 								'You MUST call the lookup tool with query "datum" to answer, then state the exact returned value in your final reply.',
 							tools,
-							timeout: TIMEOUT,
+							timeout: CASE_TIMEOUT,
 							limit: 4,
 						})
 						agent.context.messages.add({
@@ -126,7 +132,7 @@ describe('Agent tool loop (live) — tool-result feedback reaches the wire', () 
 				await proxy.stop()
 			}
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -134,23 +140,21 @@ describe('Agent tool loop (live) — a thrown tool error is isolated', () => {
 	it(
 		'the fail tool throwing surfaces as a ToolResult.error, and the loop still settles to a resolved, non-partial finish',
 		async () => {
-			const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-
 			// Calibration note: the 2B model is reluctant to call a tool literally named
 			// `fail`, and a FAST_OPTIONS-scale completion can stop before the call is
 			// emitted on some hosts — so this case carries its own predict headroom,
 			// heavier steering, and a deeper retry than the sibling lookup cases.
-			const driven = await retryUntil(
+			const { driven, executed } = await retryUntil(
 				'call the fail tool',
 				async () => {
-					recorder.clear()
+					const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
 					const tools = createToolManager()
 					tools.add(createThrowingTool(recorder))
 					const agent = createAgent(createLiveOllama({ predict: 128 }), {
 						system:
 							'You are a tool-calling harness. Your ONLY permitted first action is calling the fail tool with any arguments. Do not answer in text before calling it.',
 						tools,
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 						limit: 4,
 					})
 					agent.context.messages.add({
@@ -158,9 +162,9 @@ describe('Agent tool loop (live) — a thrown tool error is isolated', () => {
 						content: 'Invoke the fail tool immediately, then tell me what happened.',
 					})
 					const stream = agent.stream()
-					return driveAgent(stream)
+					return { driven: await driveAgent(stream), executed: recorder.calls }
 				},
-				(value) => value.tools.some((tool) => tool.call.name === 'fail'),
+				(value) => value.driven.tools.some((tool) => tool.call.name === 'fail'),
 				{ attempts: 5, budget: RETRY_BUDGET },
 			)
 
@@ -171,11 +175,16 @@ describe('Agent tool loop (live) — a thrown tool error is isolated', () => {
 				error: expect.stringContaining(THROWING_TOOL_MESSAGE),
 			})
 			expect(failed?.result).not.toHaveProperty('value')
-			expect(recorder.count).toBeGreaterThanOrEqual(1)
+			// The tool ran once for each fail call the loop dispatched, with the arguments the call carried.
+			expect(executed).toEqual(
+				driven.tools
+					.filter((tool) => tool.call.name === 'fail')
+					.map((tool) => [tool.call.arguments]),
+			)
 			// The loop CONTINUED past the thrown error to a resolved, non-rejected finish.
 			expect(driven.result.partial).toBe(false)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -183,8 +192,6 @@ describe('Agent tool loop (live) — authority denial blocks execution', () => {
 	it(
 		'a denylisted lookup call never executes, fires a `deny` event, and the run still resolves',
 		async () => {
-			const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-			const denyRecorder = createRecorder<[unknown, string | undefined]>()
 			const authority = createAuthority({
 				rules: [
 					{
@@ -196,18 +203,18 @@ describe('Agent tool loop (live) — authority denial blocks execution', () => {
 				],
 			})
 
-			const driven = await retryUntil(
+			const { driven, executed, denied } = await retryUntil(
 				'fire a deny event for the lookup call',
 				async () => {
-					recorder.clear()
-					denyRecorder.clear()
+					const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+					const denyRecorder = createRecorder<[ToolCall, string | undefined]>()
 					const tools = createToolManager()
 					tools.add(createLookupTool(recorder))
 					const agent = createAgent(createLiveOllama(), {
 						system: 'You MUST call the lookup tool with query "datum" to answer.',
 						tools,
 						authority,
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 						limit: 4,
 						on: { deny: (call, reason) => denyRecorder.handler(call, reason) },
 					})
@@ -216,18 +223,27 @@ describe('Agent tool loop (live) — authority denial blocks execution', () => {
 						content: 'Call the lookup tool with query "datum", then tell me what it returned.',
 					})
 					const stream = agent.stream()
-					return driveAgent(stream)
+					return {
+						driven: await driveAgent(stream),
+						executed: recorder.calls,
+						denied: denyRecorder.calls,
+					}
 				},
-				() => denyRecorder.count > 0,
+				(value) => value.denied.length > 0,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
-			expect(denyRecorder.count).toBeGreaterThan(0)
+			// The rule's reason is what each denied lookup call carried.
+			expect(denied.filter(([call]) => call.name === 'lookup')).toEqual(
+				driven.tools
+					.filter((tool) => tool.call.name === 'lookup')
+					.map((tool) => [tool.call, 'denied for test']),
+			)
 			// The tool NEVER executed — the authority denial short-circuited it.
-			expect(recorder.count).toBe(0)
+			expect(executed).toEqual([])
 			expect(driven.result.partial).toBe(false)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -242,28 +258,23 @@ describe('Agent tool loop (live) — turn-limit exhaustion', () => {
 			// is explicitly distinct from a cancel. `finish` still fires last, carrying the partial
 			// result. `limit: 1` + a forced tool call therefore consumes the sole provider turn,
 			// which requests the tool, so the loop stops with unresolved intent.
-			const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-			const turnRecorder = createRecorder<[number]>()
-			const exhaustRecorder = createRecorder<[number]>()
-			const abortRecorder = createRecorder<[unknown]>()
-
-			const driven = await retryUntil(
+			const { driven, executed, turns, exhausts, aborts } = await retryUntil(
 				'call the tool, consuming the single allowed turn',
 				async () => {
-					recorder.clear()
-					turnRecorder.clear()
-					exhaustRecorder.clear()
-					abortRecorder.clear()
+					const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+					const turnRecorder = createRecorder<[number]>()
+					const exhaustRecorder = createRecorder<[number]>()
+					const abortRecorder = createRecorder<[unknown]>()
 					const tools = createToolManager()
 					tools.add(createLookupTool(recorder))
 					const agent = createAgent(createLiveOllama(), {
 						system: 'You MUST call the lookup tool with query "datum" immediately.',
 						tools,
 						limit: 1,
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 						on: {
 							turn: (index) => turnRecorder.handler(index),
-							exhaust: (turns) => exhaustRecorder.handler(turns),
+							exhaust: (count) => exhaustRecorder.handler(count),
 							abort: (reason) => abortRecorder.handler(reason),
 						},
 					})
@@ -272,29 +283,39 @@ describe('Agent tool loop (live) — turn-limit exhaustion', () => {
 						content: 'Call the lookup tool with query "datum" right now.',
 					})
 					const stream = agent.stream()
-					return driveAgent(stream)
+					return {
+						driven: await driveAgent(stream),
+						executed: recorder.calls,
+						turns: turnRecorder.calls,
+						exhausts: exhaustRecorder.calls,
+						aborts: abortRecorder.calls,
+					}
 				},
-				(value) => value.tools.length > 0,
+				(value) => value.driven.tools.length > 0,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			// The tool executed at least once — the sole provider turn `limit: 1` allows, but a
 			// single-turn parallel tool-call batch may legitimately execute more than one call. The
-			// limit contract itself is carried by the turn-event count === 1 and the exhaust/partial
+			// limit contract itself is carried by the turn-event history and the exhaust/partial
 			// assertions below.
-			expect(recorder.count).toBeGreaterThanOrEqual(1)
+			expect(executed).not.toEqual([])
+			expect(executed).toEqual(
+				driven.tools
+					.filter((tool) => tool.call.name === 'lookup')
+					.map((tool) => [tool.call.arguments]),
+			)
 			// Exactly ONE 'turn' event fired — no second provider turn occurred after the limit.
-			expect(turnRecorder.count).toBe(1)
+			expect(turns).toEqual([[0]])
 			// The dedicated 'exhaust' event fired with the effective limit (1), and 'abort' never
 			// fired — exhaustion is NOT a cancel.
-			expect(exhaustRecorder.count).toBe(1)
-			expect(exhaustRecorder.calls[0]?.[0]).toBe(1)
-			expect(abortRecorder.count).toBe(0)
+			expect(exhausts).toEqual([[1]])
+			expect(aborts).toEqual([])
 			// The run RESOLVES with the new contract: limit exhaustion with unresolved tool intent
 			// on the last allowed turn flags partial: true.
 			expect(driven.result.partial).toBe(true)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -308,16 +329,12 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 		// rounds is unreachable model capacity, not a loop defect, so `limit: 2` is the
 		// live-reachable proof of this contract under sustained (not single-forced-turn)
 		// pressure.
-		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-		const exhaustRecorder = createRecorder<[number]>()
-		const abortRecorder = createRecorder<[unknown]>()
-
-		const driven = await retryUntil(
+		const { driven, executed, exhausts, aborts } = await retryUntil(
 			'exhaust a two-turn limit under sustained tool pressure',
 			async () => {
-				recorder.clear()
-				exhaustRecorder.clear()
-				abortRecorder.clear()
+				const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+				const exhaustRecorder = createRecorder<[number]>()
+				const abortRecorder = createRecorder<[unknown]>()
 				const tools = createToolManager()
 				tools.add(createInsatiableTool(recorder))
 				const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
@@ -325,9 +342,9 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 						'You MUST call the more tool right now. Do not write any text response. After every single tool result you receive, immediately call the more tool again — never write a text answer, only call the more tool, every turn without exception.',
 					tools,
 					limit: 2,
-					timeout: TIMEOUT,
+					timeout: CASE_TIMEOUT,
 					on: {
-						exhaust: (turns) => exhaustRecorder.handler(turns),
+						exhaust: (count) => exhaustRecorder.handler(count),
 						abort: (reason) => abortRecorder.handler(reason),
 					},
 				})
@@ -336,20 +353,28 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 					content: 'Fetch all of the data.',
 				})
 				const stream = agent.stream()
-				return driveAgent(stream)
+				return {
+					driven: await driveAgent(stream),
+					executed: recorder.calls,
+					exhausts: exhaustRecorder.calls,
+					aborts: abortRecorder.calls,
+				}
 			},
 			(value) =>
-				value.result.partial === true && exhaustRecorder.count > 0 && abortRecorder.count === 0,
+				value.driven.result.partial === true &&
+				value.exhausts.length > 0 &&
+				value.aborts.length === 0,
 			{ attempts: 3, budget: RETRY_BUDGET },
 		)
 
 		expect(driven.result.partial).toBe(true)
-		expect(exhaustRecorder.count).toBe(1)
-		// The recorded exhaust payload carries the effective limit (2).
-		expect(exhaustRecorder.calls[0]?.[0]).toBe(2)
-		expect(abortRecorder.count).toBe(0)
+		// The recorded exhaust payload carries the effective limit (2), and no cancel fired.
+		expect(exhausts).toEqual([[2]])
+		expect(aborts).toEqual([])
 		// The model called the tool on both allowed turns.
-		expect(recorder.count).toBeGreaterThanOrEqual(2)
+		const more = driven.tools.filter((tool) => tool.call.name === 'more')
+		expect(more.length).toBeGreaterThanOrEqual(2)
+		expect(executed).toEqual(more.map((tool) => [tool.call.arguments]))
 	}, 120_000)
 
 	it('the default limit exhausts under sustained tool pressure', async () => {
@@ -359,16 +384,12 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 		// again" instruction, giving the model an explicit unfinished plan to keep following
 		// at temperature 0 rather than self-terminating after a couple of rounds. 12 total
 		// chunks exceeds the default limit of 10, so the loop must exhaust before completion.
-		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-		const exhaustRecorder = createRecorder<[number]>()
-		const abortRecorder = createRecorder<[unknown]>()
-
-		const driven = await retryUntil(
+		const { driven, executed, exhausts, aborts } = await retryUntil(
 			'exhaust the default limit under sustained tool pressure',
 			async () => {
-				recorder.clear()
-				exhaustRecorder.clear()
-				abortRecorder.clear()
+				const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+				const exhaustRecorder = createRecorder<[number]>()
+				const abortRecorder = createRecorder<[unknown]>()
 				const tools = createToolManager()
 				tools.add(createInsatiableTool(recorder))
 				const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
@@ -376,11 +397,11 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 						'You have a mission to fetch ALL 12 chunks of the requested data. You MUST call the more tool right now. Do not write any text response. After every single tool result you receive, immediately call the more tool again to get the next chunk — never write a text answer, only call the more tool, every turn without exception, until all 12 chunks have arrived.',
 					tools,
 					// A default-limit (10-turn) sustained round-trip needs far longer than the
-					// file's 60s TIMEOUT (tuned for 1-4 turn tests) — bounded well under the
+					// file's 60s CASE_TIMEOUT (tuned for 1-4 turn tests) — bounded well under the
 					// per-it 360_000ms timeout instead.
 					timeout: 300_000,
 					on: {
-						exhaust: (turns) => exhaustRecorder.handler(turns),
+						exhaust: (count) => exhaustRecorder.handler(count),
 						abort: (reason) => abortRecorder.handler(reason),
 					},
 				})
@@ -389,20 +410,28 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 					content: 'Fetch all 12 chunks of the data.',
 				})
 				const stream = agent.stream()
-				return driveAgent(stream)
+				return {
+					driven: await driveAgent(stream),
+					executed: recorder.calls,
+					exhausts: exhaustRecorder.calls,
+					aborts: abortRecorder.calls,
+				}
 			},
 			(value) =>
-				value.result.partial === true && exhaustRecorder.count > 0 && abortRecorder.count === 0,
+				value.driven.result.partial === true &&
+				value.exhausts.length > 0 &&
+				value.aborts.length === 0,
 			{ attempts: 3, budget: RETRY_BUDGET },
 		)
 
 		expect(driven.result.partial).toBe(true)
-		expect(exhaustRecorder.count).toBe(1)
-		// The recorded exhaust payload carries the effective DEFAULT limit (10).
-		expect(exhaustRecorder.calls[0]?.[0]).toBe(10)
-		expect(abortRecorder.count).toBe(0)
+		// The recorded exhaust payload carries the effective DEFAULT limit (10), and no cancel fired.
+		expect(exhausts).toEqual([[10]])
+		expect(aborts).toEqual([])
 		// The model called the tool on more than one allowed turn.
-		expect(recorder.count).toBeGreaterThan(1)
+		const more = driven.tools.filter((tool) => tool.call.name === 'more')
+		expect(more.length).toBeGreaterThan(1)
+		expect(executed).toEqual(more.map((tool) => [tool.call.arguments]))
 	}, 360_000)
 })
 
@@ -410,22 +439,17 @@ describe('Agent tool loop (live) — a single turn carries multiple tool calls',
 	it(
 		'a single turn can carry multiple tool calls',
 		async () => {
-			const lookupRecorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-			const moreRecorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-
 			const attempt = await retryUntil(
 				'dispatch both tools within a single turn',
 				async () => {
-					lookupRecorder.clear()
-					moreRecorder.clear()
 					const tools = createToolManager()
-					tools.add(createLookupTool(lookupRecorder))
-					tools.add(createInsatiableTool(moreRecorder))
+					tools.add(createLookupTool())
+					tools.add(createInsatiableTool())
 					const agent = createAgent(createLiveOllama({ predict: TOOL_LOOP_OPTIONS.num_predict }), {
 						system:
 							'You MUST call BOTH the lookup tool (with query "datum") AND the more tool in the SAME turn, immediately, before saying anything else.',
 						tools,
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 						limit: 2,
 					})
 					agent.context.messages.add({
@@ -449,6 +473,6 @@ describe('Agent tool loop (live) — a single turn carries multiple tool calls',
 
 			expect(attempt).toBe(true)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })

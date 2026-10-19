@@ -1,8 +1,9 @@
-import type { AgentChunk, AgentResult } from '@orkestrel/agent'
+import type { AgentChunk, AgentResult, AgentStatus } from '@orkestrel/agent'
 import { createAgent } from '@orkestrel/agent'
 import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
 import { describe, expect, it } from 'vitest'
+import { CASE_TIMEOUT } from '../setup.js'
 import { createLookupTool } from '../setupServer.js'
 import { ABORT_OPTIONS, createLiveOllama, RETRY_BUDGET, STREAM_OPTIONS } from '../setupService.js'
 
@@ -14,8 +15,6 @@ import { ABORT_OPTIONS, createLiveOllama, RETRY_BUDGET, STREAM_OPTIONS } from '.
 // round-trips proving OUR plumbing (this repo's provider) drives the agent's contract
 // correctly end to end. Warmed, no skipIf.
 
-const TIMEOUT = 60_000
-
 describe('Agent (live) — streamed chunk taxonomy, status lifecycle, and emitter events on one run', () => {
 	it(
 		'tokens assemble into result.content, a usage chunk is observed, status transitions idle→running→done, and the emitter fires start→turn→usage→finish in order matching the result',
@@ -24,33 +23,32 @@ describe('Agent (live) — streamed chunk taxonomy, status lifecycle, and emitte
 			// settled result; (2) `status` visibly transitions across the run; (3) the PUSH emitter
 			// fires the documented lifecycle events in order, and `finish`'s payload IS the result.
 			const provider = createLiveOllama({ predict: STREAM_OPTIONS.num_predict, temperature: 0 })
-			const agent = createAgent(provider, { timeout: TIMEOUT })
+			const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
 			agent.context.messages.add({ role: 'user', content: 'Count from one to five.' })
 
 			expect(agent.status).toBe('idle')
 
 			const order = createRecorder<[string]>()
-			let finishedResult: AgentResult | undefined
+			const finishes = createRecorder<[AgentResult]>()
 			agent.emitter.on('start', () => order.handler('start'))
 			agent.emitter.on('turn', () => order.handler('turn'))
 			agent.emitter.on('usage', () => order.handler('usage'))
 			agent.emitter.on('finish', (result) => {
 				order.handler('finish')
-				finishedResult = result
+				finishes.handler(result)
 			})
 
 			const stream = agent.stream()
-			const tokens: string[] = []
-			const usages: Array<AgentResult['usage']> = []
-			let sawRunning = false
-			for await (const chunk of stream.events) {
-				if (!sawRunning) {
-					sawRunning = agent.status === 'running'
-				}
-				if (chunk.category === 'token') tokens.push(chunk.content)
-				else if (chunk.category === 'usage') usages.push(chunk.usage)
-			}
+			const observed: Array<{ readonly chunk: AgentChunk; readonly status: AgentStatus }> = []
+			for await (const chunk of stream.events) observed.push({ chunk, status: agent.status })
 			const result = await stream.result
+			const tokens = observed.flatMap(({ chunk }) =>
+				chunk.category === 'token' ? [chunk.content] : [],
+			)
+			const usages = observed.flatMap(({ chunk }) =>
+				chunk.category === 'usage' ? [chunk.usage] : [],
+			)
+			const sawRunning = observed.some(({ status }) => status === 'running')
 
 			// (1) Chunk taxonomy: the joined token deltas assemble into the settled content, at least
 			// one usage chunk was observed, and the run completed naturally (never partial).
@@ -74,11 +72,9 @@ describe('Agent (live) — streamed chunk taxonomy, status lifecycle, and emitte
 			expect(calls).toContain('usage')
 			expect(calls.indexOf('turn')).toBeGreaterThan(calls.indexOf('start'))
 			expect(calls.indexOf('usage')).toBeLessThan(calls.indexOf('finish'))
-			expect(finishedResult).toBeDefined()
-			expect(finishedResult?.content).toBe(result.content)
-			expect(finishedResult?.partial).toBe(result.partial)
+			expect(finishes.calls).toEqual([[result]])
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -96,7 +92,7 @@ describe('Agent (live) — the think channel assembles into result.thinking', ()
 				'produce non-empty reasoning deltas under think:true',
 				async () => {
 					const provider = createLiveOllama({ predict: 32, temperature: 0 })
-					const agent = createAgent(provider, { timeout: TIMEOUT })
+					const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
 					agent.context.messages.add({
 						role: 'user',
 						content: 'Briefly reason step by step about what 2 + 2 equals, then answer.',
@@ -109,7 +105,12 @@ describe('Agent (live) — the think channel assembles into result.thinking', ()
 					const attemptResult = await stream.result
 					return { thoughts: attemptThoughts, result: attemptResult }
 				},
-				(value) => value.thoughts.join('').trim().length > 0,
+				// Non-empty reasoning is the model-dependent half. The join and the settled outcome are
+				// the assertions below, so an attempt that breaks either is retried rather than accepted.
+				(value) =>
+					value.thoughts.join('').trim().length > 0 &&
+					value.thoughts.join('') === value.result.thinking &&
+					value.result.partial === false,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
@@ -121,7 +122,7 @@ describe('Agent (live) — the think channel assembles into result.thinking', ()
 			expect(thoughts.join('')).toBe(result.thinking)
 			expect(result.partial).toBe(false)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -136,39 +137,36 @@ describe('Agent (live) — abort() mid-stream resolves partial, never rejects', 
 				predict: ABORT_OPTIONS.num_predict,
 				temperature: ABORT_OPTIONS.temperature,
 			})
-			const agent = createAgent(provider, { timeout: TIMEOUT })
+			const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
 			agent.context.messages.add({
 				role: 'user',
 				content: 'Write a short paragraph describing a sunny day in a park.',
 			})
 
-			const events: unknown[] = []
-			agent.emitter.on('abort', (reason) => events.push(reason))
+			const aborts = createRecorder<[unknown]>()
+			agent.emitter.on('abort', (reason) => aborts.handler(reason))
 
 			const stream = agent.stream()
-			let aborted = false
 			const chunks: AgentChunk[] = []
 			for await (const chunk of stream.events) {
-				chunks.push(chunk)
-				if (!aborted && chunk.category === 'token') {
-					aborted = true
+				if (chunk.category === 'token' && !chunks.some((seen) => seen.category === 'token'))
 					agent.abort('audit-abort')
-				}
+				chunks.push(chunk)
 			}
 
 			// The abort landed while a token was actually observed (not a race where the run finished
 			// first) — otherwise this attempt's abort proof is meaningless.
-			expect(aborted).toBe(true)
+			expect(chunks.some((chunk) => chunk.category === 'token')).toBe(true)
 
 			// result RESOLVES (never rejects) with partial: true — the documented cancel contract.
 			const result = await stream.result
 			expect(result.partial).toBe(true)
 
 			// The emitter fired the abort domain event (carrying the cancel reason).
-			expect(events.length).toBeGreaterThan(0)
+			expect(aborts.calls).toEqual([['audit-abort']])
 			expect(agent.status).toBe('done')
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -180,28 +178,37 @@ describe('Agent (live) — a construction-time timeout resolves partial, never r
 			// exhaustion (budget.test.ts): a construction-time `timeout` (ms) folds into the same
 			// `AbortSignal.any` cancel the loop arms per turn. Bounded retry (attempts=3) only to
 			// absorb the astronomically-rare instant-completion race.
-			const { partial, events } = await retryUntil(
+			const { partial, reasons } = await retryUntil(
 				'settle a partial result under an exhausted 1ms timeout',
 				async () => {
 					const provider = createLiveOllama({ predict: 32, temperature: 0 })
 					const agent = createAgent(provider, { timeout: 1 })
 					agent.context.messages.add({ role: 'user', content: 'Say hello.' })
 
-					const abortEvents: unknown[] = []
-					agent.emitter.on('abort', (reason) => abortEvents.push(reason))
+					const aborts = createRecorder<[unknown]>()
+					agent.emitter.on('abort', (reason) => aborts.handler(reason))
 
 					const result = await agent.generate()
-					return { partial: result.partial, events: abortEvents.length }
+					return {
+						partial: result.partial,
+						reasons: aborts.calls.map(([reason]) =>
+							reason instanceof Error ? reason.name : reason,
+						),
+					}
 				},
-				(value) => value.partial === true,
+				// The predicate is the assertion below: one abort event, and none from a second source.
+				(value) =>
+					value.partial === true &&
+					value.reasons.length === 1 &&
+					value.reasons.every((reason) => reason === 'AbortError'),
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			// result RESOLVES (never rejects) with partial: true, and the emitter fired abort.
 			expect(partial).toBe(true)
-			expect(events).toBeGreaterThan(0)
+			expect(reasons).toEqual(['AbortError'])
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -213,27 +220,36 @@ describe('Agent (live) — a per-run timeout override reaches the loop', () => {
 			// `??` semantics over the construction default. The agent here is constructed with NO
 			// timeout at all, so a partial+abort outcome proves the PER-RUN 1ms bound reached the
 			// loop, not any construction-time default.
-			const { partial, events } = await retryUntil(
+			const { partial, reasons } = await retryUntil(
 				'settle a partial result under a per-run 1ms timeout override',
 				async () => {
 					const provider = createLiveOllama({ predict: 32, temperature: 0 })
 					const agent = createAgent(provider, {})
 					agent.context.messages.add({ role: 'user', content: 'Say hello.' })
 
-					const abortEvents: unknown[] = []
-					agent.emitter.on('abort', (reason) => abortEvents.push(reason))
+					const aborts = createRecorder<[unknown]>()
+					agent.emitter.on('abort', (reason) => aborts.handler(reason))
 
 					const result = await agent.generate({ timeout: 1 })
-					return { partial: result.partial, events: abortEvents.length }
+					return {
+						partial: result.partial,
+						reasons: aborts.calls.map(([reason]) =>
+							reason instanceof Error ? reason.name : reason,
+						),
+					}
 				},
-				(value) => value.partial === true,
+				// The predicate is the assertion below: one abort event, and none from a second source.
+				(value) =>
+					value.partial === true &&
+					value.reasons.length === 1 &&
+					value.reasons.every((reason) => reason === 'AbortError'),
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(partial).toBe(true)
-			expect(events).toBeGreaterThan(0)
+			expect(reasons).toEqual(['AbortError'])
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -253,7 +269,7 @@ describe('Agent (live) — a per-run limit override reaches the loop', () => {
 					const agent = createAgent(createLiveOllama(), {
 						system: 'You MUST call the lookup tool with query "datum" immediately.',
 						tools,
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 						on: { exhaust: (turns) => exhaustRecorder.handler(turns) },
 					})
 					agent.context.messages.add({
@@ -266,13 +282,17 @@ describe('Agent (live) — a per-run limit override reaches the loop', () => {
 						exhausted: exhaustRecorder.calls.map((call) => call[0]),
 					}
 				},
-				(value) => value.exhausted.length > 0,
+				// The predicate is the assertion below: one exhaust event at the first turn, partial.
+				(value) =>
+					value.partial === true &&
+					value.exhausted.length === 1 &&
+					value.exhausted.every((turns) => turns === 1),
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			expect(partial).toBe(true)
 			expect(exhausted).toEqual([1])
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })

@@ -1,7 +1,9 @@
 import { createAgent, createAuthority } from '@orkestrel/agent'
 import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
+import type { ToolCall } from '@orkestrel/tool'
 import { describe, expect, it } from 'vitest'
+import { CASE_TIMEOUT } from '../setup.js'
 import { createLookupTool, driveAgent, LOOKUP_DATUM } from '../setupServer.js'
 import { createLiveOllama, RETRY_BUDGET } from '../setupService.js'
 
@@ -10,14 +12,10 @@ import { createLiveOllama, RETRY_BUDGET } from '../setupService.js'
 // mocks for the inference boundary. Every model-choice-dependent step is
 // wrapped in `retryUntil` (bounded at 3 attempts). Warmed, no skipIf.
 
-const TIMEOUT = 60_000
-
 describe('Agent tool loop (live) — an allow rule lets the tool execute', () => {
 	it(
 		'an explicit allow rule for the lookup tool lets it execute, with no deny event',
 		async () => {
-			const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-			const denyRecorder = createRecorder<[unknown, string | undefined]>()
 			const authority = createAuthority({
 				rules: [
 					{
@@ -28,21 +26,21 @@ describe('Agent tool loop (live) — an allow rule lets the tool execute', () =>
 				],
 			})
 
-			const driven = await retryUntil(
+			const { driven, executed, denied } = await retryUntil(
 				'let an explicitly allowed lookup call execute',
 				async () => {
-					recorder.clear()
-					denyRecorder.clear()
+					const lookups = createRecorder<[Readonly<Record<string, unknown>>]>()
+					const denials = createRecorder<[ToolCall, string | undefined]>()
 					const tools = createToolManager()
-					tools.add(createLookupTool(recorder))
+					tools.add(createLookupTool(lookups))
 					const agent = createAgent(createLiveOllama(), {
 						system:
 							'You MUST call the lookup tool with query "datum" to answer, then state exactly what it returned.',
 						tools,
 						authority,
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 						limit: 4,
-						on: { deny: (call, reason) => denyRecorder.handler(call, reason) },
+						on: { deny: (call, reason) => denials.handler(call, reason) },
 					})
 					agent.context.messages.add({
 						role: 'user',
@@ -50,20 +48,29 @@ describe('Agent tool loop (live) — an allow rule lets the tool execute', () =>
 							'Call the lookup tool with query "datum", then tell me exactly what it returned.',
 					})
 					const stream = agent.stream()
-					return driveAgent(stream)
+					return {
+						driven: await driveAgent(stream),
+						executed: lookups.calls,
+						denied: denials.calls,
+					}
 				},
-				() => recorder.count >= 1,
+				(value) => value.executed.length >= 1,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			const dispatched = driven.tools.find((tool) => tool.call.name === 'lookup')
 			expect(dispatched).toBeDefined()
 			expect(dispatched?.result).toMatchObject({ success: true, value: LOOKUP_DATUM })
-			expect(recorder.count).toBeGreaterThanOrEqual(1)
-			expect(denyRecorder.count).toBe(0)
+			// The tool ran once for each lookup call the loop dispatched, with the arguments the call carried.
+			expect(executed).toEqual(
+				driven.tools
+					.filter((tool) => tool.call.name === 'lookup')
+					.map((tool) => [tool.call.arguments]),
+			)
+			expect(denied).toEqual([])
 			expect(driven.result.partial).toBe(false)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -71,8 +78,6 @@ describe('Agent tool loop (live) — a rule that throws during evaluation fails 
 	it(
 		'a match function throwing during evaluation denies the call, never executes it, and the run still resolves',
 		async () => {
-			const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-			const denyRecorder = createRecorder<[unknown, string | undefined]>()
 			const authority = createAuthority({
 				rules: [
 					{
@@ -85,41 +90,50 @@ describe('Agent tool loop (live) — a rule that throws during evaluation fails 
 				],
 			})
 
-			const driven = await retryUntil(
+			const { driven, executed, denied } = await retryUntil(
 				'fail closed and deny the lookup call when a rule throws during evaluation',
 				async () => {
-					recorder.clear()
-					denyRecorder.clear()
+					const lookups = createRecorder<[Readonly<Record<string, unknown>>]>()
+					const denials = createRecorder<[ToolCall, string | undefined]>()
 					const tools = createToolManager()
-					tools.add(createLookupTool(recorder))
+					tools.add(createLookupTool(lookups))
 					const agent = createAgent(createLiveOllama(), {
 						system: 'You MUST call the lookup tool with query "datum" to answer.',
 						tools,
 						authority,
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 						limit: 4,
-						on: { deny: (call, reason) => denyRecorder.handler(call, reason) },
+						on: { deny: (call, reason) => denials.handler(call, reason) },
 					})
 					agent.context.messages.add({
 						role: 'user',
 						content: 'Call the lookup tool with query "datum", then tell me what it returned.',
 					})
 					const stream = agent.stream()
-					return driveAgent(stream)
+					return {
+						driven: await driveAgent(stream),
+						executed: lookups.calls,
+						denied: denials.calls,
+					}
 				},
-				() => denyRecorder.count > 0 && recorder.count === 0,
+				(value) => value.denied.length > 0 && value.executed.length === 0,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
-			expect(denyRecorder.count).toBeGreaterThan(0)
-			expect(recorder.count).toBe(0)
-			const denied = driven.tools.find((tool) => tool.call.name === 'lookup')
-			expect(denied).toBeDefined()
-			expect(denied?.result).toMatchObject({ success: false })
-			expect(denied?.result).toHaveProperty('error')
+			// The rule's own failure is the recorded reason, once for each lookup call the loop dispatched.
+			expect(denied.filter(([call]) => call.name === 'lookup')).toEqual(
+				driven.tools
+					.filter((tool) => tool.call.name === 'lookup')
+					.map((tool) => [tool.call, 'evaluation exploded']),
+			)
+			expect(executed).toEqual([])
+			const refused = driven.tools.find((tool) => tool.call.name === 'lookup')
+			expect(refused).toBeDefined()
+			expect(refused?.result).toMatchObject({ success: false })
+			expect(refused?.result).toHaveProperty('error')
 			expect(driven.result.partial).toBe(false)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -127,8 +141,6 @@ describe('Agent tool loop (live) — no matching rule falls back to default allo
 	it(
 		'a rule matching a different tool name never applies, and the unmatched lookup call falls back to allow',
 		async () => {
-			const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
-			const denyRecorder = createRecorder<[unknown, string | undefined]>()
 			const authority = createAuthority({
 				rules: [
 					{
@@ -139,21 +151,21 @@ describe('Agent tool loop (live) — no matching rule falls back to default allo
 				],
 			})
 
-			const driven = await retryUntil(
+			const { driven, executed, denied } = await retryUntil(
 				'fall back to allow the unmatched lookup call',
 				async () => {
-					recorder.clear()
-					denyRecorder.clear()
+					const lookups = createRecorder<[Readonly<Record<string, unknown>>]>()
+					const denials = createRecorder<[ToolCall, string | undefined]>()
 					const tools = createToolManager()
-					tools.add(createLookupTool(recorder))
+					tools.add(createLookupTool(lookups))
 					const agent = createAgent(createLiveOllama(), {
 						system:
 							'You MUST call the lookup tool with query "datum" to answer, then state exactly what it returned.',
 						tools,
 						authority,
-						timeout: TIMEOUT,
+						timeout: CASE_TIMEOUT,
 						limit: 4,
-						on: { deny: (call, reason) => denyRecorder.handler(call, reason) },
+						on: { deny: (call, reason) => denials.handler(call, reason) },
 					})
 					agent.context.messages.add({
 						role: 'user',
@@ -161,19 +173,27 @@ describe('Agent tool loop (live) — no matching rule falls back to default allo
 							'Call the lookup tool with query "datum", then tell me exactly what it returned.',
 					})
 					const stream = agent.stream()
-					return driveAgent(stream)
+					return {
+						driven: await driveAgent(stream),
+						executed: lookups.calls,
+						denied: denials.calls,
+					}
 				},
-				() => recorder.count >= 1,
+				(value) => value.executed.length >= 1,
 				{ attempts: 3, budget: RETRY_BUDGET },
 			)
 
 			const dispatched = driven.tools.find((tool) => tool.call.name === 'lookup')
 			expect(dispatched).toBeDefined()
 			expect(dispatched?.result).toMatchObject({ success: true, value: LOOKUP_DATUM })
-			expect(recorder.count).toBeGreaterThanOrEqual(1)
-			expect(denyRecorder.count).toBe(0)
+			expect(executed).toEqual(
+				driven.tools
+					.filter((tool) => tool.call.name === 'lookup')
+					.map((tool) => [tool.call.arguments]),
+			)
+			expect(denied).toEqual([])
 			expect(driven.result.partial).toBe(false)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })

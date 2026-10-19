@@ -1,8 +1,10 @@
 // The Node-resource half of `tests/setupServer.ts`: the loopback recording proxy, the
-// relay server, the capture wait, the provider-stream driver, the transport fixtures,
-// the shared wire tables, and the loop-clock reader and its aligner. The narrowing guards,
-// the tool fixtures, and the environment readers that module also exports are asserted by
-// `tests/setup.test.ts`, so this proof does not re-assert them.
+// relay server, the fixture daemon, the capture wait, the provider-stream driver, the
+// transport fixtures, the shared wire tables, the loop-clock reader and its aligner, the live
+// page proof's browser and build gates, and the guard that keeps every hermetic project from
+// importing `tests/setupService.ts`, which contacts the daemon when it loads.
+// The narrowing guards, the tool fixtures, and the environment readers that module also
+// exports are asserted by `tests/setup.test.ts`, so this proof does not re-assert them.
 //
 // The proxy and relay-server cases run against real sockets on 127.0.0.1 ephemeral
 // ports: a pass-through case forwards to a fixture upstream this file starts, and
@@ -11,64 +13,277 @@
 // host timers measured on `performance.now()`. No Ollama daemon takes part in any of
 // these cases.
 
-import type { AgentResult, ProviderDelta, ProviderResult } from '@orkestrel/agent'
-import type { BrowserCallOptions } from '@orkestrel/browser'
-import { isError, isRecord, isString } from '@orkestrel/contract'
+import type { AbortInterface } from '@orkestrel/abort'
+import type { AgentResult, ProviderResult } from '@orkestrel/agent'
+import type {
+	BrowserCallOptions,
+	BrowserConsoleMessage,
+	BrowserPageError,
+	BrowserRequest,
+} from '@orkestrel/browser'
+import { createAbort } from '@orkestrel/abort'
+import { attempt, isError, isRecord, isString } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
 import {
 	captureError,
 	createRecorder,
 	createTeardown,
+	requireValue,
 	waitForAbort,
+	waitForCondition,
 	waitForDelay,
 } from '@orkestrel/test'
-import { createOllama } from '@src/core'
+import type { OllamaOptions } from '@src/core'
+import { createOllama, OllamaProvider } from '@src/core'
 import { createNDJSONParser } from '@orkestrel/ndjson'
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
 import { createScratch } from '@orkestrel/test/server'
+import { realpathSync } from 'node:fs'
 import { createServer as createNetServer } from 'node:net'
-import { PAGE_TOOL, TIMER_LEAD } from './setup.js'
-import type { PageAttempt, PageTool } from './setupServer.js'
+import { join, parse } from 'node:path'
+import workspace from '../vite.config.js'
 import {
+	buildFenceObservation,
+	createUserMessage,
+	DONE_RECORD,
+	FENCE_CONTROLS,
+	FENCE_SCENARIOS,
+	HELLO_TURN,
+	PAGE_TOOL,
+	readStackDepth,
+	SHORT_OPTIONS,
+	STREAM_FENCE_CASES,
+	TIMER_LEAD,
+} from './setup.js'
+import type { DistributionEntry, PageAttempt, PageTool, RecordedRequest } from './setupServer.js'
+import {
+	ABSENT_SUBPATH,
+	IMPORT_MAP_PACKAGES,
+	PAGE_ALLOWANCES,
+	buildReferenceCases,
+	buildSpecifierCases,
+	CODE_FILE_CASES,
+	CODE_FILES,
+	COMMONJS_CASES,
+	COMMONJS_FILES,
+	COMPUTE_DECLARATION_CASES,
+	DECLARATION_TARGET_CASES,
+	DECODE_SEGMENT_CASES,
+	MODULE_TARGET_CASES,
+	NOT_ENTRIES,
+	PACKAGE_TARGET_CASES,
+	PACKAGE_TYPE_CASES,
+	POSITIVE_INTEGERS,
+	RESOLVE_FILE_CASES,
+	RESOLVER_FILES,
+	SERVICE_IMPORTER_CASES,
+	TARGET_DECLARATION_CASES,
 	acceptPageAttempt,
 	alignLoopClock,
 	boundPageAttempt,
+	BROWSER_DRIVER,
 	buildImportMap,
+	buildModuleFixture,
+	buildRecordedRequest,
+	buildReferences,
+	buildNpmEnvironment,
 	buildRelayRoute,
+	buildStage,
+	buildStubStage,
 	buildUncachedResponse,
+	CallCounter,
+	abortCall,
+	CAPTURE_ENTRY_POINTS,
+	captureAbortedRequest,
+	captureOpenRequest,
+	captureSettledRequest,
+	COMPUTED_FIXTURES,
+	COMPUTED_REFERENCE_CASES,
+	createErrorTransport,
+	createFenceModules,
+	createPageSessionOptions,
+	executeFence,
+	extractFenceError,
+	extractStreamFences,
+	observeFence,
+	readStreamFences,
+	constructProvider,
+	checkProject,
+	checkResolution,
+	checkSurface,
+	CJS_DRIVER,
+	CLASSIFIER_FILES,
+	classifyExport,
+	classifyExports,
+	collectDiagnostics,
+	collectModuleClosure,
+	collectTargets,
+	computeDeclaration,
 	CONTROL_PATH,
+	createChatUpstream,
+	createPingRegistry,
+	declaresCommonJS,
+	decodeSegment,
+	DECLARATION_CONDITIONS,
+	driveRuntime,
+	ESM_DRIVER,
+	FIXTURE_PACKAGE_FILES,
+	FIXTURE_PACKAGE_NAME,
+	FORMATS,
+	isDeclarationTarget,
+	isModuleTarget,
+	isPackageTarget,
+	NPM_COMMAND,
+	NPM_SHELL,
+	openStage,
+	READER_FILES,
+	readDeclaration,
+	readJson,
+	readManifestName,
+	readPackageType,
+	readScopeType,
+	readSpawnOutput,
+	RELEASE_MODE,
+	RESOLUTIONS,
+	resolveCompiler,
+	resolveDeclaration,
+	resolvePackageTarget,
+	resolveTarget,
+	resolvesBrowser,
+	resolvesCommonJS,
+	runNode,
+	runNpm,
+	RUNTIME_CONDITIONS,
+	ScopeWalk,
+	ScriptCursor,
+	selectDrivers,
+	selectEntries,
+	selectUntypable,
+	targetToDeclaration,
+	writeConsumerProbe,
+	writeFixtureFile,
+	writeProject,
 	createPageFixture,
 	createRecordingProxy,
 	createRecordingTransport,
 	createRelayServer,
 	createOpenTransport,
+	createScriptedTransport,
 	createStreamingTransport,
 	describeFailure,
 	DIST_PATH,
+	DRIVEN_DELTAS,
+	DRIVEN_RESULT,
+	EMPTY_RESULT,
 	expirePageAttempt,
+	fetchUpstream,
+	findCodeFile,
+	findFileText,
+	findComputedFiles,
+	findModuleReferences,
+	scanTreeReferences,
+	findServiceImporters,
+	findServiceImports,
+	findServiceSetupFiles,
+	FIXTURE_CONTENT,
+	FIXTURE_HOSTED_IMPORTER,
+	FIXTURE_MODEL,
+	FixtureDaemon,
+	HERMETIC_WITNESSES,
 	isAgentOutcome,
+	IMPORT_ONLY_ENTRY,
+	isFilePath,
+	isIdentifierNamed,
+	isImportMetaMember,
 	isPageControl,
 	isPageGeneration,
 	isPageOutcome,
 	isPageReceipts,
+	isPositiveInteger,
+	isServiceImporter,
 	isToolOutcome,
+	listChildren,
+	listProjects,
+	listProjectSources,
+	leaveCall,
+	listSetupFiles,
+	listSources,
+	LOADING_FORMS,
+	MODULE_FIXTURES,
 	MODULES_PATH,
+	NON_HERMETIC_PROJECTS,
+	NON_POSITIVE_INTEGERS,
+	NOT_SETUP_FILES,
+	NOT_TREES,
+	observePageAttempt,
 	OBFUSCATED,
 	PAGE_BOUNDS,
+	PAGE_BROWSER_ARGS,
+	PAGE_CAPITAL,
 	PAGE_DOCUMENT,
+	PAGE_FAULT,
+	PAGE_INFERENCE_PATH,
 	PAGE_INTERVALS,
+	PAGE_NOTE,
+	PAGE_OPERATIONS,
+	PAGE_RUN,
+	PageObserver,
 	racePageAttempt,
 	drive,
+	driveScript,
 	INSATIABLE_TOOL_CHUNKS,
 	insatiableResult,
+	readChatMessages,
+	readFirstRequest,
+	readLatestChat,
 	readLoopClock,
 	readModuleEntry,
+	readModuleReferences,
 	readOutcome,
+	readPathAliases,
+	readProject,
 	readRequest,
+	readSpecifierText,
+	READY_CHAT,
+	READY_TAGS,
+	RecordingServer,
 	releasePageAttempt,
+	RequestLog,
+	requireBuild,
+	requirePageBrowser,
 	reservePort,
+	resolveModuleFiles,
+	rootToPath,
+	SCENARIO_PROVIDER,
+	SCHEDULE_SLACK,
+	SERVICE_IMPORT_CASES,
 	serveFile,
+	runWithFetch,
+	settleCall,
+	ASSET_QUERIES,
+	ASSET_SPECIFIER_CASES,
+	buildComputedFixture,
+	buildFenceImport,
+	buildQueryFixture,
+	CODE_EXTENSIONS,
+	COMPUTED_URL_FILES,
+	FIXTURE_SERVICE_BODY,
+	isAssetSpecifier,
+	NORMALIZE_SETUP_CASES,
+	normalizeSetupFile,
+	OTHER_SETUP_SPELLINGS,
+	readFirstStatement,
+	readRealPath,
+	SERVICE_MODULE,
+	SERVICE_SETUP_SPELLINGS,
+	SERVICE_SPECIFIER,
+	SERVICE_SPECIFIER_CASES,
+	SETUP_FILES,
+	SOURCE_TWINS,
+	SPECIFIER_SUFFIX_CASES,
+	stripSpecifierSuffix,
+	UNRELATED_IMPORT_CASES,
 	waitForRequest,
 	WEATHER_TOOL,
 	WORKSPACE_ROOT,
@@ -214,87 +429,56 @@ describe('createOpenTransport', () => {
 			reader.releaseLock()
 		}
 	})
-})
 
-/** A fixture upstream a recording proxy forwards to. */
-interface UpstreamInterface {
-	/** The absolute base URL the fixture listens on. */
-	readonly url: string
-	/** Every `/api/chat` body the fixture received, in call order. */
-	readonly bodies: readonly string[]
-	stop(): Promise<void>
-}
+	it('runs its drained callback once, when a reader asks for more after it took the chunk', async () => {
+		const drained = createRecorder<readonly []>()
+		const transport = createOpenTransport('first\n', drained.handler)
+		const reader = (await transport.fetch('http://127.0.0.1/api/chat')).body?.getReader()
+		if (reader === undefined) throw new Error('open transport returned no body')
+		try {
+			expect(drained.calls).toEqual([])
+			await reader.read()
+			await waitForDelay(10)
+			expect(drained.calls).toEqual([])
 
-/**
- * Start a fixture upstream that records each `/api/chat` body and answers with `reply`.
- *
- * The reply receives the request's own abort signal so a case can park the route until
- * the proxy gives up on it.
- */
-async function createUpstream(
-	reply: (signal: AbortSignal) => Promise<Response>,
-): Promise<UpstreamInterface> {
-	const bodies: string[] = []
-	const dispatcher = createDispatcher<Record<string, never>>()
-	dispatcher.add({
-		method: 'POST',
-		path: '/api/chat',
-		async handler(request) {
-			bodies.push(await request.text())
-			return await reply(request.signal)
-		},
+			const pending = reader.read()
+			expect(drained.calls).toEqual([[]])
+			const second = reader.read()
+			await waitForDelay(10)
+			expect(drained.calls).toEqual([[]])
+			await reader.cancel()
+			await Promise.all([pending, second])
+		} finally {
+			reader.releaseLock()
+		}
 	})
-	const server = createServer({ dispatcher, state: () => ({}), host: '127.0.0.1' })
-	const port = await server.start()
-	return {
-		url: `http://127.0.0.1:${port}`,
-		get bodies() {
-			return bodies
-		},
-		stop() {
-			return server.stop()
-		},
-	}
-}
 
-/** The settled value `driveScript` returns, held by identity so `drive` can be shown to pass it through. */
-const DRIVEN_RESULT: ProviderResult = {
-	content: 'ab',
-	thinking: 'weighing it up',
-	usage: { prompt: 1, completion: 2, total: 3 },
-}
+	it('keeps the first stream it opened as the one a failure errors, because it is single-use', async () => {
+		const transport = createOpenTransport('first\n')
+		const error = new Error('fixture failure')
+		const first = (await transport.fetch('http://127.0.0.1/api/chat')).body?.getReader()
+		const second = (await transport.fetch('http://127.0.0.1/api/chat')).body?.getReader()
+		if (first === undefined || second === undefined) {
+			throw new Error('open transport returned no body')
+		}
+		await first.read()
+		await second.read()
+		const outcomes = [first.read(), second.read()].map((pending) =>
+			Promise.race([
+				pending.then(
+					() => 'delivered',
+					(failure: unknown) => (failure === error ? 'errored' : 'failed otherwise'),
+				),
+				waitForDelay(30).then(() => 'open'),
+			]),
+		)
 
-/** The deltas `driveScript` replays, interleaving both channels so bucketing is observable. */
-const DRIVEN_DELTAS: readonly ProviderDelta[] = [
-	{ channel: 'content', text: 'a' },
-	{ channel: 'thinking', text: 'weighing it up' },
-	{ channel: 'content', text: 'b' },
-]
+		transport.fail(error)
 
-/** The settled value the empty-stream case returns. */
-const EMPTY_RESULT: ProviderResult = { content: '' }
-
-/**
- * The scheduling allowance the elapsed assertions on a bounded attempt add above their nominal,
- * in milliseconds.
- *
- * The property those cases prove is timer-bounded completion, not the nominal sum: a Vitest
- * worker sharing a host with its siblings reaches a fired timer's callback late. So each case
- * asserts that the attempt took no more than the deadlines it had to wait out plus this
- * allowance, which excludes an attempt that awaited something unbounded — the defect these cases
- * exist for, which ends at the case timeout rather than anywhere near this figure.
- * {@link TIMER_LEAD} owns the opposite bound, an attempt that returned before its deadlines.
- */
-const SCHEDULE_SLACK = 500
-
-/** Replay a scripted delta sequence as a provider stream returning `result`. */
-async function* driveScript(
-	deltas: readonly ProviderDelta[],
-	result: ProviderResult,
-): AsyncGenerator<ProviderDelta, ProviderResult> {
-	yield* deltas
-	return result
-}
+		expect(await Promise.all(outcomes)).toEqual(['errored', 'open'])
+		await second.cancel()
+	})
+})
 
 describe('createRecordingProxy', () => {
 	it("captures a call's method, path, headers, and parsed body before forwarding it", async () => {
@@ -322,7 +506,7 @@ describe('createRecordingProxy', () => {
 
 	it('forwards the body to a reachable upstream and returns its status and body verbatim', async () => {
 		const answer = '{"message":{"content":"pong"}}'
-		const upstream = await createUpstream(() =>
+		const upstream = await createChatUpstream(() =>
 			Promise.resolve(new Response(answer, { status: 202 })),
 		)
 		const proxy = await createRecordingProxy(upstream.url)
@@ -337,7 +521,7 @@ describe('createRecordingProxy', () => {
 
 			expect(response.status).toBe(202)
 			expect(await response.text()).toBe(answer)
-			expect(upstream.bodies).toEqual([body])
+			expect(upstream.requests.map((request) => request.text)).toEqual([body])
 		} finally {
 			await proxy.stop()
 			await upstream.stop()
@@ -346,7 +530,7 @@ describe('createRecordingProxy', () => {
 
 	it('answers 499 when stop cancels a call still waiting on the upstream', async () => {
 		const park = new AbortController()
-		const upstream = await createUpstream(async (signal) => {
+		const upstream = await createChatUpstream(async (signal) => {
 			await waitForAbort(AbortSignal.any([signal, park.signal]))
 			return new Response(undefined, { status: 204 })
 		})
@@ -412,6 +596,251 @@ describe('waitForRequest', () => {
 	})
 })
 
+describe('captureRequest, captureAbortedRequest, captureSettledRequest, and captureOpenRequest', () => {
+	it('returns the request the provider sent, carrying the options the scenario was given', async () => {
+		const request = await captureAbortedRequest(
+			{ model: 'scenario-model', keepAlive: '9m', think: true },
+			(provider, signal) => provider.generate([createUserMessage('hello')], signal),
+		)
+
+		expect(request.method).toBe('POST')
+		expect(request.path).toBe('/api/chat')
+		expect(request.body.model).toBe('scenario-model')
+		expect(request.body.keep_alive).toBe('9m')
+		expect(request.body.think).toBe(true)
+		expect(request.body.messages).toEqual([{ role: 'user', content: 'hello' }])
+	})
+
+	it('aborts the signal it hands the call once recorded, and awaits a call that settles on a later turn, when it aborts', async () => {
+		const signals = createRecorder<readonly [AbortSignal]>()
+		const settled = createRecorder<readonly []>()
+
+		await captureAbortedRequest({ model: 'scenario-model' }, (provider, signal) => {
+			signals.handler(signal)
+			return provider
+				.generate([createUserMessage('hi')], signal)
+				.finally(() => waitForDelay(40))
+				.finally(() => settled.handler())
+		})
+
+		expect(signals.calls.map(([signal]) => signal.aborted)).toEqual([true])
+		expect(settled.calls).toEqual([[]])
+	})
+
+	it('drives a streaming call through the same scenario', async () => {
+		const request = await captureAbortedRequest({ model: 'scenario-model' }, (provider, signal) =>
+			drive(provider.stream([createUserMessage('hi')], signal)),
+		)
+
+		expect(request.body.stream).toBe(true)
+	})
+
+	it('rethrows what the call throws before it sends', async () => {
+		await expect(
+			captureAbortedRequest({ model: 'scenario-model' }, () => {
+				throw new Error('call refused')
+			}),
+		).rejects.toThrow('call refused')
+	})
+
+	it('returns the one request the provider sent once the call has settled, aborting nothing, when it settles', async () => {
+		const order = createRecorder<readonly [string]>()
+		const signals = createRecorder<readonly [AbortSignal]>()
+
+		const request = await captureSettledRequest(SCENARIO_PROVIDER, async (provider, signal) => {
+			signals.handler(signal)
+			await provider
+				.generate([createUserMessage('hello')], new AbortController().signal)
+				.catch(() => {})
+			order.handler('settled')
+		})
+
+		expect(order.calls).toEqual([['settled']])
+		expect(signals.calls.map(([signal]) => signal.aborted)).toEqual([false])
+		expect(request.path).toBe('/api/chat')
+		expect(request.body.model).toBe('test-model')
+		expect(request.body.options).toEqual({ num_predict: 8, temperature: 0 })
+		expect(request.body.messages).toEqual([{ role: 'user', content: 'hello' }])
+	})
+
+	it('returns as soon as the proxy holds the request and leaves a call that has not settled running, when it leaves the call open', async () => {
+		const gate = Promise.withResolvers<void>()
+		const signals = createRecorder<readonly [AbortSignal]>()
+
+		const request = await captureOpenRequest(
+			{ model: 'test-model', keepAlive: '9m' },
+			async (provider, signal) => {
+				signals.handler(signal)
+				provider.generate([createUserMessage('hi')], new AbortController().signal).catch(() => {})
+				await gate.promise
+			},
+		)
+		gate.resolve()
+
+		expect(request.body.keep_alive).toBe('9m')
+		expect(signals.calls.map(([signal]) => signal.aborted)).toEqual([false])
+	})
+
+	it('throws when a settled call recorded no request, whether the call resolved or rejected', async () => {
+		await expect(captureSettledRequest(SCENARIO_PROVIDER, () => Promise.resolve())).rejects.toThrow(
+			'no recorded request',
+		)
+		await expect(
+			captureSettledRequest(SCENARIO_PROVIDER, () => Promise.reject(new Error('call refused'))),
+		).rejects.toThrow('no recorded request')
+	})
+
+	it('builds the provider through the factory it is given, with the proxy address added to the options', async () => {
+		const built = createRecorder<readonly [OllamaOptions]>()
+
+		const request = await captureSettledRequest(
+			SCENARIO_PROVIDER,
+			(provider) => provider.generate([createUserMessage('hi')], new AbortController().signal),
+			(options) => {
+				built.handler(options)
+				return createOllama(options)
+			},
+		)
+
+		expect(built.calls.map(([options]) => [options.model, options.options])).toEqual([
+			['test-model', SHORT_OPTIONS],
+		])
+		expect(built.calls.map(([options]) => new URL(options.url ?? '').hostname)).toEqual([
+			'127.0.0.1',
+		])
+		expect(request.body.model).toBe('test-model')
+	})
+
+	for (const [name, capture] of CAPTURE_ENTRY_POINTS) {
+		it(`stops the proxy ${name} started, after a call that returns and after a call that throws`, async () => {
+			const urls = createRecorder<readonly [string | undefined]>()
+
+			await capture(
+				SCENARIO_PROVIDER,
+				(provider, signal) => provider.generate([createUserMessage('hi')], signal),
+				(options) => {
+					urls.handler(options.url)
+					return constructProvider(options)
+				},
+			)
+			await expect(
+				capture(
+					SCENARIO_PROVIDER,
+					() => {
+						throw new Error('call refused')
+					},
+					(options) => {
+						urls.handler(options.url)
+						return constructProvider(options)
+					},
+				),
+			).rejects.toThrow('call refused')
+
+			expect(urls.calls).toHaveLength(2)
+			for (const [url] of urls.calls) {
+				await expect(fetch(`${url}/api/tags`)).rejects.toThrow('fetch failed')
+			}
+		})
+	}
+})
+
+describe('abortCall, settleCall, and leaveCall', () => {
+	it('abort the call once the proxy holds its request, and await it', async () => {
+		const proxy = await createRecordingProxy()
+		const abort = createAbort()
+		const settled = createRecorder<readonly []>()
+		try {
+			const pending = fetch(`${proxy.url}/api/chat`, {
+				method: 'POST',
+				body: '{}',
+				signal: abort.signal,
+			})
+				.catch(() => {})
+				.finally(() => waitForDelay(40))
+				.finally(() => settled.handler())
+
+			await abortCall({ proxy, abort, pending })
+
+			expect(abort.signal.aborted).toBe(true)
+			expect(settled.calls).toEqual([[]])
+			expect(proxy.requests).toHaveLength(1)
+		} finally {
+			await proxy.stop()
+		}
+	})
+
+	it('settle waits for the call and aborts nothing, without waiting for a request', async () => {
+		const proxy = await createRecordingProxy()
+		const abort = createAbort()
+		const settled = createRecorder<readonly []>()
+		try {
+			const pending = waitForDelay(40).then(() => settled.handler())
+
+			await settleCall({ proxy, abort, pending })
+
+			expect(settled.calls).toEqual([[]])
+			expect(abort.signal.aborted).toBe(false)
+			expect(proxy.requests).toEqual([])
+		} finally {
+			await proxy.stop()
+		}
+	})
+
+	it('leave waits for the proxy to hold a request and leaves the call and the signal alone', async () => {
+		const proxy = await createRecordingProxy()
+		const abort = createAbort()
+		try {
+			const pending = fetch(`${proxy.url}/api/chat`, {
+				method: 'POST',
+				body: '{}',
+				signal: abort.signal,
+			}).catch(() => {})
+
+			await leaveCall({ proxy, abort, pending })
+
+			expect(abort.signal.aborted).toBe(false)
+			expect(proxy.requests).toHaveLength(1)
+			abort.abort()
+			await pending
+		} finally {
+			await proxy.stop()
+		}
+	})
+})
+
+describe('constructProvider', () => {
+	it('constructs the provider class over the options', () => {
+		const provider = constructProvider({ model: 'test-model' })
+
+		expect(provider).toBeInstanceOf(OllamaProvider)
+		expect(provider.name).toBe('ollama')
+	})
+})
+
+describe('readFirstRequest', () => {
+	it('returns the first request a server captured and throws when it captured none', () => {
+		const first = buildRecordedRequest({ n: 1 })
+		const second = buildRecordedRequest({ n: 2 })
+		const empty = { url: 'http://127.0.0.1:1', requests: [], stop: () => Promise.resolve() }
+		const held = { ...empty, requests: [first, second] }
+
+		expect(readFirstRequest(held)).toBe(first)
+		expect(() => readFirstRequest(empty)).toThrow('no recorded request')
+	})
+})
+
+describe('SCENARIO_PROVIDER', () => {
+	it('holds the short deterministic call every single-request wire scenario sends', () => {
+		expect(SCENARIO_PROVIDER).toEqual({
+			model: 'test-model',
+			options: { num_predict: 8, temperature: 0 },
+		})
+		expect(SCENARIO_PROVIDER.options).toEqual(SHORT_OPTIONS)
+		expect(Object.isFrozen(SCENARIO_PROVIDER)).toBe(true)
+		expect(Object.isFrozen(SCENARIO_PROVIDER.options)).toBe(true)
+	})
+})
+
 describe('drive', () => {
 	it('separates content deltas from thinking deltas and hands back the settled result', async () => {
 		const driven = await drive(driveScript(DRIVEN_DELTAS, DRIVEN_RESULT))
@@ -446,7 +875,7 @@ describe('WEATHER_TOOL', () => {
 
 describe('insatiableResult', () => {
 	it('names its own chunk, the shared total, and the next chunk on every line', () => {
-		for (let chunk = 1; chunk <= INSATIABLE_TOOL_CHUNKS; chunk += 1) {
+		for (const chunk of Array.from({ length: INSATIABLE_TOOL_CHUNKS }, (_, index) => index + 1)) {
 			const line = insatiableResult(chunk)
 
 			expect(line).toContain(`Chunk ${chunk} of ${INSATIABLE_TOOL_CHUNKS}`)
@@ -489,10 +918,76 @@ describe('readRequest', () => {
 
 describe('buildRelayRoute', () => {
 	it('registers the authenticated inference route both server fixtures mount', () => {
-		const route = buildRelayRoute(createOllama({ model: 'fixture-model' }), [])
+		const route = buildRelayRoute(createOllama({ model: 'fixture-model' }), new RequestLog())
 
 		expect(route.method).toBe('POST')
 		expect(route.path).toBe('/inference')
+	})
+
+	it('appends every inbound request, accepted or refused, to the log it was given', async () => {
+		const daemon = createRecordingTransport(
+			createStreamingTransport(['{"message":{"content":"answer"}}\n']),
+		)
+		const log = new RequestLog()
+		const dispatcher = createDispatcher<Record<string, never>>()
+		dispatcher.add(
+			buildRelayRoute(createOllama({ model: 'fixture-model', fetch: daemon.fetch }), log),
+		)
+		const body = { messages: [{ id: 'question', role: 'user', content: 'Hello' }] }
+		const text = JSON.stringify(body)
+
+		const accepted = await dispatcher.handle(
+			new Request('http://127.0.0.1/inference', {
+				method: 'POST',
+				headers: { authorization: OBFUSCATED, 'content-type': 'application/json' },
+				body: text,
+			}),
+			{},
+		)
+		const refused = await dispatcher.handle(
+			new Request('http://127.0.0.1/inference', {
+				method: 'POST',
+				headers: { authorization: `${OBFUSCATED}-wrong`, 'content-type': 'application/json' },
+				body: text,
+			}),
+			{},
+		)
+
+		expect(accepted.status).toBe(200)
+		expect(refused.status).toBe(401)
+		expect(log.entries).toEqual([
+			{
+				method: 'POST',
+				path: '/inference',
+				headers: { authorization: OBFUSCATED, 'content-type': 'application/json' },
+				body,
+				text,
+			},
+			{
+				method: 'POST',
+				path: '/inference',
+				headers: { authorization: `${OBFUSCATED}-wrong`, 'content-type': 'application/json' },
+				body,
+				text,
+			},
+		])
+		// The refusal never entered the provider, so only the accepted request reached the daemon.
+		expect(daemon.requests).toHaveLength(1)
+	})
+
+	it('appends through a log it does not own, so each route reports to the log it was built with', async () => {
+		const first = new RequestLog()
+		const second = new RequestLog()
+		const dispatcher = createDispatcher<Record<string, never>>()
+		dispatcher.add(buildRelayRoute(createOllama({ model: 'fixture-model' }), first))
+
+		await dispatcher.handle(
+			new Request('http://127.0.0.1/inference', { method: 'POST', body: '{}' }),
+			{},
+		)
+
+		expect(first.entries.map((entry) => entry.path)).toEqual(['/inference'])
+		expect(second.entries).toEqual([])
 	})
 })
 
@@ -544,13 +1039,43 @@ describe('buildImportMap', () => {
 		}
 	})
 
+	it('lets the root package replace an installed entry of the same name', () => {
+		const scratch = createScratch({
+			files: {
+				'package.json': JSON.stringify({
+					name: '@orkestrel/alpha',
+					exports: { '.': { import: { default: './dist/src/core/index.js' } } },
+				}),
+				'node_modules/@orkestrel/alpha/package.json': JSON.stringify({
+					name: '@orkestrel/alpha',
+					exports: { '.': { import: { default: './installed/index.js' } } },
+				}),
+				'node_modules/@orkestrel/omega/package.json': JSON.stringify({
+					name: '@orkestrel/omega',
+					exports: { '.': { import: { default: './dist/src/core/index.js' } } },
+				}),
+			},
+		})
+		try {
+			const map = buildImportMap(scratch.path)
+
+			expect(map).toEqual({
+				'@orkestrel/alpha': `${DIST_PATH}/src/core/index.js`,
+				'@orkestrel/omega': `${MODULES_PATH}/omega/dist/src/core/index.js`,
+			})
+			expect(Object.isFrozen(map)).toBe(true)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
 	it('maps this workspace and the closure its page imports', () => {
 		const map = buildImportMap(WORKSPACE_ROOT)
 
 		// Membership, not a total: the installed tree grows, and what this proof needs is that
 		// every specifier the served page imports resolves.
 		expect(map['@orkestrel/ollama']).toBe(`${DIST_PATH}/src/core/index.js`)
-		for (const name of ['agent', 'tool', 'ndjson', 'contract', 'budget']) {
+		for (const name of IMPORT_MAP_PACKAGES) {
 			expect(map[`@orkestrel/${name}`]).toBe(`${MODULES_PATH}/${name}/dist/src/core/index.js`)
 		}
 	})
@@ -564,6 +1089,20 @@ describe('PAGE_DOCUMENT', () => {
 		// `tests/service/page.test.ts` reads the operation table out of the real browser.
 		expect(PAGE_DOCUMENT).toContain(JSON.stringify(PAGE_TOOL))
 		expect(PAGE_DOCUMENT).toContain('globalThis.ready = true')
+	})
+})
+
+describe('PAGE_OPERATIONS', () => {
+	it('names each operation the served page declares as a method of its parked table', () => {
+		// A presence guard: `tests/service/page.test.ts` reads the table out of the real browser and
+		// compares it with this list, so the list is what the live page is measured against.
+		const declared = PAGE_DOCUMENT.split('\n').flatMap((line) => {
+			const method = /^\t\t(?:async )?(\w+)\(/u.exec(line)?.[1]
+			return method === undefined ? [] : [method]
+		})
+
+		expect(PAGE_OPERATIONS).toEqual(declared)
+		expect(Object.isFrozen(PAGE_OPERATIONS)).toBe(true)
 	})
 })
 
@@ -833,7 +1372,7 @@ describe('releasePageAttempt', () => {
 			Promise.resolve({ destroy: () => Promise.resolve(destroyed.handler()) }),
 			500,
 		)
-		expect(destroyed.count).toBe(1)
+		expect(destroyed.calls).toEqual([[]])
 
 		// An acquisition that rejected released whatever it took on its own way out, so there is
 		// nothing here to release and its failure is the caller's to report, not this one's.
@@ -892,7 +1431,7 @@ describe('boundPageAttempt', () => {
 				},
 			),
 		).toBe('the page answered')
-		expect(destroyed.count).toBe(1)
+		expect(destroyed.calls).toEqual([[]])
 		// One deadline reaches the acquisition and the observation, so a wait either of them
 		// parks on ends at the attempt's deadline rather than at its own budget.
 		expect(signals[0]).toBe(signals[1])
@@ -909,7 +1448,7 @@ describe('boundPageAttempt', () => {
 			(thrown: unknown) => thrown,
 		)
 		expect(describeFailure(refused)).toBe('the page reported a fault')
-		expect(failed.count).toBe(1)
+		expect(failed.calls).toEqual([[]])
 	})
 
 	it('reports its allowance when a call that took the attempt signal rejects with its reason', async () => {
@@ -933,7 +1472,7 @@ describe('boundPageAttempt', () => {
 		const reason = aborted.cause
 		if (!isError(reason)) throw new Error('the attempt reported no abort reason')
 		expect(reason.name).toBe('TimeoutError')
-		expect(released.count).toBe(1)
+		expect(released.calls).toEqual([[]])
 	})
 
 	it('reports its allowance and the browser it stranded when the acquisition never settles', async () => {
@@ -984,7 +1523,7 @@ describe('boundPageAttempt', () => {
 			(thrown: unknown) => thrown,
 		)
 		expect(describeFailure(delayed)).toBe('the page attempt exceeded its 30 ms allowance')
-		expect(late.count).toBe(1)
+		expect(late.calls).toEqual([[]])
 	})
 
 	it('reports a release that parks past its share instead of waiting on it', async () => {
@@ -1104,7 +1643,7 @@ describe('PAGE_INTERVALS', () => {
 		expect(PAGE_INTERVALS.hold).toBeLessThan(PAGE_BOUNDS.release)
 		// Every control asserts its elapsed call against its own allowance plus that share, and
 		// runs under the case bound, so each pair fits the case.
-		for (const allowance of [PAGE_INTERVALS.launch, PAGE_INTERVALS.observe, PAGE_INTERVALS.late]) {
+		for (const allowance of PAGE_ALLOWANCES) {
 			expect(allowance + PAGE_BOUNDS.release).toBeLessThanOrEqual(PAGE_BOUNDS.case)
 		}
 		expect(Object.isFrozen(PAGE_INTERVALS)).toBe(true)
@@ -1214,13 +1753,12 @@ describe('the page session release order', () => {
 		// browser, then stop the fixture — leaves a real listener bound when the first release
 		// rejects, which is the defect the registry exists to close.
 		const stranded = await createPageFixture({ document: PAGE_DOCUMENT })
-		let sequential: unknown
-		try {
-			await Promise.reject(new Error('the browser refused to be released'))
-			await stranded.stop()
-		} catch (failure) {
-			sequential = failure
-		}
+		const sequential = await Promise.reject(new Error('the browser refused to be released'))
+			.then(() => stranded.stop())
+			.then(
+				() => undefined,
+				(failure: unknown) => failure,
+			)
 		expect(String(sequential)).toContain('the browser refused to be released')
 		expect((await fetch(stranded.url)).status).toBe(200)
 		await stranded.stop()
@@ -1253,13 +1791,13 @@ describe('the page session release order', () => {
 		const fixture = await createPageFixture({ document: PAGE_DOCUMENT })
 		teardown.add(() => fixture.stop())
 		const { url } = fixture
-		let acquired: unknown
-		try {
-			await Promise.reject(new Error('the port reservation failed'))
-		} catch (failure) {
-			acquired = failure
-			await Promise.allSettled([teardown.destroy()])
-		}
+		const acquired = await Promise.reject(new Error('the port reservation failed')).then(
+			() => undefined,
+			async (failure: unknown) => {
+				await Promise.allSettled([teardown.destroy()])
+				return failure
+			},
+		)
 
 		expect(String(acquired)).toContain('the port reservation failed')
 		await expect(fetch(url)).rejects.toThrow('fetch failed')
@@ -1282,6 +1820,23 @@ describe('reservePort', () => {
 			})
 		} finally {
 			await new Promise<void>((resolve) => taken.close(() => resolve()))
+		}
+	})
+
+	it('hands out a port other than one a listener holds, so it is not a fixed number', async () => {
+		const held = createNetServer()
+		try {
+			const first = await reservePort()
+			await new Promise<void>((resolve, reject) => {
+				held.on('error', reject)
+				held.listen(first, '127.0.0.1', resolve)
+			})
+
+			const second = await reservePort()
+
+			expect(second).not.toBe(first)
+		} finally {
+			await new Promise<void>((resolve) => held.close(() => resolve()))
 		}
 	})
 })
@@ -1361,5 +1916,2575 @@ describe('buildUncachedResponse', () => {
 		expect(missing.headers.get('cache-control')).toBe('no-store')
 		expect(missing.headers.get('content-type')).toBe('text/html; charset=utf-8')
 		expect(await missing.text()).toBe('<h1>Not found</h1>')
+	})
+})
+
+describe('CallCounter', () => {
+	it('numbers each call from one and reports how many it numbered', () => {
+		const calls = new CallCounter()
+
+		expect(calls.count).toBe(0)
+		expect([calls.next(), calls.next(), calls.next()]).toEqual([1, 2, 3])
+		expect(calls.count).toBe(3)
+		// Each counter owns its own tally.
+		expect(new CallCounter().next()).toBe(1)
+	})
+})
+
+describe('RequestLog', () => {
+	it('appends records in order and shows a later append through an earlier read', () => {
+		const log = new RequestLog()
+		const earlier = log.entries
+		const first: RecordedRequest = { method: 'GET', path: '/a', headers: {}, body: {}, text: '' }
+		const second: RecordedRequest = {
+			method: 'POST',
+			path: '/b',
+			headers: { 'x-trace': 'log' },
+			body: { n: 1 },
+			text: '{"n":1}',
+		}
+
+		log.add(first)
+		log.add(second)
+
+		expect(earlier).toEqual([first, second])
+		expect(log.entries).toEqual([first, second])
+		expect(new RequestLog().entries).toEqual([])
+	})
+
+	it('builds the relay route at the inference path', () => {
+		const route = new RequestLog().relay(createOllama({ model: 'fixture-model' }))
+
+		expect(route.method).toBe('POST')
+		expect(route.path).toBe('/inference')
+	})
+})
+
+describe('RecordingServer', () => {
+	it('exposes the log it was given, keeps its address after stop, and aborts parked work on stop', async () => {
+		const log = new RequestLog()
+		const parked = new AbortController()
+		const server = createServer({
+			dispatcher: createDispatcher<Record<string, never>>(),
+			state: () => ({}),
+			host: '127.0.0.1',
+		})
+		const recording = new RecordingServer(log, server, await server.start(), parked)
+		const { url } = recording
+		const record: RecordedRequest = { method: 'GET', path: '/a', headers: {}, body: {}, text: '' }
+		log.add(record)
+
+		expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/)
+		expect(recording.requests).toEqual([record])
+		expect(parked.signal.aborted).toBe(false)
+
+		await recording.stop()
+
+		expect(parked.signal.aborted).toBe(true)
+		expect(recording.url).toBe(url)
+		await expect(fetch(url)).rejects.toThrow('fetch failed')
+	})
+})
+
+describe('PageObserver', () => {
+	it('retains each report in hook order and shows a later report through an earlier read', () => {
+		const observer = new PageObserver()
+		const { requests, errors, messages } = observer
+		const request: BrowserRequest = {
+			id: 'request-1',
+			loader: undefined,
+			frame: undefined,
+			url: 'http://127.0.0.1/control',
+			method: 'GET',
+			headers: {},
+			post: undefined,
+			resource: undefined,
+			timestamp: undefined,
+			walltime: undefined,
+			redirect: undefined,
+		}
+		const failed: BrowserPageError = { message: 'first fault', stack: [], timestamp: 1 }
+		const refused: BrowserPageError = { message: 'second fault', stack: [], timestamp: 2 }
+		const logged: BrowserConsoleMessage = {
+			level: 'error',
+			text: 'logged',
+			values: [],
+			timestamp: 3,
+			stack: [],
+		}
+
+		observer.on.error(failed)
+		observer.on.request(request)
+		observer.on.console(logged)
+		observer.on.error(refused)
+
+		expect(requests).toEqual([request])
+		expect(errors).toEqual([failed, refused])
+		expect(messages).toEqual([logged])
+		expect(new PageObserver().errors).toEqual([])
+	})
+})
+
+describe('findFileText', () => {
+	it('reads a file as text and reports every failed read as undefined', () => {
+		const scratch = createScratch({
+			files: { 'entry.js': 'export const value = 1\n', 'empty.js': '', 'nested/inner.js': 'x' },
+		})
+		try {
+			expect(findFileText(join(scratch.path, 'entry.js'))).toBe('export const value = 1\n')
+			expect(findFileText(join(scratch.path, 'empty.js'))).toBe('')
+			expect(findFileText(join(scratch.path, 'absent.js'))).toBeUndefined()
+			// A directory is a failed read too, which is what `serveFile` answers `404` for.
+			expect(findFileText(join(scratch.path, 'nested'))).toBeUndefined()
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('fetchUpstream', () => {
+	it('forwards the body and headers, returns the upstream response, and reports an abort as undefined', async () => {
+		const upstream = await createChatUpstream(() =>
+			Promise.resolve(new Response('pong', { status: 202 })),
+		)
+		try {
+			const request = new Request('http://127.0.0.1/api/chat', {
+				method: 'POST',
+				headers: { 'x-trace': 'forward-case' },
+				body: '{"n":1}',
+			})
+
+			const answered = await fetchUpstream(
+				upstream.url,
+				request,
+				'{"n":1}',
+				new AbortController().signal,
+			)
+
+			expect(answered?.status).toBe(202)
+			expect(await answered?.text()).toBe('pong')
+			expect(upstream.requests).toMatchObject([
+				{ headers: { 'x-trace': 'forward-case' }, text: '{"n":1}' },
+			])
+			// The proxy stopping and the inbound request cancelling both end the call as an abort,
+			// and neither reaches the upstream.
+			const parked = new AbortController()
+			parked.abort()
+			expect(await fetchUpstream(upstream.url, request, '{"n":1}', parked.signal)).toBeUndefined()
+			const cancelled = new Request('http://127.0.0.1/api/chat', {
+				method: 'POST',
+				body: '{}',
+				signal: AbortSignal.abort(),
+			})
+			expect(
+				await fetchUpstream(upstream.url, cancelled, '{}', new AbortController().signal),
+			).toBeUndefined()
+			expect(upstream.requests).toHaveLength(1)
+		} finally {
+			await upstream.stop()
+		}
+	})
+
+	it('rethrows a failure that is not an abort', async () => {
+		const request = new Request('http://127.0.0.1/api/chat', { method: 'POST', body: '{}' })
+
+		await expect(
+			fetchUpstream('http://127.0.0.1:1', request, '{}', new AbortController().signal),
+		).rejects.toThrow('fetch failed')
+	})
+})
+
+describe('createChatUpstream', () => {
+	it('records each chat body, hands the reply the request signal, and releases its port on stop', async () => {
+		const signals = createRecorder<readonly [AbortSignal]>()
+		const upstream = await createChatUpstream((signal) => {
+			signals.handler(signal)
+			return Promise.resolve(new Response('pong', { status: 201 }))
+		})
+		const first = await fetch(`${upstream.url}/api/chat`, { method: 'POST', body: '{"n":1}' })
+		const second = await fetch(`${upstream.url}/api/chat`, { method: 'POST', body: '{"n":2}' })
+
+		expect(first.status).toBe(201)
+		expect(await first.text()).toBe('pong')
+		expect(await second.text()).toBe('pong')
+		expect(
+			upstream.requests.map((request) => [request.method, request.path, request.text]),
+		).toEqual([
+			['POST', '/api/chat', '{"n":1}'],
+			['POST', '/api/chat', '{"n":2}'],
+		])
+		expect(signals.calls).toEqual([[expect.any(AbortSignal)], [expect.any(AbortSignal)]])
+
+		const { url } = upstream
+		await upstream.stop()
+
+		await expect(fetch(`${url}/api/chat`, { method: 'POST', body: '{}' })).rejects.toThrow(
+			'fetch failed',
+		)
+	})
+})
+
+describe('executeFence', () => {
+	it('runs the text as an async body and returns the binding it names', async () => {
+		expect(await executeFence('const value: number = 1 + 2', {}, {}, 'value')).toBe(3)
+		expect(await executeFence('const value = await Promise.resolve(5)', {}, {}, 'value')).toBe(5)
+		expect(await executeFence('const seen = marker', {}, { marker: 'x' }, 'seen')).toBe('x')
+		expect(await executeFence('const list = [1] as const', {}, {}, 'list')).toEqual([1])
+	})
+
+	it('binds each named import to the export the proof supplies and keeps its order of effect', async () => {
+		expect(
+			await executeFence(
+				"import { a as b, c } from 'mod'\nconst total = b + c",
+				{ mod: { a: 40, c: 2 } },
+				{},
+				'total',
+			),
+		).toBe(42)
+	})
+
+	it('removes a type import and keeps the fence valid without a binding for it', async () => {
+		expect(
+			await executeFence("import type { Shape } from 'types'\nconst value = 1", {}, {}, 'value'),
+		).toBe(1)
+	})
+
+	it('refuses an import from a module, a name, or a form the proof does not supply', async () => {
+		await expect(executeFence("import { a } from 'mod'", {}, {}, 'a')).rejects.toThrow(
+			'the fence imports mod, which the proof supplies no bindings for',
+		)
+		await expect(
+			executeFence("import { b } from 'mod'", { mod: { a: 1 } }, {}, 'b'),
+		).rejects.toThrow('the fence imports a name mod supplies no binding for')
+		await expect(
+			executeFence("import * as all from 'mod'", { mod: {} }, {}, 'all'),
+		).rejects.toThrow('the fence imports mod in a form the proof cannot bind')
+		await expect(executeFence("import value from 'mod'", { mod: {} }, {}, 'value')).rejects.toThrow(
+			'the fence imports mod in a form the proof cannot bind',
+		)
+	})
+
+	it('reports a dropped import where the fence uses the name, and a fence that throws', async () => {
+		await expect(executeFence('const value = absent', {}, {}, 'value')).rejects.toThrow(
+			ReferenceError,
+		)
+		await expect(executeFence("throw new RangeError('refused')", {}, {}, 'unused')).rejects.toThrow(
+			RangeError,
+		)
+		await expect(executeFence('const = 1', {}, {}, 'unused')).rejects.toThrow(/./)
+	})
+})
+
+describe('createFenceModules and runWithFetch', () => {
+	it('binds the real factory, the real guard, and the real abort factory, reporting each entity it makes', async () => {
+		const made = createRecorder<readonly [AbortInterface]>()
+		const modules = createFenceModules(made.handler)
+
+		expect(Object.keys(modules).sort()).toEqual([
+			'@orkestrel/abort',
+			'@orkestrel/agent',
+			'@orkestrel/ollama',
+		])
+		const abort = await executeFence(
+			"import { createAbort } from '@orkestrel/abort'\nconst made = createAbort()",
+			modules,
+			{},
+			'made',
+		)
+
+		expect(made.calls).toHaveLength(1)
+		expect(made.calls[0]?.[0]).toBe(abort)
+		expect(made.calls[0]?.[0].signal.aborted).toBe(false)
+		expect(
+			await runWithFetch(createStreamingTransport(HELLO_TURN), () =>
+				executeFence(
+					"import { createOllama } from '@orkestrel/ollama'\nconst provider = createOllama({ model: 'm' })\nconst result = await provider.generate([{ id: '1', role: 'user', content: 'x' }], new AbortController().signal)\nconst content = result.content",
+					modules,
+					{},
+					'content',
+				),
+			),
+		).toBe('Hello')
+	})
+
+	it('lets a transport the fence supplies take the place of the one the proof installs', async () => {
+		const modules = createFenceModules(() => {})
+
+		await expect(
+			runWithFetch(createStreamingTransport(HELLO_TURN), () =>
+				executeFence(
+					"import { createOllama } from '@orkestrel/ollama'\nconst provider = createOllama({ model: 'm', fetch: () => Promise.reject(new Error('fence transport refused')) })\nconst result = await provider.generate([{ id: '1', role: 'user', content: 'x' }], new AbortController().signal)",
+					modules,
+					{},
+					'result',
+				),
+			),
+		).rejects.toThrow('fence transport refused')
+	})
+
+	it('installs the transport as the global fetch for the run and restores it after, even when the run throws', async () => {
+		const original = globalThis.fetch
+		const transport = createStreamingTransport([])
+
+		expect(
+			await runWithFetch(transport, () => Promise.resolve(globalThis.fetch === transport)),
+		).toBe(true)
+		expect(globalThis.fetch).toBe(original)
+		await expect(
+			runWithFetch(transport, () => Promise.reject(new RangeError('run refused'))),
+		).rejects.toThrow('run refused')
+		expect(globalThis.fetch).toBe(original)
+	})
+})
+
+describe('createErrorTransport and extractFenceError', () => {
+	it('answers every request with the status and the body it was given', async () => {
+		const transport = createErrorTransport(404, '{"error":"not found"}')
+
+		const first = await transport('http://127.0.0.1:1/api/chat')
+		const second = await transport('http://127.0.0.1:1/api/chat')
+
+		expect([first.status, await first.text()]).toEqual([404, '{"error":"not found"}'])
+		expect(second.status).toBe(404)
+		expect(first.headers.get('content-type')).toBe('application/json')
+	})
+
+	it('reads an error by name, message, code, and status, and any other value as a thrown string', () => {
+		const refused = Object.assign(new RangeError('daemon refused'), { code: 'HTTP', status: 404 })
+
+		expect(extractFenceError(refused)).toEqual({
+			name: 'RangeError',
+			message: 'daemon refused',
+			code: 'HTTP',
+			status: 404,
+		})
+		expect(extractFenceError(new Error('plain'))).toEqual({
+			name: 'Error',
+			message: 'plain',
+			code: undefined,
+			status: undefined,
+		})
+		expect(extractFenceError('gone')).toEqual({
+			name: 'Thrown',
+			message: 'gone',
+			code: undefined,
+			status: undefined,
+		})
+	})
+})
+
+describe('extractStreamFences and readStreamFences', () => {
+	it('extract the guide fence whole and the README usage fence followed by its streaming fence', () => {
+		const { guide, readme } = readStreamFences()
+
+		expect(guide.startsWith("import type { ProviderDelta } from '@orkestrel/agent'\n")).toBe(true)
+		expect(guide.endsWith('} else throw error\n}')).toBe(true)
+		expect(readme.startsWith("import { createAbort } from '@orkestrel/abort'\n")).toBe(true)
+		expect(readme).toContain("import type { ProviderDelta } from '@orkestrel/agent'")
+		expect(readme.endsWith('\tdeltas.push(step.value)\n}')).toBe(true)
+	})
+
+	it('throw when a text holds no block with the line that locates the fence', () => {
+		expect(() => extractStreamFences('', '')).toThrow('Missing streaming fence in the guide')
+		expect(() => extractStreamFences('```ts\nconst deltas: ProviderDelta[] = []\n```', '')).toThrow(
+			'Missing usage fence in the README',
+		)
+	})
+})
+
+describe('FENCE_CONTROLS', () => {
+	for (const control of FENCE_CONTROLS) {
+		it(`observes an edit that ${control.label}`, async () => {
+			const source = readStreamFences()[control.fence]
+			const scenario = requireValue(
+				STREAM_FENCE_CASES.find((candidate) => candidate.label === control.scenario),
+				'Missing scenario',
+			)
+			const edited = source.replace(control.pattern, control.replacement)
+
+			const original = await observeFence(source, scenario)
+			const [outcome] = await Promise.allSettled([observeFence(edited, scenario)])
+
+			expect(edited).not.toBe(source)
+			expect(outcome.status === 'fulfilled' ? outcome.value : outcome.reason).not.toEqual(original)
+		})
+	}
+
+	it('does not observe an edit that only reindents the fences', async () => {
+		const fences = readStreamFences()
+		const scenario = requireValue(
+			STREAM_FENCE_CASES.find((candidate) => candidate.label === FENCE_SCENARIOS.plain),
+			'Missing scenario',
+		)
+
+		for (const source of Object.values(fences)) {
+			const reindented = source.replaceAll('\t', '    ')
+
+			expect(reindented).not.toBe(source)
+			expect(await observeFence(reindented, scenario)).toEqual(await observeFence(source, scenario))
+		}
+	})
+
+	it('observes the real fences exactly as the scenarios state', async () => {
+		const fences = readStreamFences()
+
+		for (const scenario of STREAM_FENCE_CASES) {
+			expect(await observeFence(fences.guide, scenario)).toEqual(
+				buildFenceObservation(scenario, 'guide'),
+			)
+		}
+		for (const scenario of STREAM_FENCE_CASES.filter(
+			(candidate) => candidate.settled !== undefined,
+		)) {
+			expect(await observeFence(fences.readme, scenario)).toEqual(
+				buildFenceObservation(scenario, 'readme'),
+			)
+		}
+	})
+
+	it('leaves the global fetch as it found it after a fence ran', async () => {
+		const original = globalThis.fetch
+		const fences = readStreamFences()
+
+		await observeFence(fences.guide, requireValue(STREAM_FENCE_CASES[0], 'Missing scenario'))
+
+		expect(globalThis.fetch).toBe(original)
+	})
+})
+
+describe('ScriptCursor', () => {
+	it('takes the messages in order and then nothing past the end', () => {
+		const cursor = new ScriptCursor([{ content: 'first' }, { content: 'second' }])
+
+		expect(cursor.take()).toEqual({ content: 'first' })
+		expect(cursor.take()).toEqual({ content: 'second' })
+		expect(cursor.take()).toBeUndefined()
+		expect(cursor.take()).toBeUndefined()
+	})
+
+	it('moves past a hole as past any other turn', () => {
+		const script = new Array<Readonly<Record<string, unknown>>>(2)
+		script[1] = { content: 'second' }
+		const cursor = new ScriptCursor(script)
+
+		expect(cursor.take()).toBeUndefined()
+		expect(cursor.take()).toEqual({ content: 'second' })
+	})
+
+	it('stays at an element whose read throws and reads it again', () => {
+		const script = [{ content: 'first' }]
+		Object.defineProperty(script, 0, {
+			get: () => {
+				throw new RangeError('element refused')
+			},
+		})
+		const cursor = new ScriptCursor(script)
+
+		expect(() => cursor.take()).toThrow(RangeError)
+		expect(() => cursor.take()).toThrow(RangeError)
+	})
+})
+
+describe('createScriptedTransport', () => {
+	it('answers the n-th request with the n-th scripted message and names the script length past its end', async () => {
+		const transport = createScriptedTransport([{ content: 'first' }, { content: 'second' }])
+
+		const first = await transport('http://127.0.0.1/api/chat')
+		const second = await transport('http://127.0.0.1/api/chat')
+
+		expect(await first.text()).toBe(
+			`${JSON.stringify({ message: { content: 'first' } })}\n${DONE_RECORD}`,
+		)
+		expect(await second.text()).toBe(
+			`${JSON.stringify({ message: { content: 'second' } })}\n${DONE_RECORD}`,
+		)
+		await expect(transport('http://127.0.0.1/api/chat')).rejects.toThrow('the script holds 2 turns')
+		await expect(transport('http://127.0.0.1/api/chat')).rejects.toThrow('the script holds 2 turns')
+	})
+
+	it('reads the same element again on the call after the read of an element throws', () => {
+		const reads = createRecorder<[index: number]>()
+		const script = [{ content: 'first' }, { content: 'second' }]
+		Object.defineProperty(script, 0, {
+			get: () => {
+				reads.handler(0)
+				throw new RangeError('element refused')
+			},
+		})
+		const transport = createScriptedTransport(script)
+
+		expect(() => transport('http://127.0.0.1/api/chat')).toThrow(RangeError)
+		expect(() => transport('http://127.0.0.1/api/chat')).toThrow(RangeError)
+		expect(reads.calls).toEqual([[0], [0]])
+	})
+
+	it('rejects at a hole in the script and carries on with the turn after it', async () => {
+		// A literal cannot express the hole, so the fixture is written one key at a time.
+		const script = new Array<Readonly<Record<string, unknown>>>(3)
+		script[0] = { content: 'a' }
+		script[2] = { content: 'c' }
+		const transport = createScriptedTransport(script)
+
+		const first = await transport('http://127.0.0.1/api/chat')
+		await expect(transport('http://127.0.0.1/api/chat')).rejects.toThrow('the script holds 3 turns')
+		const third = await transport('http://127.0.0.1/api/chat')
+
+		expect(await first.text()).toBe(
+			`${JSON.stringify({ message: { content: 'a' } })}\n${DONE_RECORD}`,
+		)
+		expect(await third.text()).toBe(
+			`${JSON.stringify({ message: { content: 'c' } })}\n${DONE_RECORD}`,
+		)
+	})
+})
+
+describe('observePageAttempt', () => {
+	it('returns the observation untouched and releases the acquisition before it rethrows a failure', async () => {
+		const released = createRecorder()
+		const acquisition = Promise.resolve({ destroy: () => Promise.resolve(released.handler()) })
+		const bounds = { attempt: 500, release: 500 }
+
+		expect(
+			await observePageAttempt(bounds, AbortSignal.timeout(500), acquisition, () =>
+				Promise.resolve('the page answered'),
+			),
+		).toBe('the page answered')
+		expect(released.calls).toEqual([])
+
+		const fault = new Error('the page reported a fault')
+		await expect(
+			observePageAttempt(bounds, AbortSignal.timeout(500), acquisition, () =>
+				Promise.reject(fault),
+			),
+		).rejects.toBe(fault)
+		expect(released.calls).toEqual([[]])
+	})
+})
+
+describe('driveScript', () => {
+	it('yields the scripted deltas in order, then returns the result it was given by identity', async () => {
+		const result: ProviderResult = { content: 'ab', thinking: 'weighing it up' }
+		const stream = driveScript(
+			[
+				{ channel: 'content', text: 'a' },
+				{ channel: 'thinking', text: 'weighing it up' },
+			],
+			result,
+		)
+
+		expect(await stream.next()).toEqual({ done: false, value: { channel: 'content', text: 'a' } })
+		expect(await stream.next()).toEqual({
+			done: false,
+			value: { channel: 'thinking', text: 'weighing it up' },
+		})
+		const settled = await stream.next()
+		expect(settled.done).toBe(true)
+		expect(settled.value).toBe(result)
+	})
+
+	it('returns the result at once for an empty script', async () => {
+		const result: ProviderResult = { content: '' }
+
+		expect(await driveScript([], result).next()).toEqual({ done: true, value: result })
+	})
+})
+
+describe('SCHEDULE_SLACK', () => {
+	it('leaves room above the timer lead and stays far inside the bound a hung attempt would reach', () => {
+		expect(Number.isInteger(SCHEDULE_SLACK)).toBe(true)
+		expect(SCHEDULE_SLACK).toBeGreaterThan(TIMER_LEAD)
+		expect(SCHEDULE_SLACK).toBeLessThan(PAGE_BOUNDS.case)
+	})
+})
+
+describe('PAGE_NOTE, PAGE_INFERENCE_PATH, and PAGE_RUN', () => {
+	it('steer a run to the page tool with the note, on the path the relay route mounts, under the run deadline', () => {
+		const route = buildRelayRoute(createOllama({ model: 'fixture-model' }), new RequestLog())
+		const steering = `${PAGE_TOOL.name} tool with note "${PAGE_NOTE}"`
+
+		expect(PAGE_INFERENCE_PATH).toBe(route.path)
+		expect(Object.isFrozen(PAGE_RUN)).toBe(true)
+		expect(Object.keys(PAGE_RUN)).toEqual(['system', 'prompt', 'timeout', 'limit'])
+		expect(PAGE_RUN.system).toContain(steering)
+		expect(PAGE_RUN.prompt).toContain(steering)
+		expect(PAGE_RUN.timeout).toBe(PAGE_BOUNDS.run)
+		expect(Number.isInteger(PAGE_RUN.limit) && PAGE_RUN.limit > 0).toBe(true)
+	})
+})
+
+describe('PAGE_FAULT and PAGE_CAPITAL', () => {
+	it('name a fault the page can report and a city whose answer a model gives and a look-alike does not', () => {
+		expect(PAGE_FAULT).toBe('deliberate-page-fault')
+		expect(Object.isFrozen(PAGE_CAPITAL)).toBe(true)
+		expect(PAGE_CAPITAL.prompt).toContain('Japan')
+		expect(PAGE_CAPITAL.answer.test('Tokyo')).toBe(true)
+		expect(PAGE_CAPITAL.answer.test('tokyo.')).toBe(true)
+		expect(PAGE_CAPITAL.answer.test(PAGE_NOTE)).toBe(false)
+	})
+})
+
+describe('createPageSessionOptions', () => {
+	it('freezes the browser executable and the launch flags into the options a session acquires with', () => {
+		const options = createPageSessionOptions({
+			executable: '/opt/chrome/chrome',
+			engine: 'chromium',
+		})
+
+		expect(options).toEqual({ executable: '/opt/chrome/chrome', args: PAGE_BROWSER_ARGS })
+		expect(options.args).toBe(PAGE_BROWSER_ARGS)
+		expect(Object.isFrozen(options)).toBe(true)
+	})
+})
+
+describe('the fixture daemon constants', () => {
+	it('advertise one model and answer with one content, which the ordinary answers carry', () => {
+		expect(READY_TAGS).toEqual({ status: 200, models: [{ model: FIXTURE_MODEL }] })
+		expect(READY_CHAT).toEqual({ status: 200, content: FIXTURE_CONTENT, park: false })
+	})
+})
+
+describe('FixtureDaemon', () => {
+	it('answers the ordinary listing and chat, and records each route, chat body, and preflight origin in call order', async () => {
+		const daemon = new FixtureDaemon()
+		await daemon.start()
+		try {
+			const tags = await fetch(`${daemon.url}/api/tags`)
+			expect(tags.status).toBe(200)
+			expect(await tags.json()).toEqual({ models: [{ model: 'fixture-model:latest' }] })
+
+			const chat = await fetch(`${daemon.url}/api/chat`, {
+				method: 'POST',
+				body: JSON.stringify({ model: 'fixture-model:latest', stream: false }),
+			})
+			expect(chat.status).toBe(200)
+			expect(await chat.json()).toEqual({
+				model: 'fixture-model:latest',
+				message: { role: 'assistant', content: 'The conversation covered two small-talk topics.' },
+				done: true,
+			})
+			// A body that is not a JSON record is served, and its route is recorded, but no body is.
+			await fetch(`${daemon.url}/api/chat`, { method: 'POST', body: '[1]' })
+
+			const refused = await fetch(`${daemon.url}/api/chat`, {
+				method: 'OPTIONS',
+				headers: { origin: 'http://page.example' },
+			})
+			expect(refused.status).toBe(403)
+			daemon.origins(['http://page.example'])
+			const allowed = await fetch(`${daemon.url}/api/chat`, {
+				method: 'OPTIONS',
+				headers: { origin: 'http://page.example' },
+			})
+			expect(allowed.status).toBe(204)
+			expect(allowed.headers.get('access-control-allow-origin')).toBe('http://page.example')
+			expect(allowed.headers.get('access-control-allow-methods')).toBe('POST,OPTIONS')
+			// A preflight carrying no origin is recorded as the empty origin and refused.
+			expect((await fetch(`${daemon.url}/api/chat`, { method: 'OPTIONS' })).status).toBe(403)
+
+			expect(daemon.calls).toEqual(['/api/tags', '/api/chat', '/api/chat'])
+			expect(daemon.chats).toEqual([{ model: 'fixture-model:latest', stream: false }])
+			expect(daemon.preflights).toEqual(['http://page.example', 'http://page.example', ''])
+		} finally {
+			await daemon.stop()
+		}
+	})
+
+	it('serves a replaced listing and chat answer until the ordinary one is restored', async () => {
+		const daemon = new FixtureDaemon()
+		await daemon.start()
+		try {
+			daemon.tags({ status: 503, models: [] })
+			const unavailable = await fetch(`${daemon.url}/api/tags`)
+			expect(unavailable.status).toBe(503)
+			expect(await unavailable.json()).toEqual({ models: [] })
+
+			daemon.chat({ status: 502, content: 'replaced', park: false })
+			const replaced = await fetch(`${daemon.url}/api/chat`, { method: 'POST', body: '{}' })
+			expect(replaced.status).toBe(502)
+			expect(await replaced.json()).toMatchObject({ message: { content: 'replaced' } })
+
+			daemon.tags(READY_TAGS)
+			daemon.chat(READY_CHAT)
+			expect((await fetch(`${daemon.url}/api/tags`)).status).toBe(200)
+			expect((await fetch(`${daemon.url}/api/chat`, { method: 'POST', body: '{}' })).status).toBe(
+				200,
+			)
+		} finally {
+			await daemon.stop()
+		}
+	})
+
+	it('parks a chat the answer marks parked and releases it as 499 when stop aborts it', async () => {
+		const daemon = new FixtureDaemon()
+		await daemon.start()
+		const { url } = daemon
+		daemon.chat({ status: 200, content: 'unused', park: true })
+		const pending = fetch(`${url}/api/chat`, { method: 'POST', body: '{}' })
+		await waitForCondition('the parked chat to reach the daemon', () => daemon.chats.length === 1)
+
+		const stopped = daemon.stop()
+
+		expect((await pending).status).toBe(499)
+		await stopped
+		await expect(fetch(`${url}/api/tags`)).rejects.toThrow('fetch failed')
+	})
+
+	it('hands out copies of its histories and refuses a url before it listens', async () => {
+		expect(() => new FixtureDaemon().url).toThrow('the fixture daemon is not listening')
+
+		const daemon = new FixtureDaemon()
+		await daemon.start()
+		try {
+			daemon.origins(['http://page.example'])
+			const before = { calls: daemon.calls, chats: daemon.chats, preflights: daemon.preflights }
+			await fetch(`${daemon.url}/api/tags`)
+			await fetch(`${daemon.url}/api/chat`, { method: 'POST', body: '{"n":1}' })
+			await fetch(`${daemon.url}/api/chat`, {
+				method: 'OPTIONS',
+				headers: { origin: 'http://page.example' },
+			})
+
+			expect(before).toEqual({ calls: [], chats: [], preflights: [] })
+			expect(daemon.calls).toEqual(['/api/tags', '/api/chat'])
+			expect(daemon.chats).toEqual([{ n: 1 }])
+			expect(daemon.preflights).toEqual(['http://page.example'])
+			expect(daemon.calls).not.toBe(daemon.calls)
+			expect(daemon.chats).not.toBe(daemon.chats)
+			expect(daemon.preflights).not.toBe(daemon.preflights)
+		} finally {
+			await daemon.stop()
+		}
+	})
+
+	it('keeps its address readable after stop and stops a second time without error', async () => {
+		const daemon = new FixtureDaemon()
+		await daemon.start()
+		const { url } = daemon
+		await daemon.stop()
+
+		expect(daemon.url).toBe(url)
+		await expect(daemon.stop()).resolves.toBeUndefined()
+		expect(daemon.url).toBe(url)
+		await expect(fetch(`${url}/api/tags`)).rejects.toThrow('fetch failed')
+	})
+
+	it('returns from a second stop at once, before the first has finished stopping the server', async () => {
+		const daemon = new FixtureDaemon()
+		await daemon.start()
+		const order = createRecorder<[label: string]>()
+
+		await Promise.all([
+			daemon.stop().then(() => order.handler('first')),
+			daemon.stop().then(() => order.handler('second')),
+		])
+
+		expect(order.calls).toEqual([['second'], ['first']])
+	})
+})
+
+describe('readLatestChat', () => {
+	it('returns the newest recorded chat body and throws when the daemon recorded none', async () => {
+		const daemon = new FixtureDaemon()
+		await daemon.start()
+		try {
+			expect(() => readLatestChat(daemon)).toThrow('the fixture daemon recorded no chat call')
+
+			await fetch(`${daemon.url}/api/chat`, { method: 'POST', body: '{"n":1}' })
+			await fetch(`${daemon.url}/api/chat`, { method: 'POST', body: '{"n":2}' })
+
+			expect(readLatestChat(daemon)).toEqual({ n: 2 })
+		} finally {
+			await daemon.stop()
+		}
+	})
+})
+
+describe('readChatMessages', () => {
+	it('returns the messages as records and throws for a body without a messages array of records', () => {
+		expect(readChatMessages({ messages: [{ role: 'user', content: 'hi' }] })).toEqual([
+			{ role: 'user', content: 'hi' },
+		])
+		expect(readChatMessages({ messages: [] })).toEqual([])
+		const refusal = 'the recorded chat carries no messages array'
+		expect(() => readChatMessages({})).toThrow(refusal)
+		expect(() => readChatMessages({ messages: 'nope' })).toThrow(refusal)
+		expect(() => readChatMessages({ messages: ['nope'] })).toThrow(refusal)
+	})
+})
+
+describe('isPositiveInteger', () => {
+	it('accepts whole numbers above zero and refuses every other value', () => {
+		expect(POSITIVE_INTEGERS.map((value) => isPositiveInteger(value))).toEqual(
+			POSITIVE_INTEGERS.map(() => true),
+		)
+		expect(NON_POSITIVE_INTEGERS.map((value) => isPositiveInteger(value))).toEqual(
+			NON_POSITIVE_INTEGERS.map(() => false),
+		)
+		expect(NON_POSITIVE_INTEGERS.some((value) => Object.is(value, NaN))).toBe(true)
+		expect(NON_POSITIVE_INTEGERS.some((value) => Object.is(value, -0))).toBe(true)
+	})
+})
+
+// The live page proof's gates. Each resolves on call, so the hermetic half asserted here
+// is each gate's refusal and the reading it returns against a fixture; the live half — a
+// real browser and a real build — is the `service` project's.
+
+describe('PAGE_BROWSER_ARGS', () => {
+	it('freezes the container-safe launch flags every page session takes', () => {
+		expect(Object.isFrozen(PAGE_BROWSER_ARGS)).toBe(true)
+		expect([...PAGE_BROWSER_ARGS]).toEqual([
+			'--no-sandbox',
+			'--disable-dev-shm-usage',
+			'--disable-gpu',
+		])
+	})
+})
+
+describe('requirePageBrowser', () => {
+	it('throws naming what to install when no candidate source resolves a browser', () => {
+		// Every candidate source is emptied, so this reads the refusal on any host rather
+		// than the host's own browser, and `npm test` never needs one.
+		expect(() => requirePageBrowser({ env: {}, paths: [], names: [], stores: [] })).toThrow(
+			/requires a Chromium-family browser on this host and found none/,
+		)
+		expect(() => requirePageBrowser({ env: {}, paths: [], names: [], stores: [] })).toThrow(
+			/PLAYWRIGHT_EXECUTABLE_PATH or CHROME_PATH/,
+		)
+	})
+})
+
+describe('requireBuild', () => {
+	it('resolves the built core entry, and throws naming the build when it is absent', () => {
+		const built = createScratch({ files: { 'dist/src/core/index.js': 'export const x = 1\n' } })
+		const bare = createScratch()
+		try {
+			expect(requireBuild(built.path)).toBe(join(built.path, 'dist', 'src', 'core', 'index.js'))
+			expect(() => requireBuild(bare.path)).toThrow(/run npm run build/)
+		} finally {
+			built.destroy()
+			bare.destroy()
+		}
+	})
+})
+
+describe('scanTreeReferences', () => {
+	it('collects the literal specifier of every import and re-export node, parents before children', () => {
+		const tree = {
+			type: 'Program',
+			body: [
+				{ type: 'ImportDeclaration', source: { type: 'Literal', value: './a.js' } },
+				{ type: 'ExportNamedDeclaration', source: { type: 'Literal', value: './b.js' } },
+				{ type: 'ExportAllDeclaration', source: { type: 'Literal', value: './c.js' } },
+				{
+					type: 'ExpressionStatement',
+					expression: { type: 'ImportExpression', source: { type: 'Literal', value: './d.js' } },
+				},
+			],
+		}
+
+		expect(scanTreeReferences(tree)).toEqual([
+			{ form: 'import', specifier: './a.js' },
+			{ form: 'export', specifier: './b.js' },
+			{ form: 'export', specifier: './c.js' },
+			{ form: 'dynamic', specifier: './d.js' },
+		])
+	})
+
+	it('skips a local export, reports a computed specifier without text, and skips a value that is not a tree', () => {
+		const tree = {
+			type: 'Program',
+			body: [
+				{ type: 'ExportNamedDeclaration', source: null },
+				{ type: 'ImportExpression', source: { type: 'Identifier', name: 'target' } },
+				{ type: 'ImportExpression', source: { type: 'Literal', value: 3 } },
+			],
+		}
+
+		expect(scanTreeReferences(tree)).toEqual([
+			{ form: 'dynamic', specifier: undefined },
+			{ form: 'dynamic', specifier: undefined },
+		])
+		expect(NOT_TREES.map((value) => scanTreeReferences(value))).toEqual(NOT_TREES.map(() => []))
+	})
+
+	it('reaches a reference nested ten thousand levels deep without recursing', () => {
+		const deepest = {
+			type: 'ImportExpression',
+			source: { type: 'Literal', value: './deep.js' },
+		}
+		const tree = Array.from({ length: 10_000 }).reduce<unknown>(
+			(child) => ({ type: 'Wrapper', body: [child] }),
+			deepest,
+		)
+
+		expect(scanTreeReferences(tree)).toEqual([{ form: 'dynamic', specifier: './deep.js' }])
+	})
+
+	it('ends on a value that refers to itself and reports a shared node once', () => {
+		const shared = { type: 'ImportDeclaration', source: { type: 'Literal', value: './once.js' } }
+		const cyclic: Record<string, unknown> = { type: 'Program', body: [shared, shared] }
+		cyclic.parent = cyclic
+
+		expect(scanTreeReferences(cyclic)).toEqual([{ form: 'import', specifier: './once.js' }])
+	})
+})
+
+describe('buildModuleFixture', () => {
+	it('builds a setup module that reaches the bridge, the bridge that holds the reference, and the module it names', () => {
+		const fixture = buildModuleFixture(
+			'a bridge',
+			{ form: 'import', specifier: '../tests/setupService.js' },
+			"import '../tests/setupService.js'",
+		)
+
+		expect(fixture).toEqual({
+			label: 'a bridge',
+			reference: { form: 'import', specifier: '../tests/setupService.js' },
+			files: {
+				'tests/setupBridge.ts': "import '../src/bridge.js'\n",
+				'src/bridge.ts': "import '../tests/setupService.js'\n",
+				'tests/setupService.ts': 'export const live = true\n',
+			},
+			entries: ['tests/setupBridge.ts'],
+			importers: ['src/bridge.ts'],
+		})
+	})
+})
+
+describe('readModuleReferences', () => {
+	it('reads the references one node names and none from a node that names no module', () => {
+		const cases = buildReferenceCases()
+
+		expect(cases.map(([node]) => readModuleReferences(node))).toEqual(
+			cases.map(([, found]) => found),
+		)
+	})
+})
+
+describe('findModuleReferences', () => {
+	it('names the syntax of each reference form, with the specifier it spells', async () => {
+		const forms = MODULE_FIXTURES.flatMap((fixture) =>
+			fixture.reference === undefined ? [] : [{ fixture, reference: fixture.reference }],
+		)
+
+		expect(forms.map(({ reference }) => reference.form).sort()).toEqual([
+			'assign',
+			'dynamic',
+			'dynamic',
+			'export',
+			'glob',
+			'import',
+			'require',
+			'type',
+			'url',
+		])
+		for (const { fixture, reference } of forms) {
+			const bridge = fixture.files['src/bridge.ts']
+			if (bridge === undefined) throw new Error(`${fixture.label} holds no bridge`)
+
+			expect(await findModuleReferences(bridge)).toEqual([reference])
+		}
+	})
+
+	it('reads a glob given as a list', async () => {
+		expect(
+			await findModuleReferences(
+				"const a = import.meta.glob(['./a.ts', './b/*.ts'], { eager: true })",
+			),
+		).toEqual([
+			{ form: 'glob', specifier: './a.ts' },
+			{ form: 'glob', specifier: './b/*.ts' },
+		])
+	})
+
+	it('names the form of a reference built at run time and gives it no specifier', async () => {
+		expect(
+			await Promise.all(COMPUTED_REFERENCE_CASES.map(([text]) => findModuleReferences(text))),
+		).toEqual(COMPUTED_REFERENCE_CASES.map(([, found]) => found))
+	})
+
+	it('refuses text that is not TypeScript', async () => {
+		await expect(findModuleReferences('import { from ./x.js')).rejects.toThrow(/./)
+	})
+})
+
+describe('readSpecifierText', () => {
+	it('spells a string literal and a substitution-free template, and nothing else', () => {
+		const cases = buildSpecifierCases()
+
+		expect(cases.map(([node]) => readSpecifierText(node))).toEqual(cases.map(([, text]) => text))
+	})
+})
+
+describe('isIdentifierNamed and isImportMetaMember', () => {
+	it('match a bare identifier and a non-computed member of import.meta, and refuse look-alikes', () => {
+		const meta = {
+			type: 'MetaProperty',
+			meta: { type: 'Identifier', name: 'import' },
+			property: { type: 'Identifier', name: 'meta' },
+		}
+		const url = { type: 'Identifier', name: 'url' }
+
+		expect(isIdentifierNamed({ type: 'Identifier', name: 'require' }, 'require')).toBe(true)
+		expect(isIdentifierNamed({ type: 'Identifier', name: 'required' }, 'require')).toBe(false)
+		expect(isIdentifierNamed({ type: 'Literal', name: 'require' }, 'require')).toBe(false)
+		expect(isIdentifierNamed(undefined, 'require')).toBe(false)
+		expect(
+			isImportMetaMember(
+				{ type: 'MemberExpression', object: meta, property: url, computed: false },
+				'url',
+			),
+		).toBe(true)
+		expect(
+			isImportMetaMember(
+				{ type: 'MemberExpression', object: meta, property: url, computed: true },
+				'url',
+			),
+		).toBe(false)
+		expect(
+			isImportMetaMember(
+				{ type: 'MemberExpression', object: meta, property: url, computed: false },
+				'glob',
+			),
+		).toBe(false)
+		expect(
+			isImportMetaMember(
+				{
+					type: 'MemberExpression',
+					object: { ...meta, property: { type: 'Identifier', name: 'env' } },
+					property: url,
+					computed: false,
+				},
+				'url',
+			),
+		).toBe(false)
+		expect(
+			isImportMetaMember(
+				{
+					type: 'MemberExpression',
+					object: { type: 'Identifier', name: 'meta' },
+					property: url,
+					computed: false,
+				},
+				'url',
+			),
+		).toBe(false)
+		expect(isImportMetaMember(url, 'url')).toBe(false)
+	})
+})
+
+describe('buildReferences and listChildren', () => {
+	it('builds one reference per present node, in order, with no specifier for a node that spells no text, and lists only nested containers', () => {
+		expect(
+			buildReferences('glob', [
+				{ type: 'Literal', value: './a.ts' },
+				{ type: 'Identifier', name: 'held' },
+				undefined,
+				null,
+				{ type: 'Literal', value: './b.ts' },
+			]),
+		).toEqual([
+			{ form: 'glob', specifier: './a.ts' },
+			{ form: 'glob', specifier: undefined },
+			{ form: 'glob', specifier: './b.ts' },
+		])
+		expect(buildReferences('import', [])).toEqual([])
+		const inner = { value: 1 }
+		expect(listChildren({ a: inner, b: 'text', c: [1, 2], d: null })).toEqual([inner, [1, 2]])
+		expect(listChildren([inner, 'text', 3])).toEqual([inner])
+		expect(listChildren('text')).toEqual([])
+	})
+})
+
+describe('stripSpecifierSuffix, isAssetSpecifier, and normalizeSetupFile', () => {
+	it('drop the query and the hash from a specifier, and keep the path before them', () => {
+		expect(SPECIFIER_SUFFIX_CASES.map(([specifier]) => stripSpecifierSuffix(specifier))).toEqual(
+			SPECIFIER_SUFFIX_CASES.map(([, path]) => path),
+		)
+	})
+
+	it('call a specifier an asset only when its query asks for the text or the address', () => {
+		expect(ASSET_SPECIFIER_CASES.map(([specifier]) => isAssetSpecifier(specifier))).toEqual(
+			ASSET_SPECIFIER_CASES.map(([, asset]) => asset),
+		)
+		expect(ASSET_QUERIES).toEqual(['raw', 'url'])
+		expect(Object.isFrozen(ASSET_QUERIES)).toBe(true)
+	})
+
+	it('read a setup path as the root-relative path it names, with every backslash a separator', () => {
+		expect(NORMALIZE_SETUP_CASES.map(([value]) => normalizeSetupFile(value))).toEqual(
+			NORMALIZE_SETUP_CASES.map(([, path]) => path),
+		)
+	})
+
+	it('make an absolute path inside the root relative to it', () => {
+		const scratch = createScratch()
+		try {
+			const absolute = join(scratch.path, 'tests', 'setup.ts')
+
+			expect(normalizeSetupFile(absolute, scratch.path)).toBe('tests/setup.ts')
+			expect(normalizeSetupFile(`${absolute}?daemon`, scratch.path)).toBe('tests/setup.ts')
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('readRealPath', () => {
+	it('names a file by its path relative to the root, and by the letter case the host stores', () => {
+		const scratch = createScratch({ files: SETUP_FILES })
+		try {
+			const folded = attempt(() => readRealPath(scratch.path, 'tests/SETUPSERVICE.ts'))
+
+			expect(readRealPath(scratch.path, 'tests/setupService.ts')).toBe('tests/setupService.ts')
+			expect(readRealPath(scratch.path, 'tests/./setup.ts')).toBe('tests/setup.ts')
+			expect(folded.success ? folded.value : 'unresolved').toBe(
+				scratch.has('tests/SETUPSERVICE.ts') ? 'tests/setupService.ts' : 'unresolved',
+			)
+			expect(() => readRealPath(scratch.path, 'tests/missing.ts')).toThrow(/ENOENT/)
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('SERVICE_SPECIFIER, SERVICE_MODULE, CODE_EXTENSIONS, and SOURCE_TWINS', () => {
+	it('match the spelling of a module specifier that names the service module, and no other', () => {
+		expect(SERVICE_SPECIFIER_CASES.map(([specifier]) => SERVICE_SPECIFIER.test(specifier))).toEqual(
+			SERVICE_SPECIFIER_CASES.map(([, matches]) => matches),
+		)
+		expect(SERVICE_SPECIFIER.test(SERVICE_MODULE)).toBe(true)
+		expect(SERVICE_MODULE).toBe('tests/setupService.ts')
+	})
+
+	it('list the extensions a file is read as code by, and the TypeScript twins of the JavaScript ones', () => {
+		expect(CODE_EXTENSIONS).toEqual(['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs'])
+		expect(SOURCE_TWINS).toEqual({
+			'.js': ['.ts', '.tsx'],
+			'.jsx': ['.tsx'],
+			'.mjs': ['.mts'],
+			'.cjs': ['.cts'],
+		})
+		expect(
+			Object.keys(SOURCE_TWINS).every((extension) => CODE_EXTENSIONS.includes(extension)),
+		).toBe(true)
+		expect(
+			Object.values(SOURCE_TWINS).every((twins) =>
+				twins.every((twin) => CODE_EXTENSIONS.includes(twin)),
+			),
+		).toBe(true)
+		expect(Object.isFrozen(CODE_EXTENSIONS)).toBe(true)
+		expect(Object.isFrozen(SOURCE_TWINS)).toBe(true)
+	})
+})
+
+describe('buildComputedFixture and buildQueryFixture', () => {
+	it('build a bridge that holds a reference made at run time, refused when its form loads code', () => {
+		const loading = buildComputedFixture(
+			'a variable',
+			'dynamic',
+			'export const live = import(name)',
+		)
+		const naming = buildComputedFixture(
+			'a pattern',
+			'glob',
+			'export const live = import.meta.glob(p)',
+		)
+
+		expect(loading).toEqual({
+			label: 'a variable',
+			form: 'dynamic',
+			files: {
+				'tests/setupBridge.ts': "import '../src/bridge.js'\n",
+				'src/bridge.ts': 'export const live = import(name)\n',
+				'tests/setupService.ts': 'export const live = true\n',
+			},
+			entries: ['tests/setupBridge.ts'],
+			refused: ['src/bridge.ts'],
+		})
+		expect(naming.refused).toEqual([])
+		expect(LOADING_FORMS.map((form) => buildComputedFixture('x', form, '').refused)).toEqual(
+			LOADING_FORMS.map(() => ['src/bridge.ts']),
+		)
+	})
+
+	it('build a bridge that names the service module with a query, and no reference of a form', () => {
+		const fixture = buildQueryFixture('a query', "import '../tests/setupService.ts?daemon'", [
+			'src/bridge.ts',
+		])
+
+		expect(fixture).toEqual({
+			label: 'a query',
+			reference: undefined,
+			files: {
+				'tests/setupBridge.ts': "import '../src/bridge.js'\n",
+				'src/bridge.ts': "import '../tests/setupService.ts?daemon'\n",
+				'tests/setupService.ts': 'export const live = true\n',
+			},
+			entries: ['tests/setupBridge.ts'],
+			importers: ['src/bridge.ts'],
+		})
+	})
+})
+
+describe('readFirstStatement and buildFenceImport', () => {
+	it('reads the syntax tree node of the first statement, or none for an empty text', async () => {
+		expect(await readFirstStatement("import { a } from 'mod'")).toMatchObject({
+			type: 'ImportDeclaration',
+		})
+		expect(await readFirstStatement('const value = 1')).toMatchObject({
+			type: 'VariableDeclaration',
+		})
+		expect(await readFirstStatement('')).toBeUndefined()
+	})
+
+	it('binds each named import to the export the table supplies, under the local name the fence uses', async () => {
+		const node = await readFirstStatement("import { a as b, c } from 'mod'")
+
+		expect(buildFenceImport(node, { mod: { a: 1, c: 2 } })).toBe(
+			'const { a: b, c: c } = __modules["mod"]',
+		)
+	})
+
+	it('refuses an import whose module, name, or form the table does not supply', async () => {
+		const missing = await readFirstStatement("import { a } from 'mod'")
+		const absent = await readFirstStatement("import { b } from 'mod'")
+		const namespace = await readFirstStatement("import * as all from 'mod'")
+		const bare = await readFirstStatement('const value = 1')
+
+		expect(() => buildFenceImport(missing, {})).toThrow(
+			'the fence imports mod, which the proof supplies no bindings for',
+		)
+		expect(() => buildFenceImport(absent, { mod: { a: 1 } })).toThrow(
+			'the fence imports a name mod supplies no binding for',
+		)
+		expect(() => buildFenceImport(namespace, { mod: {} })).toThrow(
+			'the fence imports mod in a form the proof cannot bind',
+		)
+		expect(() => buildFenceImport(bare, { mod: {} })).toThrow(
+			'the fence holds an import the proof cannot read',
+		)
+		expect(() => buildFenceImport(undefined, {})).toThrow(
+			'the fence holds an import the proof cannot read',
+		)
+	})
+})
+
+describe('findServiceImports', () => {
+	it('finds a static, type, side-effect, re-export, multi-line, dynamic, template, assigned, required, and URL reference to the module', async () => {
+		expect(
+			await Promise.all(SERVICE_IMPORT_CASES.map(([text]) => findServiceImports(text))),
+		).toEqual(SERVICE_IMPORT_CASES.map(([, found]) => found))
+	})
+
+	it('reports every import in source order', async () => {
+		expect(
+			await findServiceImports(
+				"import { a } from './setupService.js'\nconst b = await import('../setupService.js')",
+			),
+		).toEqual(['./setupService.js', '../setupService.js'])
+	})
+
+	it('refuses text that is not TypeScript rather than reporting no import', async () => {
+		await expect(findServiceImports('import { from ./setupService.js')).rejects.toThrow(/./)
+	})
+
+	it('finds nothing in a name that only resembles the module, a comment, a string, or syntax that names no module', async () => {
+		expect(
+			await Promise.all(UNRELATED_IMPORT_CASES.map((text) => findServiceImports(text))),
+		).toEqual(UNRELATED_IMPORT_CASES.map(() => []))
+	})
+})
+
+describe('listSources', () => {
+	it('collects the included files without the excluded ones, sorted and in / form', () => {
+		const scratch = createScratch({
+			files: { 'b.ts': '', 'a/inner.ts': '', 'a/inner.test.ts': '', 'c.md': '' },
+		})
+		try {
+			expect(listSources(['**/*.ts'], ['**/*.test.ts'], scratch.path)).toEqual([
+				'a/inner.ts',
+				'b.ts',
+			])
+			expect(listSources(['**/*.ts'], [], scratch.path)).toEqual([
+				'a/inner.test.ts',
+				'a/inner.ts',
+				'b.ts',
+			])
+			expect(listSources(['absent/**'], [], scratch.path)).toEqual([])
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('listSetupFiles', () => {
+	it('reads one path or a list of paths as written, and nothing else', () => {
+		expect(listSetupFiles('./tests/setup.ts')).toEqual(['./tests/setup.ts'])
+		expect(listSetupFiles(['./tests/a.ts', 'tests/b.ts'])).toEqual(['./tests/a.ts', 'tests/b.ts'])
+		expect(NOT_SETUP_FILES.map((value) => listSetupFiles(value))).toEqual(
+			NOT_SETUP_FILES.map(() => []),
+		)
+	})
+})
+
+describe('listProjectSources', () => {
+	it('lists what a project collects without its exclusions, then the setup files it loads', () => {
+		const scratch = createScratch({
+			files: { 'tests/one.test.ts': '', 'tests/two.test.ts': '', 'tests/setup.ts': '' },
+		})
+		try {
+			expect(
+				listProjectSources(
+					{
+						include: ['tests/*.test.ts'],
+						exclude: ['tests/two.test.ts'],
+						setupFiles: ['./tests/setup.ts'],
+					},
+					scratch.path,
+				),
+			).toEqual(['tests/one.test.ts', 'tests/setup.ts'])
+			expect(listProjectSources({ include: ['tests/*.test.ts'] }, scratch.path)).toEqual([
+				'tests/one.test.ts',
+				'tests/two.test.ts',
+			])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('lists a setup file and a global setup file given as one path as it lists a list', () => {
+		const scratch = createScratch({ files: { 'tests/one.test.ts': '' } })
+		try {
+			expect(
+				listProjectSources(
+					{
+						include: ['tests/*.test.ts'],
+						setupFiles: './tests/setup.ts',
+						globalSetup: 'tests/global.ts',
+					},
+					scratch.path,
+				),
+			).toEqual(['tests/one.test.ts', 'tests/setup.ts', 'tests/global.ts'])
+			expect(
+				listProjectSources(
+					{ include: ['tests/*.test.ts'], globalSetup: ['./tests/a.ts', './tests/b.ts'] },
+					scratch.path,
+				),
+			).toEqual(['tests/one.test.ts', 'tests/a.ts', 'tests/b.ts'])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('lists a setup file written with backslashes, a dot segment, or a query as the root-relative path it names', () => {
+		const scratch = createScratch({ files: { 'tests/one.test.ts': '' } })
+		try {
+			expect(
+				listProjectSources(
+					{
+						include: ['tests/*.test.ts'],
+						setupFiles: ['.\\tests\\setup.ts', 'tests\\.\\other.ts?daemon'],
+						globalSetup: '.\\tests\\global.ts',
+					},
+					scratch.path,
+				),
+			).toEqual(['tests/one.test.ts', 'tests/setup.ts', 'tests/other.ts', 'tests/global.ts'])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('throws naming what is missing when the declaration is not a project with an include list', () => {
+		expect(() => listProjectSources(undefined)).toThrow(
+			'the project declares no test configuration',
+		)
+		expect(() => listProjectSources({ include: 'tests/*.test.ts' })).toThrow(
+			'the project declares no include list',
+		)
+		expect(() => listProjectSources({})).toThrow('the project declares no include list')
+	})
+})
+
+describe('findServiceImporters', () => {
+	it('names the files that import the module, in the order given, and follows no import that names a package', async () => {
+		const scratch = createScratch({
+			files: {
+				'tests/a.ts': "import { x } from './setupService.js'\n",
+				'tests/b.ts': "import { y } from './setupServer.js'\n",
+				'tests/c.ts': "export const live = import('./setupService.js')\n",
+				'tests/setupServer.ts': '',
+				'tests/setupService.ts': FIXTURE_SERVICE_BODY,
+			},
+		})
+		try {
+			expect(
+				await findServiceImporters(['tests/c.ts', 'tests/b.ts', 'tests/a.ts'], scratch.path),
+			).toEqual(['tests/c.ts', 'tests/a.ts'])
+			expect(await findServiceImporters(['tests/b.ts'], scratch.path)).toEqual([])
+			await expect(findServiceImporters(['absent.ts'], scratch.path)).rejects.toThrow(/ENOENT/)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('names an import that resolves to no file as no importer, whatever it spells', async () => {
+		const scratch = createScratch({
+			files: { 'tests/a.ts': "import { x } from './setupService.js'\n" },
+		})
+		try {
+			expect(await findServiceImporters(['tests/a.ts'], scratch.path)).toEqual([])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('names an import by the file the host resolves its letter case to, and by none on a host that keeps case', async () => {
+		const scratch = createScratch({
+			files: {
+				'tests/setupBridge.ts': "import '../src/bridge.js'\n",
+				'src/bridge.ts': "import '../tests/SETUPSERVICE.js'\n",
+				'tests/setupService.ts': FIXTURE_SERVICE_BODY,
+			},
+		})
+		try {
+			const folds = scratch.has('tests/SETUPSERVICE.ts')
+			const closure = await collectModuleClosure(['tests/setupBridge.ts'], scratch.path)
+
+			expect(await findServiceImporters(['tests/setupBridge.ts'], scratch.path)).toEqual(
+				folds ? ['src/bridge.ts'] : [],
+			)
+			expect(closure.get('src/bridge.ts')?.files).toEqual(folds ? ['tests/setupService.ts'] : [])
+			expect([...closure.keys()].includes('tests/SETUPSERVICE.ts')).toBe(false)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	for (const fixture of MODULE_FIXTURES) {
+		it(`reaches the module through ${fixture.label} and names the file that holds the reference`, async () => {
+			const scratch = createScratch({ files: fixture.files })
+			try {
+				expect(await findServiceImporters(fixture.entries, scratch.path)).toEqual(fixture.importers)
+			} finally {
+				scratch.destroy()
+			}
+		})
+	}
+})
+
+describe('collectModuleClosure', () => {
+	it('reaches every module to a fixed point, with the files each reference resolves to, and stops at the service module', async () => {
+		const fixture = MODULE_FIXTURES.find(
+			(candidate) => candidate.label === 'a module two hops away, behind a cycle',
+		)
+		if (fixture === undefined) throw new Error('the cycle fixture is missing')
+		const scratch = createScratch({ files: fixture.files })
+		try {
+			const closure = await collectModuleClosure(fixture.entries, scratch.path)
+
+			expect([...closure.keys()]).toEqual(['tests/setupBridge.ts', 'src/a.ts', 'src/b.ts'])
+			expect(closure.get('src/b.ts')).toEqual({
+				references: [
+					{ form: 'import', specifier: './a.js' },
+					{ form: 'import', specifier: '../tests/setupService.js' },
+				],
+				files: ['src/a.ts', 'tests/setupService.ts'],
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('reads each file once and walks a glob match once, even when a match is also an entry', async () => {
+		const fixture = MODULE_FIXTURES.find((candidate) => candidate.reference?.form === 'glob')
+		if (fixture === undefined) throw new Error('the glob fixture is missing')
+		const scratch = createScratch({ files: fixture.files })
+		try {
+			const closure = await collectModuleClosure(fixture.entries, scratch.path)
+
+			expect([...closure.keys()]).toEqual(['tests/setupBridge.ts', 'src/bridge.ts'])
+			expect(closure.get('src/bridge.ts')?.files).toEqual([
+				'tests/setupBridge.ts',
+				'tests/setupService.ts',
+			])
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('findComputedFiles', () => {
+	it('lists the files of a closure that hold a reference with no specifier, in discovery order', () => {
+		const closure = new Map([
+			['a.ts', { references: [{ form: 'import', specifier: './b.js' }], files: ['b.ts'] }],
+			['b.ts', { references: [{ form: 'dynamic', specifier: undefined }], files: [] }],
+			['c.ts', { references: [], files: [] }],
+			[
+				'd.ts',
+				{
+					references: [
+						{ form: 'glob', specifier: './x.ts' },
+						{ form: 'require', specifier: undefined },
+					],
+					files: [],
+				},
+			],
+			[
+				'e.ts',
+				{
+					references: [
+						{ form: 'url', specifier: undefined },
+						{ form: 'glob', specifier: undefined },
+					],
+					files: [],
+				},
+			],
+		] as const)
+
+		expect(findComputedFiles(closure)).toEqual(['b.ts', 'd.ts', 'e.ts'])
+		expect(findComputedFiles(new Map())).toEqual([])
+		expect(LOADING_FORMS).toEqual(['dynamic', 'require', 'url'])
+	})
+
+	for (const fixture of COMPUTED_FIXTURES) {
+		it(`judges ${fixture.label} by whether its form loads code, though the walk finds no service import`, async () => {
+			const scratch = createScratch({ files: fixture.files })
+			try {
+				const closure = await collectModuleClosure(fixture.entries, scratch.path)
+
+				expect(findComputedFiles(closure)).toEqual(fixture.refused)
+				expect(await findServiceImporters(fixture.entries, scratch.path)).toEqual([])
+				expect(
+					closure.get('src/bridge.ts')?.references.map((reference) => reference.form),
+				).toContain(fixture.form)
+			} finally {
+				scratch.destroy()
+			}
+		})
+	}
+})
+
+describe('isServiceImporter', () => {
+	it('is true for a reference that names the module or resolves to it, and false for one that does neither', () => {
+		expect(SERVICE_IMPORTER_CASES.map(([entry]) => isServiceImporter(entry))).toEqual(
+			SERVICE_IMPORTER_CASES.map(([, importer]) => importer),
+		)
+	})
+})
+
+describe('readPathAliases and resolveModuleFiles', () => {
+	it('reads the exact aliases a configuration declares and none when it declares none', () => {
+		const declared = createScratch({
+			files: {
+				'tsconfig.json':
+					'{"compilerOptions":{"paths":{"@src/core":["./src/core/index.ts"],"@wild/*":["./wild/*"],"@empty":[]}}}\n',
+			},
+		})
+		const bare = createScratch({ files: { 'tsconfig.json': '{}\n' } })
+		const absent = createScratch()
+		try {
+			expect([...readPathAliases(declared.path)]).toEqual([
+				['@src/core', 'src/core/index.ts'],
+				['@wild/*', 'wild/*'],
+			])
+			expect([...readPathAliases(bare.path)]).toEqual([])
+			expect([...readPathAliases(absent.path)]).toEqual([])
+		} finally {
+			declared.destroy()
+			bare.destroy()
+			absent.destroy()
+		}
+	})
+
+	it('resolves a relative path, a JavaScript twin, a directory index, and an alias, and nothing outside the workspace', () => {
+		const scratch = createScratch({ files: RESOLVER_FILES })
+		try {
+			const from = 'tests/setupBridge.ts'
+			const aliases = new Map([['@src/core', 'src/core/index.ts']])
+
+			expect(
+				RESOLVE_FILE_CASES.map(([specifier]) =>
+					resolveModuleFiles(from, { form: 'import', specifier }, scratch.path, aliases),
+				),
+			).toEqual(RESOLVE_FILE_CASES.map(([, files]) => files))
+		} finally {
+			scratch.destroy()
+		}
+	})
+	it('expands a glob relative to the file, drops files that are not code, and honours a root-anchored pattern', () => {
+		const scratch = createScratch({
+			files: {
+				'tests/setupBridge.ts': '',
+				'tests/setupA.ts': '',
+				'tests/setupB.mts': '',
+				'tests/setup.json': '{}',
+				'src/x.ts': '',
+			},
+		})
+		try {
+			const from = 'tests/setupBridge.ts'
+
+			expect(
+				resolveModuleFiles(from, { form: 'glob', specifier: './setup*' }, scratch.path),
+			).toEqual(['tests/setupA.ts', 'tests/setupB.mts', 'tests/setupBridge.ts'])
+			expect(
+				resolveModuleFiles(from, { form: 'glob', specifier: '/src/*.ts' }, scratch.path),
+			).toEqual(['src/x.ts'])
+			expect(
+				resolveModuleFiles(from, { form: 'glob', specifier: './absent*' }, scratch.path),
+			).toEqual([])
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('findCodeFile and isFilePath', () => {
+	it('prefers the TypeScript twin of a JavaScript extension, then the path, then an added extension, then an index', () => {
+		const scratch = createScratch({ files: CODE_FILES })
+		try {
+			expect(CODE_FILE_CASES.map(([candidate]) => findCodeFile(candidate, scratch.path))).toEqual(
+				CODE_FILE_CASES.map(([, found]) => found),
+			)
+			expect(isFilePath(join(scratch.path, 'a.ts'))).toBe(true)
+			expect(isFilePath(join(scratch.path, 'e'))).toBe(false)
+			expect(isFilePath(join(scratch.path, 'absent'))).toBe(false)
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('listProjects, readProject, and findServiceSetupFiles', () => {
+	it('reads a project by calling its factory and takes the label from a string or a labelled name', () => {
+		expect(readProject(() => ({ test: { name: 'plain' } }))).toEqual({
+			label: 'plain',
+			test: { name: 'plain' },
+		})
+		expect(readProject(() => ({ test: { name: { label: 'labelled' } } })).label).toBe('labelled')
+	})
+
+	it('lists the projects a configuration registers with their labels and test configuration', () => {
+		const configuration = {
+			test: {
+				projects: [
+					() => ({ test: { name: 'plain', setupFiles: ['./tests/setup.ts'] } }),
+					() => ({ test: { name: { label: 'labelled', color: 'red' } } }),
+				],
+			},
+		}
+
+		expect(listProjects(configuration)).toEqual([
+			{ label: 'plain', test: { name: 'plain', setupFiles: ['./tests/setup.ts'] } },
+			{ label: 'labelled', test: { name: { label: 'labelled', color: 'red' } } },
+		])
+	})
+
+	it('refuses a configuration with no project list, a project that is not a factory, and a project with no label', () => {
+		expect(() => listProjects(undefined)).toThrow('the configuration registers no project list')
+		expect(() => listProjects({ test: {} })).toThrow('the configuration registers no project list')
+		expect(() => listProjects({ test: { projects: ['./project'] } })).toThrow(
+			'a registered project is not a factory',
+		)
+		expect(() => listProjects({ test: { projects: [() => ({ test: { name: 7 } })] } })).toThrow(
+			'a registered project declares no label',
+		)
+		expect(() => listProjects({ test: { projects: [() => undefined] } })).toThrow(
+			'a registered project declares no label',
+		)
+	})
+
+	it('names the setup files that load the service module, however the path is spelled', () => {
+		const scratch = createScratch({ files: SETUP_FILES })
+		try {
+			expect(
+				findServiceSetupFiles(
+					{
+						setupFiles: ['./tests/setup.ts', ...SERVICE_SETUP_SPELLINGS, ...OTHER_SETUP_SPELLINGS],
+					},
+					scratch.path,
+				),
+			).toEqual(SERVICE_SETUP_SPELLINGS)
+			expect(findServiceSetupFiles({}, scratch.path)).toEqual([])
+			expect(findServiceSetupFiles(undefined, scratch.path)).toEqual([])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('names a service setup file given as one path, as Vitest accepts it, in each spelling', () => {
+		const scratch = createScratch({ files: SETUP_FILES })
+		try {
+			expect(
+				SERVICE_SETUP_SPELLINGS.map((spelling) =>
+					findServiceSetupFiles({ setupFiles: spelling }, scratch.path),
+				),
+			).toEqual(SERVICE_SETUP_SPELLINGS.map((spelling) => [spelling]))
+			expect(
+				OTHER_SETUP_SPELLINGS.map((spelling) =>
+					findServiceSetupFiles({ setupFiles: spelling }, scratch.path),
+				),
+			).toEqual(OTHER_SETUP_SPELLINGS.map(() => []))
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('names a service global setup file, given as one path or as a list, after the setup files', () => {
+		const scratch = createScratch({ files: SETUP_FILES })
+		try {
+			expect(
+				SERVICE_SETUP_SPELLINGS.map((spelling) =>
+					findServiceSetupFiles({ globalSetup: spelling }, scratch.path),
+				),
+			).toEqual(SERVICE_SETUP_SPELLINGS.map((spelling) => [spelling]))
+			expect(
+				findServiceSetupFiles(
+					{
+						setupFiles: ['.\\tests\\setupService.ts'],
+						globalSetup: ['./tests/setup.ts', 'tests\\setupService.ts'],
+					},
+					scratch.path,
+				),
+			).toEqual(['.\\tests\\setupService.ts', 'tests\\setupService.ts'])
+			expect(
+				findServiceSetupFiles({ globalSetup: './tests/setupServer.ts' }, scratch.path),
+			).toEqual([])
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('names a service setup file at the absolute path of the root, and one the host folds by letter case', () => {
+		const scratch = createScratch({ files: SETUP_FILES })
+		try {
+			const absolute = join(scratch.path, 'tests', 'setupService.ts')
+			const folded = join(scratch.path, 'tests', 'SETUPSERVICE.ts')
+
+			expect(findServiceSetupFiles({ setupFiles: absolute }, scratch.path)).toEqual([absolute])
+			expect(findServiceSetupFiles({ setupFiles: folded }, scratch.path)).toEqual(
+				scratch.has('tests/SETUPSERVICE.ts') ? [folded] : [],
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+// The distribution stage: the readers, runners, and classifiers `tests/distribution.test.ts`
+// measures an installed artifact with. The registry-free half runs against synthetic exports maps
+// and a dependency-free fixture package. The stage half needs a registry that answers `ping`, which
+// a loopback fixture does, so the proofs make no network call and `npm` never leaves 127.0.0.1.
+
+const REGISTRY = await createPingRegistry()
+const REGISTRY_BEFORE = process.env.npm_config_registry
+process.env.npm_config_registry = REGISTRY.url
+afterAll(async () => {
+	if (REGISTRY_BEFORE === undefined) delete process.env.npm_config_registry
+	else process.env.npm_config_registry = REGISTRY_BEFORE
+	await REGISTRY.stop()
+})
+
+describe('decodeSegment', () => {
+	it('decodes a percent escape and keeps a malformed one verbatim', () => {
+		expect(DECODE_SEGMENT_CASES.map(([segment]) => decodeSegment(segment))).toEqual(
+			DECODE_SEGMENT_CASES.map(([, decoded]) => decoded),
+		)
+	})
+})
+
+describe('isPackageTarget', () => {
+	it('accepts a target inside the package and refuses a dot, parent, or node_modules segment, decoded or not', () => {
+		expect(PACKAGE_TARGET_CASES.map(([target]) => isPackageTarget(target))).toStrictEqual(
+			PACKAGE_TARGET_CASES.map(([, inside]) => inside),
+		)
+	})
+})
+
+describe('resolvePackageTarget and resolveTarget', () => {
+	it('picks a target in condition order, falls through an invalid member of a list, and ends at undefined', () => {
+		const entry = {
+			import: { types: './a.d.ts', default: './a.js' },
+			require: ['bad', './b.cjs'],
+			default: './z.js',
+		}
+
+		expect(resolveTarget(entry, RUNTIME_CONDITIONS.module)).toBe('./a.js')
+		expect(resolveTarget(entry, RUNTIME_CONDITIONS.commonjs)).toBe('./b.cjs')
+		expect(resolveTarget(entry, ['types'])).toBe('./z.js')
+		expect(resolveTarget({ import: './a.js' }, ['require'])).toBeUndefined()
+		expect(resolvePackageTarget('bad', [])).toEqual({ target: 'bad' })
+		expect(resolvePackageTarget(['bad', 'worse'], [])).toBeUndefined()
+		expect(NOT_ENTRIES.map((value) => resolveTarget(value, ['import']))).toEqual(
+			NOT_ENTRIES.map(() => undefined),
+		)
+	})
+})
+
+describe('resolveDeclaration', () => {
+	it('follows condition and fallback order to the first declaration that exists as a file', () => {
+		const scratch = createScratch({ files: { 'dist/index.d.ts': '', 'dist/index.d.cts': '' } })
+		try {
+			const entry = {
+				import: { types: './dist/index.d.ts', default: './dist/index.js' },
+				require: [{ types: './dist/missing.d.cts' }, { types: './dist/index.d.cts' }],
+			}
+
+			expect(resolveDeclaration(entry, DECLARATION_CONDITIONS.module, scratch.path)).toBe(
+				'./dist/index.d.ts',
+			)
+			expect(resolveDeclaration(entry, DECLARATION_CONDITIONS.commonjs, scratch.path)).toBe(
+				'./dist/index.d.cts',
+			)
+			expect(resolveDeclaration(entry, ['types'], scratch.path)).toBeUndefined()
+			expect(resolveDeclaration('./dist/missing.js', [], scratch.path)).toBeUndefined()
+			expect(resolveDeclaration(3, [], scratch.path)).toBeUndefined()
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('declaresCommonJS', () => {
+	it('admits a .d.cts and a .d.ts in a CommonJS scope, and refuses a .d.mts, a module scope, and a missing file', () => {
+		const scratch = createScratch({ files: COMMONJS_FILES })
+		try {
+			expect(COMMONJS_CASES.map(([entry]) => declaresCommonJS(entry, scratch.path))).toEqual(
+				COMMONJS_CASES.map(([, admitted]) => admitted),
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('collectTargets, isModuleTarget, and isDeclarationTarget', () => {
+	it('collect every target under any condition and drop an invalid member of a fallback list', () => {
+		expect(
+			collectTargets({
+				import: './a.js',
+				require: ['./b.cjs', 'bad', './node_modules/x.js'],
+				types: { default: './c.d.ts' },
+			}),
+		).toEqual(['./a.js', './b.cjs', './c.d.ts'])
+		expect(collectTargets('./only.js')).toEqual(['./only.js'])
+		expect(NOT_ENTRIES.map((value) => collectTargets(value))).toEqual(NOT_ENTRIES.map(() => []))
+	})
+
+	it('call a target a module when its file name carries a module extension, an addon extension, or none', () => {
+		expect(MODULE_TARGET_CASES.map(([target]) => isModuleTarget(target))).toEqual(
+			MODULE_TARGET_CASES.map(([, module]) => module),
+		)
+	})
+
+	it('call a target a declaration when it ends in a declaration extension', () => {
+		expect(DECLARATION_TARGET_CASES.map(([target]) => isDeclarationTarget(target))).toEqual(
+			DECLARATION_TARGET_CASES.map(([, declaration]) => declaration),
+		)
+	})
+})
+
+describe('computeDeclaration, targetToDeclaration, readDeclaration, and readPackageType', () => {
+	it('substitute a declaration beside a target, accept one that exists, and read the scope of a nested manifest', () => {
+		const scratch = createScratch({ files: READER_FILES })
+		scratch.ensure('folder/package.json')
+		try {
+			expect(COMPUTE_DECLARATION_CASES.map(([target]) => computeDeclaration(target))).toStrictEqual(
+				COMPUTE_DECLARATION_CASES.map(([, declaration]) => declaration),
+			)
+			expect(
+				TARGET_DECLARATION_CASES.map(([target]) => targetToDeclaration(target, scratch.path)),
+			).toStrictEqual(TARGET_DECLARATION_CASES.map(([, declaration]) => declaration))
+			expect(
+				PACKAGE_TYPE_CASES.map(([target]) => readPackageType(scratch.path, target)),
+			).toStrictEqual(PACKAGE_TYPE_CASES.map(([, type]) => type))
+			expect(readPackageType(join(scratch.path, 'dist'), './x.js')).toBeUndefined()
+			expect(
+				readDeclaration(
+					{
+						import: { types: './dist/index.d.ts' },
+						require: { types: './dist/index.d.cts' },
+					},
+					scratch.path,
+				),
+			).toEqual({
+				module: './dist/index.d.ts',
+				commonjs: './dist/index.d.cts',
+				browser: './dist/index.d.ts',
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('ScopeWalk', () => {
+	it('yields each directory from the start up to the installed package and then ends', () => {
+		expect([...new ScopeWalk('/pkg', '/pkg/dist/a')]).toEqual(['/pkg/dist/a', '/pkg/dist', '/pkg'])
+		expect([...new ScopeWalk('/pkg', '/pkg')]).toEqual(['/pkg'])
+	})
+
+	it('ends at the filesystem root when the start lies outside the installed package', () => {
+		const root = parse(process.cwd()).root
+		const outside = join(root, 'one', 'two')
+
+		expect([...new ScopeWalk(join(root, 'elsewhere'), outside)]).toEqual([
+			outside,
+			join(root, 'one'),
+			root,
+		])
+	})
+
+	it('walks a quarter of a million directories, more than a recursion could hold on any stack', () => {
+		const { root } = parse(process.cwd())
+		const start = join(root, 'a/'.repeat(250_000))
+
+		const walked = Array.from(new ScopeWalk(root, start))
+
+		expect(walked).toHaveLength(250_001)
+		expect(walked[0]).toBe(start)
+		expect(walked[250_000]).toBe(root)
+	})
+})
+
+describe('readScopeType', () => {
+	it('holds no frame per directory, so every check reads the same stack depth however deep the target', () => {
+		const scratch = createScratch({ files: READER_FILES })
+		const target = join(scratch.path, ...Array.from({ length: 200 }, () => 'a'))
+		const depths = createRecorder<[number]>()
+		try {
+			expect(
+				readScopeType(scratch.path, target, (path) => {
+					depths.handler(readStackDepth())
+					return isFilePath(path)
+				}),
+			).toBe('commonjs')
+		} finally {
+			scratch.destroy()
+		}
+
+		expect(depths.calls).toHaveLength(201)
+		expect(new Set(depths.calls.map(([depth]) => depth)).size).toBe(1)
+	})
+
+	it('reads the nearest manifest at or above the directory and stops at the installed package', () => {
+		const scratch = createScratch({ files: READER_FILES })
+		scratch.ensure('folder/package.json')
+		try {
+			expect(readScopeType(scratch.path, join(scratch.path, 'module'))).toBe('module')
+			expect(readScopeType(scratch.path, join(scratch.path, 'folder'))).toBe('commonjs')
+			expect(readScopeType(scratch.path, join(scratch.path, 'module', 'missing'))).toBe('module')
+			expect(readScopeType(join(scratch.path, 'dist'), join(scratch.path, 'dist'))).toBeUndefined()
+			expect(
+				readScopeType(join(scratch.path, 'dist'), join(scratch.path, 'dist', 'a')),
+			).toBeUndefined()
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('resolvesBrowser and resolvesCommonJS', () => {
+	it('read a browser target off a condition or the browser output convention, and a CommonJS target off its extension or scope', () => {
+		const scratch = createScratch({ files: CLASSIFIER_FILES })
+		try {
+			const manifest = readJson(join(scratch.path, 'package.json'))
+			if (!isRecord(manifest) || !isRecord(manifest.exports)) {
+				throw new Error('The classifier fixture declares no exports map')
+			}
+			const mappings = manifest.exports
+
+			expect({
+				condition: resolvesBrowser(mappings.condition),
+				convention: resolvesBrowser(mappings.convention),
+				universal: resolvesBrowser(mappings.universal),
+				import: resolvesBrowser(mappings['import-shared']),
+				require: resolvesBrowser(mappings['require-shared']),
+				node: resolvesBrowser(mappings.node),
+			}).toStrictEqual({
+				condition: true,
+				convention: true,
+				universal: false,
+				import: false,
+				require: false,
+				node: false,
+			})
+			expect({
+				silent: resolvesCommonJS(mappings.silent, scratch.path),
+				module: resolvesCommonJS(mappings.module, scratch.path),
+				nestedModule: resolvesCommonJS(mappings['nested-module'], scratch.path),
+				nestedCommonJS: resolvesCommonJS(mappings['nested-commonjs'], scratch.path),
+				esm: resolvesCommonJS(mappings.esm, scratch.path),
+			}).toStrictEqual({
+				silent: true,
+				module: false,
+				nestedModule: false,
+				nestedCommonJS: true,
+				esm: false,
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('collectDiagnostics', () => {
+	it('opens a diagnostic on each unindented line and gathers the indented lines under it, trimmed', () => {
+		expect(
+			collectDiagnostics([
+				'',
+				'a.ts(1,1): error TS1: one',
+				'  detail one',
+				'',
+				'    detail two ',
+				'b.ts(2,2): error TS2: two',
+				'  ',
+				'  tail',
+			]),
+		).toStrictEqual([
+			{ head: 'a.ts(1,1): error TS1: one', details: ['detail one', 'detail two'] },
+			{ head: 'b.ts(2,2): error TS2: two', details: ['tail'] },
+		])
+		expect(collectDiagnostics(['  orphan', 'c.ts(1,1): error TS3: three'])).toStrictEqual([
+			{ head: '  orphan', details: [] },
+			{ head: 'c.ts(1,1): error TS3: three', details: [] },
+		])
+		expect(collectDiagnostics(['', '  '])).toStrictEqual([])
+	})
+})
+
+describe('classifyExport and classifyExports', () => {
+	it('partition a map into driven entries, undeclared subpaths a runtime loads, and excluded publications', () => {
+		const scratch = createScratch({ files: READER_FILES })
+		try {
+			const classified = classifyExports(
+				{
+					'.': { types: './dist/index.d.ts', import: './dist/index.js' },
+					'./package.json': './package.json',
+					'./style.css': './dist/style.css',
+					'./x': { import: './dist/x.js' },
+				},
+				'@scope/pkg',
+				scratch.path,
+			)
+
+			expect(classified.entries.map((entry) => [entry.subpath, entry.specifier])).toStrictEqual([
+				['.', '@scope/pkg'],
+			])
+			expect(classified.subpaths).toStrictEqual(['.', './package.json', './style.css', './x'])
+			expect(classified.undeclared).toStrictEqual(['./x'])
+			expect(classified.excluded).toStrictEqual(['./package.json', './style.css'])
+			expect(classified.targets).toStrictEqual([
+				'./dist/index.d.ts',
+				'./dist/index.js',
+				'./package.json',
+				'./dist/style.css',
+				'./dist/x.js',
+			])
+			expect(classifyExport('./x', { import: './dist/x.js' }, '@scope/pkg', scratch.path)).toEqual({
+				subpath: './x',
+				files: ['./dist/x.js'],
+				entry: undefined,
+				loaded: true,
+			})
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('drive an entry under the conditions of the format it answers and no other', () => {
+		const scratch = createScratch({ files: FIXTURE_PACKAGE_FILES })
+		try {
+			const manifest = readJson(join(scratch.path, 'package.json'))
+			if (!isRecord(manifest) || !isRecord(manifest.exports)) {
+				throw new Error('The fixture package declares no exports map')
+			}
+			const { entries, excluded } = classifyExports(
+				manifest.exports,
+				FIXTURE_PACKAGE_NAME,
+				scratch.path,
+			)
+			const [entry] = entries
+
+			expect(excluded).toEqual(['./package.json'])
+			expect(entry).toMatchObject({
+				subpath: '.',
+				specifier: FIXTURE_PACKAGE_NAME,
+				browser: false,
+				module: true,
+				commonjs: true,
+				required: true,
+				declaration: { module: true, commonjs: true, browser: true },
+			})
+			if (entry === undefined) throw new Error('the fixture package classified no entry')
+			expect(selectEntries(entries, DECLARATION_CONDITIONS.module)).toEqual([entry])
+			expect(selectEntries(entries, DECLARATION_CONDITIONS.commonjs)).toEqual([entry])
+			expect(selectEntries(entries, ['nothing'])).toEqual([])
+			expect(selectDrivers(entry, 'module').map((driver) => driver.label)).toEqual([
+				'node16',
+				'nodenext',
+				'bundler',
+			])
+			expect(selectDrivers(entry, 'commonjs').map((driver) => driver.label)).toEqual([
+				'node16',
+				'nodenext',
+				'bundler',
+			])
+			expect(selectUntypable(entries, scratch.path)).toEqual([])
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('buildStubStage and IMPORT_ONLY_ENTRY', () => {
+	it('hold nothing the compile helpers would read: an empty stage under a consumer and an import-only entry', () => {
+		const stage = buildStubStage('/consumer')
+
+		expect(stage).toEqual({
+			consumer: '/consumer',
+			installed: join('/consumer', 'node_modules', 'pkg'),
+			archives: [],
+			entries: [],
+			subpaths: [],
+			undeclared: [],
+			excluded: [],
+			targets: [],
+		})
+		expect(IMPORT_ONLY_ENTRY).toMatchObject({ module: true, commonjs: false, required: false })
+		expect(Object.isFrozen(IMPORT_ONLY_ENTRY)).toBe(true)
+	})
+})
+
+describe('selectDrivers and selectUntypable', () => {
+	it('give an import-only entry no CommonJS driver and every module driver', () => {
+		expect(selectDrivers(IMPORT_ONLY_ENTRY, 'commonjs')).toEqual([])
+		expect(selectDrivers(IMPORT_ONLY_ENTRY, 'module')).toHaveLength(RESOLUTIONS.length)
+	})
+
+	it('name the entry that answers require and maps it but declares no CommonJS-admitting file', () => {
+		const scratch = createScratch({ files: { 'ok.d.cts': '', 'only.d.mts': '' } })
+		try {
+			const stranded: DistributionEntry = {
+				...IMPORT_ONLY_ENTRY,
+				mapping: { require: { types: './only.d.mts' } },
+				required: true,
+			}
+			const declared: DistributionEntry = {
+				...IMPORT_ONLY_ENTRY,
+				mapping: { require: { types: './ok.d.cts' } },
+				required: true,
+			}
+			const unmapped: DistributionEntry = {
+				...IMPORT_ONLY_ENTRY,
+				mapping: { default: { types: './only.d.mts' } },
+				required: true,
+			}
+			const imported: DistributionEntry = {
+				...IMPORT_ONLY_ENTRY,
+				mapping: { require: { types: './only.d.mts' } },
+				required: false,
+			}
+
+			expect(selectUntypable([stranded, declared, unmapped, imported], scratch.path)).toEqual([
+				stranded,
+			])
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('the stage writers', () => {
+	it('write a file with the directories above it and read a manifest name or refuse one', () => {
+		const scratch = createScratch()
+		try {
+			const path = join(scratch.path, 'deep', 'er', 'file.json')
+			writeFixtureFile(path, '{"name":"pkg","n":1}\n')
+
+			expect(scratch.read('deep/er/file.json')).toBe('{"name":"pkg","n":1}\n')
+			expect(readJson(path)).toEqual({ name: 'pkg', n: 1 })
+			expect(readManifestName(path)).toBe('pkg')
+			writeFixtureFile(path, '{"n":1}\n')
+			expect(() => readManifestName(path)).toThrow(
+				`The manifest at ${path} declares no package name`,
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('write a scratch project over named modules, and a consumer module importing each specifier', () => {
+		const scratch = createScratch()
+		try {
+			const stage = buildStubStage(scratch.path)
+			const project = writeProject(stage, 'probe', BROWSER_DRIVER, ['./a.ts'])
+			writeConsumerProbe(stage, 'probe.ts', ['pkg', 'pkg/sub'])
+
+			expect(project).toBe(join(scratch.path, 'tsconfig.probe.json'))
+			expect(readJson(project)).toEqual({
+				compilerOptions: {
+					module: 'esnext',
+					moduleResolution: 'bundler',
+					noEmit: true,
+					skipLibCheck: true,
+					strict: true,
+					target: 'esnext',
+					types: [],
+				},
+				files: ['./a.ts'],
+			})
+			expect(scratch.read('probe.ts')).toBe(
+				'import * as entry0 from "pkg"\nimport * as entry1 from "pkg/sub"\nexport const surface = [entry0, entry1]\n',
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('write a consumer module over every specifier even when the list holds a replaced iterator', () => {
+		const scratch = createScratch()
+		try {
+			const stage = buildStubStage(scratch.path)
+			const specifiers = Object.defineProperty(['a', 'b'], Symbol.iterator, {
+				value: function* () {
+					yield 'z'
+				},
+			})
+			writeConsumerProbe(stage, 'probe.ts', specifiers)
+
+			expect(scratch.read('probe.ts')).toBe(
+				'import * as entry0 from "a"\nimport * as entry1 from "b"\nexport const surface = [entry0, entry1]\n',
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
+})
+
+describe('the stage runners', () => {
+	it('run Node in a directory and join the output and error streams of the finished process', () => {
+		const scratch = createScratch()
+		try {
+			const result = runNode(
+				['-e', 'process.stdout.write("out\\n");process.stderr.write("err\\n");process.exitCode=3'],
+				scratch.path,
+			)
+
+			expect(result.status).toBe(3)
+			expect(result.stdout).toBe('out\n')
+			expect(readSpawnOutput(result)).toBe('out\nerr')
+			expect(runNode(['-p', 'process.cwd()'], scratch.path).stdout.trim()).toBe(
+				realpathSync(scratch.path),
+			)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it('run npm with its cache pinned to the directory it is given', () => {
+		const scratch = createScratch()
+		try {
+			const cache = join(scratch.path, 'cache')
+			const result = runNpm(['config', 'get', 'cache'], scratch.path, cache)
+
+			expect(result.status).toBe(0)
+			expect(result.stdout.trim()).toBe(cache)
+			expect(runNpm(['--version'], scratch.path, cache).stdout.trim()).toMatch(/^\d+\.\d+\.\d+/u)
+		} finally {
+			scratch.destroy()
+		}
+	}, 30_000)
+
+	it('resolve the compiler a workspace installs and the install command of the host', () => {
+		const compiler = resolveCompiler()
+
+		expect(compiler.endsWith(join('typescript', 'bin', 'tsc'))).toBe(true)
+		expect(isFilePath(compiler)).toBe(true)
+		expect(resolveCompiler(WORKSPACE_ROOT)).toBe(compiler)
+		expect(NPM_COMMAND).toBe(process.platform === 'win32' ? 'npm.cmd' : 'npm')
+		expect(NPM_SHELL).toBe(process.platform === 'win32')
+		expect(typeof RELEASE_MODE).toBe('boolean')
+	})
+})
+
+describe('the stage on an installed fixture package', () => {
+	const scratch = createScratch()
+	afterAll(() => {
+		scratch.destroy()
+	})
+	const root = createScratch({ files: FIXTURE_PACKAGE_FILES })
+	afterAll(() => {
+		root.destroy()
+	})
+
+	it('packs one archive, installs it in isolation, and classifies the exports map it publishes', () => {
+		const stage = buildStage(scratch.path, root.path)
+
+		expect(stage.archives).toEqual([`${FIXTURE_PACKAGE_NAME}-1.0.0.tgz`])
+		expect(isFilePath(join(stage.installed, 'package.json'))).toBe(true)
+		expect(stage.installed).toBe(join(stage.consumer, 'node_modules', FIXTURE_PACKAGE_NAME))
+		expect(stage.entries.map((entry) => entry.specifier)).toEqual([FIXTURE_PACKAGE_NAME])
+		expect(stage.subpaths).toEqual(['.', './package.json'])
+		expect(stage.excluded).toEqual(['./package.json'])
+		expect(stage.undeclared).toEqual([])
+		expect([...stage.targets].sort()).toEqual(
+			['./index.cjs', './index.d.cts', './index.d.ts', './index.js', './package.json'].sort(),
+		)
+	}, 120_000)
+
+	it('reads the names a real process publishes off the installed entry under each format', () => {
+		const stage = buildStage(join(scratch.path, 'again'), root.path)
+
+		expect(driveRuntime(stage, FIXTURE_PACKAGE_NAME, ESM_DRIVER)).toEqual(['answer', 'extra'])
+		expect(driveRuntime(stage, FIXTURE_PACKAGE_NAME, CJS_DRIVER)).toEqual(['answer', 'extra'])
+		expect(() =>
+			driveRuntime(stage, `${FIXTURE_PACKAGE_NAME}${ABSENT_SUBPATH}`, ESM_DRIVER),
+		).toThrow(/ERR_PACKAGE_PATH_NOT_EXPORTED/u)
+		expect(() => driveRuntime(stage, FIXTURE_PACKAGE_NAME, 'absent.mjs')).toThrow(
+			/Loading distribution-fixture from the consumer failed/u,
+		)
+	}, 120_000)
+
+	it('compares published names with declared ones in both directions, under every driver', () => {
+		const stage = buildStage(join(scratch.path, 'compare'), root.path)
+		const [entry] = stage.entries
+		if (entry === undefined) throw new Error('the fixture package classified no entry')
+		const published = driveRuntime(stage, FIXTURE_PACKAGE_NAME, ESM_DRIVER)
+
+		expect(
+			RESOLUTIONS.flatMap((driver) =>
+				checkSurface(stage, { entry, extension: 'ts', published, driver }),
+			),
+		).toEqual([])
+		const missing = RESOLUTIONS.flatMap((driver) =>
+			checkSurface(stage, { entry, extension: 'ts', published: ['answer'], driver }),
+		)
+		const extra = RESOLUTIONS.flatMap((driver) =>
+			checkSurface(stage, {
+				entry,
+				extension: 'ts',
+				published: ['answer', 'extra', 'phantom'],
+				driver,
+			}),
+		)
+
+		expect(missing.length).toBeGreaterThan(0)
+		expect(missing.every((line) => /^(node16|nodenext|bundler): /u.test(line))).toBe(true)
+		expect(missing.join('\n')).toContain('extra')
+		expect(extra.join('\n')).toContain('phantom')
+	}, 120_000)
+
+	it('compiles a probe under every resolution and importing format, with a control that must be loud', () => {
+		const stage = buildStage(join(scratch.path, 'compile'), root.path)
+
+		const compilations = RESOLUTIONS.flatMap((driver) =>
+			FORMATS.flatMap(([extension, format]) => {
+				const compilation = checkResolution(stage, FIXTURE_PACKAGE_NAME, driver, extension, format)
+				return compilation === undefined ? [] : [compilation]
+			}),
+		)
+
+		expect(compilations.map((compilation) => compilation.label)).toEqual([
+			'node16.ts',
+			'node16.cts',
+			'nodenext.ts',
+			'nodenext.cts',
+			'bundler.ts',
+			'bundler.cts',
+		])
+		expect(compilations.flatMap((compilation) => compilation.reported)).toEqual([])
+		expect(compilations.filter((compilation) => compilation.silent)).toEqual([])
+		expect(
+			checkResolution(stage, FIXTURE_PACKAGE_NAME, BROWSER_DRIVER, 'ts', 'module'),
+		).toMatchObject({ label: 'bundler.ts', reported: [], silent: false })
+	}, 120_000)
+
+	it('reports a located diagnostic, and refuses a fault in the scratch project itself', () => {
+		const dir = createScratch({
+			files: { 'bad.ts': 'export const n: number = "text"\n', 'good.ts': 'export const n = 1\n' },
+		})
+		try {
+			const stage = buildStubStage(dir.path)
+			const bad = writeProject(stage, 'bad', BROWSER_DRIVER, ['./bad.ts'])
+			const good = writeProject(stage, 'good', BROWSER_DRIVER, ['./good.ts'])
+			const absent = writeProject(stage, 'absent', BROWSER_DRIVER, ['./absent.ts'])
+			const faulty = dir.write(
+				'tsconfig.faulty.json',
+				'{"compilerOptions":{"noSuchOption":true},"files":["./good.ts"]}\n',
+			)
+
+			expect(checkProject(stage, bad)).toEqual([
+				expect.stringMatching(/^bad\.ts\(1,14\): error TS2322: Type 'string' is not assignable/u),
+			])
+			expect(checkProject(stage, good)).toEqual([])
+			expect(() => checkProject(stage, absent)).toThrow(
+				/The consumer compiler reported error TS6053.*which names no location/u,
+			)
+			expect(() => checkProject(stage, faulty)).toThrow(/The scratch project is itself at fault/u)
+		} finally {
+			dir.destroy()
+		}
+	}, 60_000)
+
+	it('opens a stage when the registry answers, reports none when it does not, and fails the release gate', async () => {
+		const reachable = createScratch()
+		const unreachable = createScratch()
+		const gated = createScratch()
+		const kept = process.env.npm_config_registry
+		try {
+			const stage = openStage(reachable.path, false, root.path)
+
+			expect(stage?.entries.map((entry) => entry.specifier)).toEqual([FIXTURE_PACKAGE_NAME])
+
+			process.env.npm_config_registry = 'http://127.0.0.1:1'
+			expect(openStage(unreachable.path, false, root.path)).toBeUndefined()
+			expect(unreachable.has('cache')).toBe(true)
+			expect(() => openStage(gated.path, true, root.path)).toThrow(
+				'The release gate requires a reachable npm registry, and npm ping did not answer',
+			)
+			expect(isFilePath(gated.path)).toBe(false)
+		} finally {
+			if (kept === undefined) delete process.env.npm_config_registry
+			else process.env.npm_config_registry = kept
+			reachable.destroy()
+			unreachable.destroy()
+			gated.destroy()
+		}
+	}, 120_000)
+
+	it('refuses a workspace npm cannot pack and one whose archive it cannot install', () => {
+		const empty = createScratch()
+		try {
+			expect(() => buildStage(join(scratch.path, 'refused'), empty.path)).toThrow(
+				/npm pack refused this workspace/u,
+			)
+		} finally {
+			empty.destroy()
+		}
+	}, 60_000)
+})
+
+describe('createPingRegistry', () => {
+	it('answers the reachability check from another process, serves no package, and stops twice without error', async () => {
+		const registry = await createPingRegistry()
+		const { url } = registry
+		const pong = await fetch(`${url}/-/ping?write=true`)
+		const missing = await fetch(`${url}/some-package`)
+
+		expect(pong.status).toBe(200)
+		expect(await pong.json()).toEqual({})
+		expect(missing.status).toBe(404)
+		await registry.stop()
+		await expect(registry.stop()).resolves.toBeUndefined()
+		await expect(fetch(`${url}/-/ping`)).rejects.toThrow('fetch failed')
+	}, 30_000)
+})
+
+describe('buildNpmEnvironment', () => {
+	it('pins the cache and leaves no variable of another letter case naming it', () => {
+		const stale = process.env.NPM_CONFIG_CACHE
+		process.env.NPM_CONFIG_CACHE = 'stale'
+		try {
+			const environment = buildNpmEnvironment('pinned')
+
+			expect(
+				Object.entries(environment).filter(([key]) => key.toLowerCase() === 'npm_config_cache'),
+			).toEqual([['npm_config_cache', 'pinned']])
+			expect(environment.PATH ?? environment.Path).toBe(process.env.PATH ?? process.env.Path)
+		} finally {
+			if (stale === undefined) delete process.env.NPM_CONFIG_CACHE
+			else process.env.NPM_CONFIG_CACHE = stale
+		}
+	})
+})
+
+// The hermetic projects run on a host with no daemon, and `npm test` runs them against the
+// user's own. `tests/setupService.ts` contacts the selected daemon when it loads, so a
+// hermetic project that imports it, or that loads it as a setup file, reaches that daemon on
+// every run. The cases above prove the exported walker against fixture workspaces, one per
+// syntax form and per walk rule. This block proves that the walker reports the real workspace:
+// the projects come from `vite.config.ts`, and the walk follows every import from them to a fixed
+// point. It stays in this file because the walker is exported from `tests/setupServer.ts`, and
+// no vendored proof owns a package-specific workspace law.
+
+describe('the exported walker reports the real workspace', () => {
+	const projects = listProjects(workspace)
+	const hermetic = projects.filter(
+		(project) => !Object.hasOwn(NON_HERMETIC_PROJECTS, project.label),
+	)
+	const population = [
+		...new Set([
+			...hermetic.flatMap((project) => listProjectSources(project.test)),
+			...listSources(['tests/setup*.ts']),
+		]),
+	].sort()
+
+	it('derives the projects from vite.config.ts and leaves out only the two that may reach the daemon, each with its reason', () => {
+		const labels = projects.map((project) => project.label)
+
+		expect(Object.keys(NON_HERMETIC_PROJECTS).sort()).toEqual(['probe', 'service'])
+		expect(labels).toEqual(expect.arrayContaining(Object.keys(NON_HERMETIC_PROJECTS)))
+		expect(Object.values(NON_HERMETIC_PROJECTS).every((reason) => reason.length > 0)).toBe(true)
+		expect(hermetic.map((project) => project.label).sort()).toEqual(
+			Object.keys(HERMETIC_WITNESSES).sort(),
+		)
+	})
+
+	it('collect the files of every hermetic project, its setup modules, and the root setup modules', () => {
+		expect(
+			hermetic.map((project) => [
+				project.label,
+				listProjectSources(project.test).includes(HERMETIC_WITNESSES[project.label] ?? ''),
+			]),
+		).toEqual(hermetic.map((project) => [project.label, true]))
+		expect(population).toEqual(
+			expect.arrayContaining([
+				'tests/setup.ts',
+				'tests/setupPolicy.ts',
+				'tests/setupServer.ts',
+				'tests/setupService.ts',
+				'tests/setupStore.ts',
+				FIXTURE_HOSTED_IMPORTER,
+			]),
+		)
+		expect(population.filter((path) => path.startsWith('tests/service/'))).toEqual([])
+	})
+
+	it('list tests/setupService.ts as a setup file in no hermetic project, and only the service project does', () => {
+		const service = projects.find((project) => project.label === 'service')
+
+		expect(hermetic.flatMap((project) => findServiceSetupFiles(project.test))).toEqual([])
+		expect(findServiceSetupFiles(service?.test)).toEqual(['./tests/setupService.ts'])
+	})
+
+	it('reach tests/setupService only through the fixture-hosted proof, however deep the import', async () => {
+		const closure = await collectModuleClosure(population)
+
+		expect(await findServiceImporters(population)).toEqual([FIXTURE_HOSTED_IMPORTER])
+		expect(findComputedFiles(closure)).toEqual(Object.keys(COMPUTED_URL_FILES))
+		for (const file of Object.keys(COMPUTED_URL_FILES)) {
+			expect(
+				closure
+					.get(file)
+					?.references.filter((reference) => reference.specifier === undefined)
+					.map((reference) => reference.form),
+			).toEqual(['url'])
+		}
+		expect(closure.has('src/core/index.ts')).toBe(true)
+		expect(closure.has('vite.config.ts')).toBe(true)
+		expect([...closure.keys()].filter((path) => path.startsWith('tests/service/'))).toEqual([])
+	})
+
+	it('let the fixture-hosted proof import it only after the environment names the fixture', async () => {
+		const text = findFileText(join(rootToPath(WORKSPACE_ROOT), FIXTURE_HOSTED_IMPORTER))
+		if (text === undefined) throw new Error(`${FIXTURE_HOSTED_IMPORTER} cannot be read`)
+
+		expect(await findServiceImports(text)).toEqual(['./setupService.js'])
+		expect(text.indexOf('process.env.OLLAMA_HOST =')).toBeGreaterThan(-1)
+		expect(text.indexOf('process.env.OLLAMA_HOST =')).toBeLessThan(
+			text.indexOf("await import('./setupService.js')"),
+		)
 	})
 })

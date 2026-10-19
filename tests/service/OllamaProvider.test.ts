@@ -323,15 +323,10 @@ describe('OllamaProvider (live — abort)', () => {
 		expect(first.done).toBe(false)
 		abort.abort()
 
-		let caught: unknown
-		try {
-			for (;;) {
-				const step = await generator.next()
-				if (step.done) break
-			}
-		} catch (error) {
-			caught = error
-		}
+		const caught: unknown = await drive(generator).then(
+			() => undefined,
+			(failure: unknown) => failure,
+		)
 
 		expect(isProviderAbortError(caught)).toBe(true)
 		if (!isProviderAbortError(caught)) throw new Error('expected ProviderAbortError')
@@ -360,25 +355,20 @@ describe('OllamaProvider (live — abort)', () => {
 		})
 		const probeAbort = createAbort()
 		const started = performance.now()
-		let first: number | undefined
-		let ended: number | undefined
+		const arrivals: Array<{ readonly channel: string; readonly at: number }> = []
 		const generator = probe.stream([createUserMessage(prompt)], probeAbort.signal)
 		try {
-			for (;;) {
-				const step = await generator.next()
-				if (step.done) {
-					ended = performance.now()
-					break
-				}
-				if (step.value.channel === 'content' && first === undefined) first = performance.now()
+			for await (const delta of generator) {
+				arrivals.push({ channel: delta.channel, at: performance.now() })
 				if (performance.now() - started > 6000) probeAbort.abort()
 			}
 		} catch (error) {
 			// The caller cap tripped while the stream was mid-flight — that end is the window edge.
 			if (!isProviderAbortError(error)) throw error
-			ended = performance.now()
 		}
-		if (first === undefined || ended === undefined) throw new Error('probe produced no content')
+		const ended = performance.now()
+		const first = arrivals.find((arrival) => arrival.channel === 'content')?.at
+		if (first === undefined) throw new Error('probe produced no content')
 		const window = ended - first
 		// A window this narrow means the model refused the enumeration outright; the
 		// deadline claim needs a genuinely streaming run, so fail with the diagnosis.
@@ -393,12 +383,12 @@ describe('OllamaProvider (live — abort)', () => {
 		})
 		const abort = createAbort()
 
-		let caught: unknown
-		try {
-			await drive(provider.stream([createUserMessage(prompt)], abort.signal))
-		} catch (error) {
-			caught = error
-		}
+		const caught: unknown = await drive(
+			provider.stream([createUserMessage(prompt)], abort.signal),
+		).then(
+			() => undefined,
+			(failure: unknown) => failure,
+		)
 
 		expect(isProviderAbortError(caught)).toBe(true)
 		if (!isProviderAbortError(caught)) throw new Error('expected ProviderAbortError')
@@ -534,12 +524,10 @@ describe('OllamaProvider (live error status)', () => {
 		const provider = new OllamaProvider({ model: 'does-not-exist:zzz', url: OLLAMA_CONFIG.host })
 		const abort = createAbort()
 
-		let caught: unknown
-		try {
-			await provider.generate([createUserMessage('hi')], abort.signal)
-		} catch (error) {
-			caught = error
-		}
+		const caught: unknown = await provider.generate([createUserMessage('hi')], abort.signal).then(
+			() => undefined,
+			(failure: unknown) => failure,
+		)
 
 		expect(isProviderError(caught)).toBe(true)
 		if (!isProviderError(caught) || caught.code !== 'HTTP')
@@ -554,12 +542,10 @@ describe('OllamaProvider (live error status)', () => {
 		const provider = new OllamaProvider({ model: '', url: OLLAMA_CONFIG.host })
 		const abort = createAbort()
 
-		let caught: unknown
-		try {
-			await provider.generate([createUserMessage('hi')], abort.signal)
-		} catch (error) {
-			caught = error
-		}
+		const caught: unknown = await provider.generate([createUserMessage('hi')], abort.signal).then(
+			() => undefined,
+			(failure: unknown) => failure,
+		)
 
 		expect(isProviderError(caught)).toBe(true)
 		if (!isProviderError(caught) || caught.code !== 'HTTP')
@@ -575,12 +561,10 @@ describe('OllamaProvider (live error status)', () => {
 		const abort = createAbort()
 
 		const generator = provider.stream([createUserMessage('hi')], abort.signal)
-		let caught: unknown
-		try {
-			await generator.next()
-		} catch (error) {
-			caught = error
-		}
+		const caught: unknown = await generator.next().then(
+			() => undefined,
+			(failure: unknown) => failure,
+		)
 
 		expect(isProviderError(caught)).toBe(true)
 		if (!isProviderError(caught) || caught.code !== 'HTTP')

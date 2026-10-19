@@ -13,6 +13,7 @@ import { createTool, createToolManager } from '@orkestrel/tool'
 import { createOllama } from '@src/core'
 import {
 	buildTurns,
+	CASE_TIMEOUT,
 	countRequestCharacters,
 	createChallengeTools,
 	createUserMessage,
@@ -26,10 +27,8 @@ import {
 	seedConversation,
 } from '../setupService.js'
 
-const TIMEOUT = 60_000
-
 describe('Agent (live) — compaction retains complete exchanges on the wire', () => {
-	const summarize = createLiveSummarizer(TIMEOUT)
+	const summarize = createLiveSummarizer(CASE_TIMEOUT)
 
 	it('sends a recap followed by the final seeded pair and the active request verbatim', async () => {
 		const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
@@ -45,7 +44,7 @@ describe('Agent (live) — compaction retains complete exchanges on the wire', (
 			const agent = createAgent(provider, {
 				conversations,
 				window: createBudget({ max: 20, consumer: countRequestCharacters }),
-				timeout: TIMEOUT,
+				timeout: CASE_TIMEOUT,
 			})
 			const finalMessage = createUserMessage('Please continue.')
 			agent.context.messages.add(finalMessage)
@@ -69,7 +68,7 @@ describe('Agent (live) — compaction retains complete exchanges on the wire', (
 })
 
 describe('Conversation (live) — manual compaction preserves the newest exchange', () => {
-	const summarize = createLiveSummarizer(TIMEOUT)
+	const summarize = createLiveSummarizer(CASE_TIMEOUT)
 
 	it(
 		'folds the older pair into a live summary and retains the newest pair',
@@ -112,12 +111,12 @@ describe('Conversation (live) — manual compaction preserves the newest exchang
 			)
 			expect(best.view).toHaveLength(3)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
 describe('Agent (live) — automatic compaction folds an older exchange mid-run', () => {
-	const summarize = createLiveSummarizer(TIMEOUT)
+	const summarize = createLiveSummarizer(CASE_TIMEOUT)
 	const SENTINEL = '8254'
 
 	it(
@@ -156,7 +155,7 @@ describe('Agent (live) — automatic compaction folds an older exchange mid-run'
 								tools,
 								conversations,
 								window: createBudget({ max: 48, consumer: estimateRequestMessages }),
-								timeout: TIMEOUT,
+								timeout: CASE_TIMEOUT,
 								limit: 4,
 							},
 						)
@@ -246,12 +245,12 @@ describe('Agent (live) — automatic compaction folds an older exchange mid-run'
 			expect(best.result.partial).toBe(false)
 			expect(best.result.content).toContain(SENTINEL)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
 describe('Agent (live) — dependent lookups cause repeated mid-run compaction', () => {
-	const summarize = createLiveSummarizer(TIMEOUT)
+	const summarize = createLiveSummarizer(CASE_TIMEOUT)
 	const SENTINEL = '7193'
 
 	it(
@@ -284,7 +283,7 @@ describe('Agent (live) — dependent lookups cause repeated mid-run compaction',
 								tools,
 								conversations,
 								window: createBudget({ max: 40, consumer: estimateRequestMessages }),
-								timeout: TIMEOUT,
+								timeout: CASE_TIMEOUT,
 								limit: 8,
 							},
 						)
@@ -434,6 +433,6 @@ describe('Agent (live) — dependent lookups cause repeated mid-run compaction',
 			expect(best.result.partial).toBe(false)
 			expect(best.result.content).toContain(SENTINEL)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })

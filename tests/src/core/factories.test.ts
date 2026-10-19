@@ -4,6 +4,7 @@ import { createOllama, createOllamaJudge } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../../setup.js'
 import {
+	captureSettledRequest,
 	createRecordingProxy,
 	createRecordingTransport,
 	createRefusingTransport,
@@ -97,7 +98,7 @@ describe('createOllama (defaults)', () => {
 
 			expect(provider.replay).toBe('turn')
 			expect(transport.requests[0]?.path).toBe('/api/chat')
-			expect(signals.count).toBe(1)
+			expect(signals.calls).toEqual([[expect.any(AbortSignal)]])
 			expect(proxy.requests[0]?.headers['x-provider']).toBe('factory')
 			expect(proxy.requests[0]?.body).toEqual({
 				model: 'test-model',
@@ -127,8 +128,7 @@ describe('createOllama (defaults)', () => {
 		})
 
 		await expect(provider.generate([], createAbort().signal)).rejects.toThrow(Error)
-		expect(signals.count).toBe(1)
-		expect(signals.calls[0]?.[0].aborted).toBe(true)
+		expect(signals.calls.map(([signal]) => signal.aborted)).toEqual([true])
 		expect(transport.signals).toEqual([])
 	})
 
@@ -156,22 +156,14 @@ describe('createOllama (defaults)', () => {
 
 	it('forwards a numeric keepAlive and passthrough options verbatim', async () => {
 		// Recipe: SEED-style small options bag {seed:7, num_predict:12} — asserts verbatim passthrough.
-		const proxy = await createRecordingProxy()
-		try {
-			const provider = createOllama({
-				model: 'test-model',
-				url: proxy.url,
-				keepAlive: 0,
-				options: { seed: 7, num_predict: 12 },
-			})
-			await provider.generate([createUserMessage('hi')], createAbort().signal).catch(() => {})
+		const { body } = await captureSettledRequest(
+			{ model: 'test-model', keepAlive: 0, options: { seed: 7, num_predict: 12 } },
+			(provider) => provider.generate([createUserMessage('hi')], createAbort().signal),
+			createOllama,
+		)
 
-			const body = proxy.requests[0]?.body ?? {}
-			expect(body.keep_alive).toBe(0)
-			expect(body.options).toEqual({ seed: 7, num_predict: 12 })
-		} finally {
-			await proxy.stop()
-		}
+		expect(body.keep_alive).toBe(0)
+		expect(body.options).toEqual({ seed: 7, num_predict: 12 })
 	})
 })
 

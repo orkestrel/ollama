@@ -48,16 +48,22 @@ output, `stream` is the same call streamed — it yields `ProviderDelta`s
 assembled result when the stream completes:
 
 ```ts
-const answer: string[] = []
-const generator = provider.stream(messages, abort.signal)
-let step = await generator.next()
-while (!step.done) {
-	if (step.value.channel === 'content') answer.push(step.value.text)
-	step = await generator.next()
+import type { ProviderDelta } from '@orkestrel/agent'
+
+const deltas: ProviderDelta[] = []
+const stream = provider.stream(messages, abort.signal)
+
+for (;;) {
+	const step = await stream.next()
+	if (step.done) {
+		const streamed = step.value // the assembled ProviderResult
+		const answer = deltas.filter((delta) => delta.channel === 'content').map((delta) => delta.text)
+		console.log(streamed.content) // the answer — the settled content is the authoritative one
+		console.log(answer.join('')) // what arrived on the content channel
+		break
+	}
+	deltas.push(step.value)
 }
-const streamed = step.value // the assembled ProviderResult
-streamed.content // the answer — the settled content is the authoritative one
-answer.join('') // what arrived on the content channel
 ```
 
 Read the answer from the settled `streamed.content`. The deltas are what arrived,

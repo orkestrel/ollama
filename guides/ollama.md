@@ -29,6 +29,7 @@ result.usage // { prompt, completion, total } when the wire reported counts — 
 `generate` resolves the assembled `ProviderResult` (content + any tool calls + any usage). For live output, `stream` is the same call streamed: it yields `ProviderDelta`s (`content` for answer text, `thinking` for live reasoning) and returns the assembled result when the stream completes. Drive the generator and read its terminal `value`:
 
 ```ts
+import type { ProviderDelta } from '@orkestrel/agent'
 import { createAbort } from '@orkestrel/abort'
 import { isProviderAbortError } from '@orkestrel/agent'
 import { createOllama } from '@orkestrel/ollama'
@@ -36,24 +37,31 @@ import { createOllama } from '@orkestrel/ollama'
 const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M' })
 const abort = createAbort()
 const messages = [{ id: '1', role: 'user', content: 'Say hello.' }] as const
-const answer: string[] = []
-const reasoning: string[] = []
+const deltas: ProviderDelta[] = []
 
 try {
-	const generator = provider.stream(messages, abort.signal)
-	let step = await generator.next()
-	while (!step.done) {
-		if (step.value.channel === 'content') answer.push(step.value.text)
-		if (step.value.channel === 'thinking') reasoning.push(step.value.text)
-		step = await generator.next()
+	const stream = provider.stream(messages, abort.signal)
+	for (;;) {
+		const step = await stream.next()
+		if (step.done) {
+			const result = step.value // the assembled ProviderResult
+			const answer = deltas
+				.filter((delta) => delta.channel === 'content')
+				.map((delta) => delta.text)
+			const reasoning = deltas
+				.filter((delta) => delta.channel === 'thinking')
+				.map((delta) => delta.text)
+			console.log(result.content) // the answer — the settled content is the authoritative one
+			console.log(answer.join('')) // what arrived on the content channel, which a reclassified <think> span leaves longer
+			console.log(reasoning.join('')) // what arrived on the thinking channel
+			break
+		}
+		deltas.push(step.value)
 	}
-	const result = step.value // the assembled ProviderResult
-	result.content // the answer — the settled content is the authoritative one
-	answer.join('') // what arrived on the content channel, which a reclassified <think> span leaves longer
 } catch (error) {
 	if (isProviderAbortError(error)) {
 		const recovered = error.partial.content // everything that streamed before the cancel
-		answer.push(recovered)
+		console.log(recovered)
 	} else throw error
 }
 ```
@@ -525,16 +533,16 @@ The judge proofs cover the recorded wire and the live models.
 - [`tests/src/core/helpers.test.ts`](../tests/src/core/helpers.test.ts) compares the rendered prompts byte for byte and checks calibration, candidate-only normalization, label mapping, escaping, and identity.
 - [`tests/service/judge.test.ts`](../tests/service/judge.test.ts) requires Mica and the native decision model, reads the deletion noul within 0.005 of the desk's pinned No probability 0.9884, asks the native model every form in one request, and asserts Mica's System One HTTP 400 refusal. `OLLAMA_JUDGE_MODEL`, `OLLAMA_JUDGE_TEMPERATURE`, and `OLLAMA_DECISION_MODEL` override the recorded defaults. Mica warmup admits 300000 ms because the recorded cold load took 230850 ms.
 
-The hermetic projects — `src:core`, `setup`, `guides`, `conformance`, `policy`, and `config` — run with no daemon and no network. The `service` project requires a warm local Ollama and, for the page proof, a Chromium-family browser and a built `dist`; `distribution` packs and installs the artifact.
+The hermetic projects — `src:core`, `setup`, `guides`, `conformance`, `policy`, and `config` — run with no daemon and no network. The `service` project requires a warm local Ollama and, for the page proof, a Chromium-family browser and a built `dist`; `distribution` packs and installs the artifact. The import guard reads `distribution` with the hermetic projects, because it never reaches the daemon; it leaves out `probe` and `service` alone, the two projects that may.
 
-- [`tests/guides.test.ts`](../tests/guides.test.ts) — the `## Surface` ↔ `src/core` bijection (value + type exports), the `OllamaProvider` method bijection, and the equality gate: every `Summary` cell against its declaration's description paragraph, the titled `createOllama + generate` fence against the `@example` block of that title (pinned so the titled pair cannot be retired silently), and the README pitch against this guide's tagline. It also runs the flagship fences and asserts the values their comments claim.
+- [`tests/guides.test.ts`](../tests/guides.test.ts) — the `## Surface` ↔ `src/core` bijection (value + type exports), the `OllamaProvider` method bijection, and the equality gate: every `Summary` cell against its declaration's description paragraph, the titled `createOllama + generate` fence against the `@example` block of that title (pinned so the titled pair cannot be retired silently), and the README pitch against this guide's tagline. It also runs the flagship fences and asserts the values they log. It extracts each streaming fence from the README and from this guide and executes it, with its real imports and a global `fetch` the test replaces, over the turns the fence handles: this guide's over a plain, a reclassified, a cancelled, and a refused turn, and the README's, which has no `catch` arm, over the plain and the reclassified turn. It asserts the logged values, the deltas, the fence's message list, the whole body of each request, and the error the fence throws.
 - [`tests/src/core/OllamaProvider.test.ts`](../tests/src/core/OllamaProvider.test.ts) — hermetic provider request-shape (including the opt-in `truncate` and `shift` keys), framing, transport-seam, abort, deadline, and unreachable-upstream coverage, plus the streaming fold — deltas, tool-call accumulation, done-line usage, the `done_reason: 'length'` truncation and its stray-reason refusals, the unterminated tail flush, and think separation — driven over a canned NDJSON transport. Its recording proxy uses a deliberately unreachable default and asserts only captured requests and local provider behavior.
 - [`tests/src/core/helpers.test.ts`](../tests/src/core/helpers.test.ts) — the wire leaves: the request projection and every response extraction, including each malformed-wire degradation, the `done_reason` reader's `'length'`, other-reason, missing, and non-string cases, and the terminal timing reader's verbatim nanoseconds, zero, absent, malformed, and `done` cases.
 - [`tests/src/core/factories.test.ts`](../tests/src/core/factories.test.ts) — hermetic `createOllama` shape, identity, defaults, passthrough, and unreachable-upstream coverage.
 - [`tests/src/core/integration.test.ts`](../tests/src/core/integration.test.ts) — the `src/core` integration scope. A real `@orkestrel/server` + `@orkestrel/router` relay in front of this provider carries ordered content and thinking deltas, tools, and usage while keeping the browser and daemon credentials apart, refuses a wrong bearer with an empty `401` before the daemon transport is entered, crosses a browser cancel and a server deadline as an abort frame with its partial, reduces a daemon stream failure to the fixed public error frame, and replays a returned tool call. Beside those, a real agent over a canned NDJSON stream reports the model, meter, and budget layers in `result.stop`, and hermetic context framing, recap, reference, cherry-pick, canonical assembly order, scope allow-lists, workspace injection, and conversation selection run through the unreachable recording proxy, with a compile-time drift gate asserting the wire request and response shapes stay compatible with the official `ollama` client's types; that gate's authoritative check is `npm run check` (root tsc), while its run under vitest is an incidental no-op (`expectTypeOf` performs no runtime assertions).
 - [`tests/setup.test.ts`](../tests/setup.test.ts) — the shared host-independent test infrastructure, over the conversation padding, the window consumers, the throwing and recording summarizers, the workspace seeder, and the `PAGE_TOOL` definition `tests/setup.ts` exports, and over the host-independent half of `tests/setupServer.ts`: its request-narrowing guards, its refusing and streaming transports, its tool fixtures, its scripted agent stream and agent-stream driver, and its environment readers.
-- [`tests/setupServer.test.ts`](../tests/setupServer.test.ts) — the Node-resource half of `tests/setupServer.ts`: the recording proxy and the relay server on real loopback sockets, the captured and open transports, whose fixtures answer in memory, the capture wait, the provider-stream driver, the wire tables `WEATHER_TOOL` and the insatiable tool's chunk line, and the page fixture's Node half — the request recorder the relay server and the page fixture share, the derived import map, the served document's presence guards, the contained file route, the control route, the port reservation, the membership the page bounds declare — the attempt allowance, the release share beside it, the per-call shares spent inside them, the case bound that contains the pair, and the launch count the retry spends — the ordering the live controls' own intervals hold, the attempt deadline's own expiry error, the elapsed completion a bounded attempt reports on each interleaving that can outlast it (an acquisition that never settles, one that settles inside the release share, a release that parks past that share, and a release that crossed the allowance), each of those measured against the deadlines it had to wait out plus one named scheduling allowance, so what the case proves is timer-bounded completion rather than a nominal sum, the failure each of them keeps reachable as its cause — the attempt's own failure under a composed strand, and the deadline's `TimeoutError` under a crossed release — the reading each thrown failure carries into a composed message, the decision the bounded retry's predicate makes over an inert attempt record, including the interrupted run it refuses, the release order a real fixture takes when the release after it rejects, the evaluate boundary's narrowing and the deadline it carries, and the guards that narrow what the page reports back.
-- [`tests/setupService.test.ts`](../tests/setupService.test.ts) — the hermetic half of the `service` project's setup: the environment readers, the sampling tables, the readiness contract, and each live page gate's refusal — a host with no browser, a tree with no build, and a daemon that refuses the page's origin.
+- [`tests/setupServer.test.ts`](../tests/setupServer.test.ts) — the Node-resource half of `tests/setupServer.ts`: the recording proxy and the relay server on real loopback sockets, the captured and open transports, whose fixtures answer in memory, the capture wait, the provider-stream driver, the wire tables `WEATHER_TOOL` and the insatiable tool's chunk line, and the page fixture's Node half — the request recorder the relay server and the page fixture share, the derived import map, the served document's presence guards, the contained file route, the control route, the port reservation, the membership the page bounds declare — the attempt allowance, the release share beside it, the per-call shares spent inside them, the case bound that contains the pair, and the launch count the retry spends — the ordering the live controls' own intervals hold, the attempt deadline's own expiry error, the elapsed completion a bounded attempt reports on each interleaving that can outlast it (an acquisition that never settles, one that settles inside the release share, a release that parks past that share, and a release that crossed the allowance), each of those measured against the deadlines it had to wait out plus one named scheduling allowance, so what the case proves is timer-bounded completion rather than a nominal sum, the failure each of them keeps reachable as its cause — the attempt's own failure under a composed strand, and the deadline's `TimeoutError` under a crossed release — the reading each thrown failure carries into a composed message, the decision the bounded retry's predicate makes over an inert attempt record, including the interrupted run it refuses, the release order a real fixture takes when the release after it rejects, the evaluate boundary's narrowing and the deadline it carries, the guards that narrow what the page reports back, the live page proof's browser and build gates — a host with no browser and a tree with no build — the scenarios that capture the first request a provider sends through a recording proxy, each ending the call by aborting it, awaiting it, or leaving it open, the readers and runners that measure a packed package, proved against a dependency-free fixture package and a loopback registry that answers only `ping`, and the guard that keeps every hermetic project from importing `tests/setupService.ts`, which contacts the daemon when it loads: it takes the projects from `vite.config.ts`, follows every import form to a fixed point, and refuses the module as a setup file. It compares the files that references and setup paths resolve to, never their spelling, so a backslash separator, a letter case the host folds, and a query after the path cannot hide the module, while a `?raw` or `?url` import stays an asset. It refuses a `new URL(…, import.meta.url)` built at run time as it refuses a computed `import()`, apart from `vite.config.ts`, whose computed URL is inspected and listed.
+- [`tests/setupService.test.ts`](../tests/setupService.test.ts) — the hermetic half of the `service` project's setup: the environment readers, the sampling tables, the readiness contract, and the live page gate's refusal of an origin the daemon refuses.
 - [`tests/conformance.test.ts`](../tests/conformance.test.ts) — where this package's wire types drift from the official `ollama` client they are written against.
 - [`tests/distribution.test.ts`](../tests/distribution.test.ts) — the packed package installed into a throwaway consumer: the exports map, the shipped declarations, and the module objects a real runtime hands that consumer.
 - [`tests/policy.test.ts`](../tests/policy.test.ts) and [`tests/config.test.ts`](../tests/config.test.ts) — the vendored cross-cutting proofs: the path- and text-shaped repository laws, and that the root configuration resolves its aliases, projects, and outputs.

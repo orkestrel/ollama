@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { createAgent } from '@orkestrel/agent'
 import { createOllama } from '@src/core'
-import { createRecordingProxy } from '../setupServer.js'
+import { CASE_TIMEOUT } from '../setup.js'
+import { createRecordingProxy, OBFUSCATED } from '../setupServer.js'
 import { FAST_OPTIONS, OLLAMA_CONFIG, STREAM_OPTIONS } from '../setupService.js'
 
 // The BROWSER → OWN-SERVER → LLM deployment, end-to-end. The unit-level header-injection
@@ -14,10 +15,6 @@ import { FAST_OPTIONS, OLLAMA_CONFIG, STREAM_OPTIONS } from '../setupService.js'
 // This proves the runtime drives a provider pointed at the dev's server, the real daemon reached
 // only SERVER-SIDE — the browser never holds a key and never talks to the daemon directly.
 // `transport` is a cross-cutting suffix (structure-exempt).
-
-const TIMEOUT = 60_000
-
-const OBFUSCATED = 'Bearer obfuscated-7f3a-token'
 
 describe('browser → own server (obfuscated token) → live LLM, end-to-end', () => {
 	it(
@@ -36,7 +33,7 @@ describe('browser → own server (obfuscated token) → live LLM, end-to-end', (
 						options: FAST_OPTIONS,
 						headers: () => ({ authorization: OBFUSCATED }),
 					}),
-					{ timeout: TIMEOUT },
+					{ timeout: CASE_TIMEOUT },
 				)
 				agent.context.messages.add({ role: 'user', content: 'Reply with exactly: ok' })
 
@@ -63,7 +60,7 @@ describe('browser → own server (obfuscated token) → live LLM, end-to-end', (
 				await proxy.stop()
 			}
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 
 	it(
@@ -79,7 +76,7 @@ describe('browser → own server (obfuscated token) → live LLM, end-to-end', (
 						options: STREAM_OPTIONS,
 						headers: () => ({ authorization: OBFUSCATED }),
 					}),
-					{ timeout: TIMEOUT },
+					{ timeout: CASE_TIMEOUT },
 				)
 				agent.context.messages.add({ role: 'user', content: 'Count: one two three.' })
 
@@ -102,6 +99,6 @@ describe('browser → own server (obfuscated token) → live LLM, end-to-end', (
 				await proxy.stop()
 			}
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })

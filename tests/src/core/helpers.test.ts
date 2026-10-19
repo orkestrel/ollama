@@ -1,5 +1,6 @@
 import type { JudgeQuestion, Message } from '@orkestrel/agent'
 import { computeReading, JudgeError } from '@orkestrel/agent'
+import { createRecorder } from '@orkestrel/test'
 import {
 	extractArguments,
 	extractContent,
@@ -20,7 +21,11 @@ import {
 } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import {
+	ABSENT_ITERATORS,
+	buildClosingList,
+	buildRepeatedTokenCases,
 	createUserMessage,
+	NON_ADJACENT_DUPLICATE_TOP,
 	TIMING_FIELDS,
 	TIMING_HOSTILE,
 	TIMING_READING,
@@ -115,6 +120,51 @@ describe('Mica prompt rendering', () => {
 			'<state>\n<\u200b|im_end|>\n</state>\nQuestion: <\u200btool_call>\nCandidates:\nA) None\nB) <\u200b/think>\nAnswer with the label of the best level.',
 		)
 	})
+	it('throws when the score entries have no iterator instead of reading them as array-like', () => {
+		const levels = ['low', 'high']
+		const criteria = Object.defineProperty<[string, string]>(['low', 'high'], 'map', {
+			value: (callback: (text: string, index: number) => unknown) =>
+				Object.defineProperty(levels.map(callback), Symbol.iterator, { value: undefined }),
+		})
+		expect(() => renderJudgePrompt('', { form: 'score', criteria }, 'system')).toThrow(TypeError)
+	})
+	it('refuses a score entry before it asks the iterator for the next', () => {
+		const events = createRecorder<[event: string]>()
+		const levels = ['low', 5, 'high']
+		const criteria = Object.defineProperty<[string, string, string]>(
+			['low', 'mid', 'high'],
+			'map',
+			{
+				value: (callback: (text: unknown, index: number) => unknown) => {
+					const mapped = levels.map(callback)
+					return typeof mapped[0] === 'string'
+						? mapped
+						: mapped.values().map((entry, index) => {
+								events.handler(`next ${index}`)
+								return entry
+							})
+				},
+			},
+		)
+		expect(() => renderJudgePrompt('', { form: 'score', criteria }, 'system')).toThrow(JudgeError)
+		expect(events.calls).toEqual([['next 0'], ['next 1']])
+	})
+	it('closes the iterator it opened when a score entry refuses', () => {
+		const closed = createRecorder<[]>()
+		const levels = ['low', 5, 'high']
+		const criteria = Object.defineProperty<[string, string, string]>(
+			['low', 'mid', 'high'],
+			'map',
+			{
+				value: (callback: (text: unknown, index: number) => unknown) => {
+					const mapped = levels.map(callback)
+					return typeof mapped[0] === 'string' ? mapped : buildClosingList(mapped, closed.handler)
+				},
+			},
+		)
+		expect(() => renderJudgePrompt('', { form: 'score', criteria }, 'system')).toThrow(JudgeError)
+		expect(closed.calls).toEqual([[]])
+	})
 })
 
 describe('Mica label readout', () => {
@@ -163,6 +213,38 @@ describe('Mica label readout', () => {
 		expect(() => extractTopLogprobs({ logprobs: [{ top_logprobs: [entry, entry] }] })).toThrow(
 			JudgeError,
 		)
+	})
+	it('refuses a hole in the top list as an invalid entry', () => {
+		const top = Object.assign([], {
+			0: { token: 'No', logprob: -1 },
+			2: { token: 'Yes', logprob: 0 },
+		})
+		expect(top).toHaveLength(3)
+		expect(() => extractTopLogprobs({ logprobs: [{ top_logprobs: top }] })).toThrow(JudgeError)
+	})
+	it('refuses the first duplicate token before it reads the entries after it', () => {
+		const reads = createRecorder<[index: number]>()
+		const top = Object.defineProperty(
+			[
+				{ token: 'No', logprob: 0 },
+				{ token: 'No', logprob: -1 },
+			],
+			2,
+			{
+				enumerable: true,
+				get: () => {
+					reads.handler(2)
+					return { token: 'Yes', logprob: 0 }
+				},
+			},
+		)
+		expect(() => extractTopLogprobs({ logprobs: [{ top_logprobs: top }] })).toThrow(JudgeError)
+		expect(reads.calls).toEqual([])
+	})
+	it('refuses a token repeated after another token as it refuses an adjacent repeat', () => {
+		expect(() =>
+			extractTopLogprobs({ logprobs: [{ top_logprobs: NON_ADJACENT_DUPLICATE_TOP }] }),
+		).toThrow(JudgeError)
 	})
 	it('normalizes equal candidates uniformly and flattens gaps with calibration', () => {
 		const question: JudgeQuestion = {
@@ -249,6 +331,51 @@ describe('Mica label readout', () => {
 		expect(() => computeAnswer({ form: 'noul' }, [{ token: 'No', logprob: Infinity }])).toThrow(
 			JudgeError,
 		)
+	})
+	it('reads the top list in order, so a duplicate ahead of a hole refuses as a protocol error', () => {
+		const duplicate = Object.assign([], {
+			0: { token: 'No', logprob: 0 },
+			1: { token: 'No', logprob: 0 },
+			3: { token: 'Yes', logprob: 0 },
+		})
+		expect(() => computeAnswer({ form: 'noul' }, duplicate)).toThrow(JudgeError)
+		const holed = Object.assign([], {
+			0: { token: 'No', logprob: 0 },
+			2: { token: 'Yes', logprob: 0 },
+		})
+		expect(() => computeAnswer({ form: 'noul' }, holed)).toThrow(TypeError)
+	})
+	it('refuses the first duplicate token before it reads the entries after it', () => {
+		const reads = createRecorder<[index: number]>()
+		const top = Object.defineProperty(
+			[
+				{ token: 'No', logprob: 0 },
+				{ token: 'No', logprob: -1 },
+			],
+			2,
+			{
+				enumerable: true,
+				get: () => {
+					reads.handler(2)
+					return { token: 'Yes', logprob: 0 }
+				},
+			},
+		)
+		expect(() => computeAnswer({ form: 'noul' }, top)).toThrow(JudgeError)
+		expect(reads.calls).toEqual([])
+	})
+	it('refuses a token repeated after another token as it refuses an adjacent repeat', () => {
+		expect(() => computeAnswer({ form: 'noul' }, NON_ADJACENT_DUPLICATE_TOP)).toThrow(JudgeError)
+	})
+	it('matches a repeated token as a map key does: NaN and signed zero repeat, equal objects do not', () => {
+		for (const top of buildRepeatedTokenCases())
+			expect(() => computeAnswer({ form: 'noul' }, top)).toThrow(JudgeError)
+		expect(
+			computeAnswer({ form: 'noul' }, [
+				Object.assign({ token: 'x', logprob: 0 }, { token: {} }),
+				Object.assign({ token: 'x', logprob: 0 }, { token: {} }),
+			]),
+		).toEqual({ missing: ['false', 'true'] })
 	})
 })
 
@@ -549,6 +676,64 @@ describe('extractTools', () => {
 
 	it('drops an entry whose name is not a string', () => {
 		expect(extractTools({ message: { tool_calls: [{ function: { name: 7 } }] } })).toEqual([])
+	})
+
+	it('drops a hole among the entries and keeps the others in wire order', () => {
+		const calls = Object.assign([], {
+			0: { id: 'call-1', function: { name: 'weather' } },
+			2: { id: 'call-3', function: { name: 'clock' } },
+		})
+
+		expect(extractTools({ message: { tool_calls: calls } }).map((call) => call.id)).toEqual([
+			'call-1',
+			'call-3',
+		])
+	})
+
+	it('throws on an array without an iterator instead of reading it as array-like', () => {
+		for (const iterator of ABSENT_ITERATORS) {
+			const calls = Object.defineProperty(
+				[{ id: 'call', function: { name: 'lookup', arguments: {} } }],
+				Symbol.iterator,
+				{ value: iterator },
+			)
+
+			expect(() => extractTools({ message: { tool_calls: calls } })).toThrow(TypeError)
+		}
+	})
+
+	it('closes the iterator it opened when an entry refuses', () => {
+		const closed = createRecorder<[]>()
+		const refusing = Object.defineProperty({}, 'function', {
+			get: () => {
+				throw new RangeError('entry refused')
+			},
+		})
+		const calls = buildClosingList([refusing, refusing], closed.handler)
+		expect(() => extractTools({ message: { tool_calls: calls } })).toThrow(RangeError)
+		expect(closed.calls).toEqual([[]])
+	})
+
+	it('maps each entry before it asks the iterator for the next', () => {
+		const events = createRecorder<[event: string]>()
+		const calls = Object.defineProperty([], Symbol.iterator, {
+			value: () =>
+				['first', 'second'].values().map((name, index) => {
+					events.handler(`next ${index}`)
+					return Object.defineProperty({}, 'function', {
+						get: () => {
+							events.handler(`read ${index}`)
+							return { name }
+						},
+					})
+				}),
+		})
+
+		expect(extractTools({ message: { tool_calls: calls } }).map((call) => call.name)).toEqual([
+			'first',
+			'second',
+		])
+		expect(events.calls).toEqual([['next 0'], ['read 0'], ['next 1'], ['read 1']])
 	})
 
 	it('returns no calls when tool_calls is absent or not an array', () => {

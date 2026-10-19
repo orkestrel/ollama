@@ -25,13 +25,18 @@ import { describe, expect, it } from 'vitest'
 import {
 	CANNED_STREAM_DELTAS,
 	CANNED_STREAM_DONE,
+	CASE_TIMEOUT,
 	createRecordingSummarizer,
 	createThrowingSummarizer,
 	createUserMessage,
 	fillWorkspace,
+	SHORT_OPTIONS,
 	THROWING_SUMMARIZER_MESSAGE,
+	TINY_PNG_BASE64,
 } from '../../setup.js'
 import {
+	captureOpenRequest,
+	captureSettledRequest,
 	createInsatiableTool,
 	createLookupTool,
 	createRecordingProxy,
@@ -43,6 +48,7 @@ import {
 	OBFUSCATED,
 	UPSTREAM_KEY,
 	RELAY_DAEMON_CHUNKS,
+	SCENARIO_PROVIDER,
 	WEATHER_TOOL,
 	systemText,
 	waitForRequest,
@@ -50,8 +56,6 @@ import {
 	wireText,
 	wireTools,
 } from '../../setupServer.js'
-
-const TIMEOUT = 60_000
 
 describe('RelayProvider through a real server and OllamaProvider', () => {
 	it('relays ordered content and thinking, tools, and usage while separating hop credentials', async () => {
@@ -278,11 +282,6 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 	})
 })
 
-// A tiny 1x1 transparent PNG, base64-encoded — a hardcoded binary fixture: a small
-// deterministic binary payload inline rather than a generated one.
-const TINY_PNG_BASE64 =
-	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
-
 // --- Context framing on the wire ---------------------------------------------
 
 describe('Agent model layer (hermetic) — a length done reason through the agent loop', () => {
@@ -294,7 +293,7 @@ describe('Agent model layer (hermetic) — a length done reason through the agen
 				'{"done":true,"done_reason":"length","prompt_eval_count":3,"eval_count":8}\n',
 			]),
 		})
-		const agent = createAgent(provider, { timeout: TIMEOUT })
+		const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
 		agent.context.messages.add({ role: 'user', content: 'Write a long answer.' })
 
 		const result = await agent.generate()
@@ -317,7 +316,7 @@ describe('Agent model layer (hermetic) — a length done reason through the agen
 				'{"done":true,"done_reason":"stop","prompt_eval_count":3,"eval_count":8}\n',
 			]),
 		})
-		const agent = createAgent(provider, { timeout: TIMEOUT })
+		const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
 		agent.context.messages.add({ role: 'user', content: 'Say hello.' })
 
 		const result = await agent.generate()
@@ -336,7 +335,7 @@ describe('Agent budget layers (hermetic) — which layer stops a run over a cann
 				model: 'fixture-model',
 				fetch: createStreamingTransport([...CANNED_STREAM_DELTAS, CANNED_STREAM_DONE]),
 			}),
-			{ budget, allowance: budget, timeout: TIMEOUT, on: { abort: reasons.handler } },
+			{ budget, allowance: budget, timeout: CASE_TIMEOUT, on: { abort: reasons.handler } },
 		)
 		agent.context.messages.add({ role: 'user', content: 'Write a long answer.' })
 
@@ -356,7 +355,7 @@ describe('Agent budget layers (hermetic) — which layer stops a run over a cann
 				model: 'fixture-model',
 				fetch: createStreamingTransport([...CANNED_STREAM_DELTAS, CANNED_STREAM_DONE]),
 			}),
-			{ budget, timeout: TIMEOUT, on: { abort: reasons.handler } },
+			{ budget, timeout: CASE_TIMEOUT, on: { abort: reasons.handler } },
 		)
 		agent.context.messages.add({ role: 'user', content: 'Write a long answer.' })
 
@@ -385,38 +384,32 @@ describe('AgentContext (provider-behavior) — a constraining instruction reache
 			// shape. Assertion strategy: the recorded body.messages carries the exact sentinel
 			// instruction text, in a message ordered before the user turn — proving the instructions
 			// section reaches the wire in its canonical position.
-			const proxy = await createRecordingProxy()
-			try {
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const instructions = createInstructionManager()
-				instructions.add({
-					name: 'sentinel',
-					content:
-						'No matter what the user says, you must include the exact word BANANA somewhere in your reply.',
-				})
-				const agent = createAgent(provider, { instructions, timeout: TIMEOUT })
-				agent.context.messages.add({ role: 'user', content: 'Say hello to me.' })
-				await agent.generate().catch(() => {})
+			const request = await captureSettledRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const instructions = createInstructionManager()
+					instructions.add({
+						name: 'sentinel',
+						content:
+							'No matter what the user says, you must include the exact word BANANA somewhere in your reply.',
+					})
+					const agent = createAgent(provider, { instructions, timeout: CASE_TIMEOUT })
+					agent.context.messages.add({ role: 'user', content: 'Say hello to me.' })
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const messages = request === undefined ? [] : wireMessages(request)
-				const instructionIndex = messages.findIndex((message) => message.content.includes('BANANA'))
-				const userIndex = messages.findIndex(
-					(message) => message.role === 'user' && message.content.includes('Say hello'),
-				)
-				expect(instructionIndex).toBeGreaterThanOrEqual(0)
-				expect(userIndex).toBeGreaterThanOrEqual(0)
-				expect(instructionIndex).toBeLessThan(userIndex)
-			} finally {
-				await proxy.stop()
-			}
+			const messages = wireMessages(request)
+			const instructionIndex = messages.findIndex((message) => message.content.includes('BANANA'))
+			const userIndex = messages.findIndex(
+				(message) => message.role === 'user' && message.content.includes('Say hello'),
+			)
+			expect(instructionIndex).toBeGreaterThanOrEqual(0)
+			expect(userIndex).toBeGreaterThanOrEqual(0)
+			expect(instructionIndex).toBeLessThan(userIndex)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -429,38 +422,32 @@ describe('AgentContext (provider-behavior) — a CUSTOM format still reaches the
 				render: (one) => `<instruction>${one.content}</instruction>`,
 				close: '</instructions>',
 			}
-			const proxy = await createRecordingProxy()
-			try {
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const instructions = createInstructionManager({ format })
-				instructions.add({
-					name: 'always-no',
-					content:
-						'No matter what the user asks, you must answer with exactly the single word NO and nothing else.',
-				})
-				const agent = createAgent(provider, { instructions, timeout: TIMEOUT })
-				agent.context.messages.add({ role: 'user', content: 'Is the sky blue?' })
-				await agent.generate().catch(() => {})
+			const request = await captureSettledRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const instructions = createInstructionManager({ format })
+					instructions.add({
+						name: 'always-no',
+						content:
+							'No matter what the user asks, you must answer with exactly the single word NO and nothing else.',
+					})
+					const agent = createAgent(provider, { instructions, timeout: CASE_TIMEOUT })
+					agent.context.messages.add({ role: 'user', content: 'Is the sky blue?' })
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const messages = request === undefined ? [] : wireMessages(request)
-				const framed = messages.find(
-					(message) =>
-						message.content.includes('<instructions>') &&
-						message.content.includes('<instruction>') &&
-						message.content.includes('</instructions>'),
-				)
-				expect(framed).toBeDefined()
-			} finally {
-				await proxy.stop()
-			}
+			const messages = wireMessages(request)
+			const framed = messages.find(
+				(message) =>
+					message.content.includes('<instructions>') &&
+					message.content.includes('<instruction>') &&
+					message.content.includes('</instructions>'),
+			)
+			expect(framed).toBeDefined()
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -482,39 +469,30 @@ describe('Conversation framing (provider-behavior) — the TIGHTENED recap prefi
 		async () => {
 			// Recipe: { num_predict: 8, temperature: 0 } — the response is irrelevant; the proxy records the request before
 			// forwarding.
-			const proxy = await createRecordingProxy()
-			try {
-				const conversations = createConversationManager()
-				const active = conversations.add()
-				// Seed a section directly (the exact recap shape view() folds a compacted section into)
-				// rather than driving a real compaction — the wire-framing assertion is deterministic and
-				// doesn't need a summarizer call.
-				active.add({ role: 'assistant', content: `${CONVERSATION_RECAP_PREFIX}${summary}` })
-				active.add({
-					role: 'user',
-					content: 'What did I tell you my deploy key was?',
-				})
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const agent = createAgent(provider, { conversations, timeout: TIMEOUT })
-				await agent.generate().catch(() => {})
+			const conversations = createConversationManager()
+			const active = conversations.add()
+			// Seed a section directly (the exact recap shape view() folds a compacted section into)
+			// rather than driving a real compaction — the wire-framing assertion is deterministic and
+			// doesn't need a summarizer call.
+			active.add({ role: 'assistant', content: `${CONVERSATION_RECAP_PREFIX}${summary}` })
+			active.add({
+				role: 'user',
+				content: 'What did I tell you my deploy key was?',
+			})
+			const request = await captureSettledRequest(
+				SCENARIO_PROVIDER,
+				(provider) => createAgent(provider, { conversations, timeout: CASE_TIMEOUT }).generate(),
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const messages = request === undefined ? [] : wireMessages(request)
-				const recapMessage = messages.find((message) =>
-					message.content.startsWith(CONVERSATION_RECAP_PREFIX),
-				)
-				expect(recapMessage).toBeDefined()
-				expect(recapMessage?.content).toContain(FACT)
-			} finally {
-				await proxy.stop()
-			}
+			const messages = wireMessages(request)
+			const recapMessage = messages.find((message) =>
+				message.content.startsWith(CONVERSATION_RECAP_PREFIX),
+			)
+			expect(recapMessage).toBeDefined()
+			expect(recapMessage?.content).toContain(FACT)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -545,41 +523,35 @@ describe('Conversation.reference (provider-behavior) — cross-conversation attr
 			expect(block).toContain('Postgres')
 			expect(block).toContain('planning')
 
-			const proxy = await createRecordingProxy()
-			try {
-				// Conversation A is active — its own A-fact remains a current user turn.
-				const conversations = createConversationManager()
-				const active = conversations.add({ id: 'auth' }) // auto-activates
-				active.add({ role: 'user', content: 'In this chat we are debugging auth.' })
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const agent = createAgent(provider, {
-					system: 'Use the reference documents when they answer the question. Be brief.',
-					conversations,
-					timeout: TIMEOUT,
-				})
-				// PULL B into A with provenance: B.reference(...) framed + written into A's active
-				// workspace.
-				agent.context.workspaces.add().write(`conversation:${planning.id}.md`, block)
-				active.add({
-					role: 'user',
-					content: 'Which database did we pick, and in which conversation was it decided?',
-				})
-				await agent.generate().catch(() => {})
+			// Conversation A is active — its own A-fact remains a current user turn.
+			const conversations = createConversationManager()
+			const active = conversations.add({ id: 'auth' }) // auto-activates
+			active.add({ role: 'user', content: 'In this chat we are debugging auth.' })
+			const request = await captureSettledRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const agent = createAgent(provider, {
+						system: 'Use the reference documents when they answer the question. Be brief.',
+						conversations,
+						timeout: CASE_TIMEOUT,
+					})
+					// PULL B into A with provenance: B.reference(...) framed + written into A's active
+					// workspace.
+					agent.context.workspaces.add().write(`conversation:${planning.id}.md`, block)
+					active.add({
+						role: 'user',
+						content: 'Which database did we pick, and in which conversation was it decided?',
+					})
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const text = request === undefined ? '' : wireText(request)
-				expect(text).toContain('Postgres')
-				expect(text).toContain('planning')
-			} finally {
-				await proxy.stop()
-			}
+			const text = wireText(request)
+			expect(text).toContain('Postgres')
+			expect(text).toContain('planning')
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -619,39 +591,33 @@ describe('Conversation.reference (provider-behavior) — cherry-pick ONE relevan
 			expect(block).not.toContain('9am')
 			expect(block).not.toContain('talk later')
 
-			const proxy = await createRecordingProxy()
-			try {
-				const conversations = createConversationManager()
-				const active = conversations.add({ id: 'auth' }) // auto-activates
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const agent = createAgent(provider, {
-					system: 'Use the reference documents when they answer the question. Be brief.',
-					conversations,
-					timeout: TIMEOUT,
-				})
-				agent.context.workspaces.add().write(`conversation:${other.id}.md`, block)
-				active.add({
-					role: 'user',
-					content: "What's the API endpoint? Answer with just the path.",
-				})
-				await agent.generate().catch(() => {})
+			const conversations = createConversationManager()
+			const active = conversations.add({ id: 'auth' }) // auto-activates
+			const request = await captureSettledRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const agent = createAgent(provider, {
+						system: 'Use the reference documents when they answer the question. Be brief.',
+						conversations,
+						timeout: CASE_TIMEOUT,
+					})
+					agent.context.workspaces.add().write(`conversation:${other.id}.md`, block)
+					active.add({
+						role: 'user',
+						content: "What's the API endpoint? Answer with just the path.",
+					})
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const joined = request === undefined ? '' : wireText(request)
-				expect(joined).toContain(ENDPOINT)
-				expect(joined).not.toContain('standup')
-				expect(joined).not.toContain('9am')
-				expect(joined).not.toContain('talk later')
-			} finally {
-				await proxy.stop()
-			}
+			const joined = wireText(request)
+			expect(joined).toContain(ENDPOINT)
+			expect(joined).not.toContain('standup')
+			expect(joined).not.toContain('9am')
+			expect(joined).not.toContain('talk later')
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -668,126 +634,105 @@ describe('AgentContext (hermetic provider behavior) — canonical assembly order
 	it(
 		'the context assembles system, instructions, workspace, then conversation',
 		async () => {
-			const proxy = await createRecordingProxy()
-			try {
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const instructions = createInstructionManager()
-				instructions.add({ name: 'one', content: 'Be terse.' })
-				instructions.add({ name: 'two', content: 'Be polite.' })
-				const agent = createAgent(provider, {
-					system: 'SENTINEL-SYSTEM-PROMPT-7182',
-					instructions,
-					timeout: TIMEOUT,
-				})
-				agent.context.workspaces.add().write('notes.md', 'workspace filler text')
-				agent.context.messages.add({ role: 'user', content: 'What is the weather?' })
-				agent.generate().catch(() => {})
-				await waitForRequest(proxy)
+			const request = await captureOpenRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const instructions = createInstructionManager()
+					instructions.add({ name: 'one', content: 'Be terse.' })
+					instructions.add({ name: 'two', content: 'Be polite.' })
+					const agent = createAgent(provider, {
+						system: 'SENTINEL-SYSTEM-PROMPT-7182',
+						instructions,
+						timeout: CASE_TIMEOUT,
+					})
+					agent.context.workspaces.add().write('notes.md', 'workspace filler text')
+					agent.context.messages.add({ role: 'user', content: 'What is the weather?' })
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const text = request === undefined ? '' : systemText(request)
-				const systemIndex = text.indexOf('SENTINEL-SYSTEM-PROMPT-7182')
-				const instructionsIndex = text.indexOf('## Instructions')
-				const workspaceIndex = text.indexOf('## Workspace')
-				expect(systemIndex).toBeGreaterThanOrEqual(0)
-				expect(instructionsIndex).toBeGreaterThan(systemIndex)
-				expect(workspaceIndex).toBeGreaterThan(instructionsIndex)
+			const text = systemText(request)
+			const systemIndex = text.indexOf('SENTINEL-SYSTEM-PROMPT-7182')
+			const instructionsIndex = text.indexOf('## Instructions')
+			const workspaceIndex = text.indexOf('## Workspace')
+			expect(systemIndex).toBeGreaterThanOrEqual(0)
+			expect(instructionsIndex).toBeGreaterThan(systemIndex)
+			expect(workspaceIndex).toBeGreaterThan(instructionsIndex)
 
-				const messages = request === undefined ? [] : wireMessages(request)
-				const userIndex = messages.findIndex(
-					(message) => message.role === 'user' && message.content.includes('What is the weather?'),
-				)
-				expect(userIndex).toBeGreaterThan(0)
-				const [first] = messages
-				expect(first?.content.includes('What is the weather?')).toBe(false)
-			} finally {
-				await proxy.stop()
-			}
+			const messages = wireMessages(request)
+			const userIndex = messages.findIndex(
+				(message) => message.role === 'user' && message.content.includes('What is the weather?'),
+			)
+			expect(userIndex).toBeGreaterThan(0)
+			const [first] = messages
+			expect(first?.content.includes('What is the weather?')).toBe(false)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 
 	it(
 		'instructions render in descending priority with stable ties',
 		async () => {
-			const proxy = await createRecordingProxy()
-			try {
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const instructions = createInstructionManager()
-				instructions.add({
-					name: 'first-p5',
-					content: 'SENTINEL-FIRST-P5',
-					priority: 5,
-				})
-				instructions.add({
-					name: 'second-p5',
-					content: 'SENTINEL-SECOND-P5',
-					priority: 5,
-				})
-				instructions.add({
-					name: 'third-p1',
-					content: 'SENTINEL-THIRD-P1',
-					priority: 1,
-				})
-				const agent = createAgent(provider, { instructions, timeout: TIMEOUT })
-				agent.context.messages.add({ role: 'user', content: 'Hello.' })
-				agent.generate().catch(() => {})
-				await waitForRequest(proxy)
+			const request = await captureOpenRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const instructions = createInstructionManager()
+					instructions.add({
+						name: 'first-p5',
+						content: 'SENTINEL-FIRST-P5',
+						priority: 5,
+					})
+					instructions.add({
+						name: 'second-p5',
+						content: 'SENTINEL-SECOND-P5',
+						priority: 5,
+					})
+					instructions.add({
+						name: 'third-p1',
+						content: 'SENTINEL-THIRD-P1',
+						priority: 1,
+					})
+					const agent = createAgent(provider, { instructions, timeout: CASE_TIMEOUT })
+					agent.context.messages.add({ role: 'user', content: 'Hello.' })
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const text = request === undefined ? '' : systemText(request)
-				const firstIndex = text.indexOf('SENTINEL-FIRST-P5')
-				const secondIndex = text.indexOf('SENTINEL-SECOND-P5')
-				const thirdIndex = text.indexOf('SENTINEL-THIRD-P1')
-				expect(firstIndex).toBeGreaterThanOrEqual(0)
-				expect(secondIndex).toBeGreaterThan(firstIndex)
-				expect(thirdIndex).toBeGreaterThan(secondIndex)
-			} finally {
-				await proxy.stop()
-			}
+			const text = systemText(request)
+			const firstIndex = text.indexOf('SENTINEL-FIRST-P5')
+			const secondIndex = text.indexOf('SENTINEL-SECOND-P5')
+			const thirdIndex = text.indexOf('SENTINEL-THIRD-P1')
+			expect(firstIndex).toBeGreaterThanOrEqual(0)
+			expect(secondIndex).toBeGreaterThan(firstIndex)
+			expect(thirdIndex).toBeGreaterThan(secondIndex)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 
 	it(
 		'empty sections render nothing',
 		async () => {
-			const proxy = await createRecordingProxy()
-			try {
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const agent = createAgent(provider, {
-					system: 'SENTINEL-ONLY-SYSTEM-4291',
-					timeout: TIMEOUT,
-				})
-				agent.context.messages.add({ role: 'user', content: 'Hello.' })
-				agent.generate().catch(() => {})
-				await waitForRequest(proxy)
+			const request = await captureOpenRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const agent = createAgent(provider, {
+						system: 'SENTINEL-ONLY-SYSTEM-4291',
+						timeout: CASE_TIMEOUT,
+					})
+					agent.context.messages.add({ role: 'user', content: 'Hello.' })
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const text = request === undefined ? '' : systemText(request)
-				expect(text).toContain('SENTINEL-ONLY-SYSTEM-4291')
-				expect(text).not.toContain('## Instructions')
-				expect(text).not.toContain('## Workspace')
-			} finally {
-				await proxy.stop()
-			}
+			const text = systemText(request)
+			expect(text).toContain('SENTINEL-ONLY-SYSTEM-4291')
+			expect(text).not.toContain('## Instructions')
+			expect(text).not.toContain('## Workspace')
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -797,32 +742,25 @@ describe('AgentContext scope (provider-behavior) — a tools allow-list filters 
 	it(
 		'a tools allow-list omits the unlisted tool from the wire',
 		async () => {
-			const proxy = await createRecordingProxy()
-			try {
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const tools = createToolManager()
-				tools.add(createLookupTool())
-				tools.add(createInsatiableTool())
-				const scope = createScope({ name: 'lookup-only', tools: ['lookup'] })
-				const agent = createAgent(provider, { tools, scope, timeout: TIMEOUT })
-				agent.context.messages.add({ role: 'user', content: 'Hello.' })
-				agent.generate().catch(() => {})
-				await waitForRequest(proxy)
+			const request = await captureOpenRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const tools = createToolManager()
+					tools.add(createLookupTool())
+					tools.add(createInsatiableTool())
+					const scope = createScope({ name: 'lookup-only', tools: ['lookup'] })
+					const agent = createAgent(provider, { tools, scope, timeout: CASE_TIMEOUT })
+					agent.context.messages.add({ role: 'user', content: 'Hello.' })
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const names = request === undefined ? [] : wireTools(request)
-				expect(names).toContain('lookup')
-				expect(names).not.toContain('more')
-			} finally {
-				await proxy.stop()
-			}
+			const names = wireTools(request)
+			expect(names).toContain('lookup')
+			expect(names).not.toContain('more')
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -830,32 +768,25 @@ describe('AgentContext scope (provider-behavior) — an instructions allow-list 
 	it(
 		'an instructions allow-list omits the unlisted instruction from the system block',
 		async () => {
-			const proxy = await createRecordingProxy()
-			try {
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const instructions = createInstructionManager()
-				instructions.add({ name: 'allowed', content: 'SENTINEL-ALLOWED-4471' })
-				instructions.add({ name: 'blocked', content: 'SENTINEL-BLOCKED-9932' })
-				const scope = createScope({ name: 'allowed-only', instructions: ['allowed'] })
-				const agent = createAgent(provider, { instructions, scope, timeout: TIMEOUT })
-				agent.context.messages.add({ role: 'user', content: 'Hello.' })
-				agent.generate().catch(() => {})
-				await waitForRequest(proxy)
+			const request = await captureOpenRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const instructions = createInstructionManager()
+					instructions.add({ name: 'allowed', content: 'SENTINEL-ALLOWED-4471' })
+					instructions.add({ name: 'blocked', content: 'SENTINEL-BLOCKED-9932' })
+					const scope = createScope({ name: 'allowed-only', instructions: ['allowed'] })
+					const agent = createAgent(provider, { instructions, scope, timeout: CASE_TIMEOUT })
+					agent.context.messages.add({ role: 'user', content: 'Hello.' })
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const text = request === undefined ? '' : systemText(request)
-				expect(text).toContain('SENTINEL-ALLOWED-4471')
-				expect(text).not.toContain('SENTINEL-BLOCKED-9932')
-			} finally {
-				await proxy.stop()
-			}
+			const text = systemText(request)
+			expect(text).toContain('SENTINEL-ALLOWED-4471')
+			expect(text).not.toContain('SENTINEL-BLOCKED-9932')
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -863,36 +794,29 @@ describe('AgentContext scope (provider-behavior) — a files allow-list filters 
 	it(
 		'a files allow-list omits unlisted workspace files from the system block',
 		async () => {
-			const proxy = await createRecordingProxy()
-			try {
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const scope = createScope({ name: 'sentinel-only', files: ['find-me.md'] })
-				const agent = createAgent(provider, { scope, timeout: TIMEOUT })
-				const workspace = agent.context.workspaces.add()
-				fillWorkspace(workspace, {
-					count: 2,
-					bytesEach: 60,
-					sentinelPath: 'find-me.md',
-					sentinelText: 'SENTINEL-FIND-ME-6603',
-				})
-				agent.context.messages.add({ role: 'user', content: 'Hello.' })
-				agent.generate().catch(() => {})
-				await waitForRequest(proxy)
+			const request = await captureOpenRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const scope = createScope({ name: 'sentinel-only', files: ['find-me.md'] })
+					const agent = createAgent(provider, { scope, timeout: CASE_TIMEOUT })
+					const workspace = agent.context.workspaces.add()
+					fillWorkspace(workspace, {
+						count: 2,
+						bytesEach: 60,
+						sentinelPath: 'find-me.md',
+						sentinelText: 'SENTINEL-FIND-ME-6603',
+					})
+					agent.context.messages.add({ role: 'user', content: 'Hello.' })
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const text = request === undefined ? '' : wireText(request)
-				expect(text).toContain('SENTINEL-FIND-ME-6603')
-				expect(text).not.toContain('doc-01.md')
-			} finally {
-				await proxy.stop()
-			}
+			const text = wireText(request)
+			expect(text).toContain('SENTINEL-FIND-ME-6603')
+			expect(text).not.toContain('doc-01.md')
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -905,13 +829,13 @@ describe('AgentContext scope (provider-behavior) — an empty allow-list drops t
 				const provider = createOllama({
 					model: 'test-model',
 					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
+					options: SHORT_OPTIONS,
 				})
 				const tools = createToolManager()
 				tools.add(createLookupTool())
 				tools.add(createInsatiableTool())
 				const scope = createScope({ name: 'none', tools: [] })
-				const agent = createAgent(provider, { tools, scope, timeout: TIMEOUT })
+				const agent = createAgent(provider, { tools, scope, timeout: CASE_TIMEOUT })
 				agent.context.messages.add({ role: 'user', content: 'Hello.' })
 
 				agent.generate().catch(() => {})
@@ -932,7 +856,7 @@ describe('AgentContext scope (provider-behavior) — an empty allow-list drops t
 				await proxy.stop()
 			}
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -950,37 +874,31 @@ describe('AgentContext workspaces (hermetic provider behavior) — large-context
 			// Recipe: FAST_OPTIONS — the response outcome is irrelevant; the proxy records the
 			// request before forwarding. fillWorkspace's defaults (count:12, bytesEach:700) keep the
 			// total payload small (~8.4KB of filler + the sentinel).
-			const proxy = await createRecordingProxy()
-			try {
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const agent = createAgent(provider, { timeout: TIMEOUT })
-				const workspace = agent.context.workspaces.add()
-				fillWorkspace(workspace, {
-					count: 12,
-					sentinelPath: 'notes/sentinel.md',
-					sentinelText: 'THE-SENTINEL-VALUE-4471',
-				})
-				agent.context.messages.add({ role: 'user', content: 'Say hello.' })
-				await agent.generate().catch(() => {})
+			const request = await captureSettledRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
+					const workspace = agent.context.workspaces.add()
+					fillWorkspace(workspace, {
+						count: 12,
+						sentinelPath: 'notes/sentinel.md',
+						sentinelText: 'THE-SENTINEL-VALUE-4471',
+					})
+					agent.context.messages.add({ role: 'user', content: 'Say hello.' })
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const text = request === undefined ? '' : systemText(request)
-				expect(text).toContain('## Workspace')
-				expect(text).toContain('File: doc-01.md')
-				expect(text).toContain('THE-SENTINEL-VALUE-4471')
-				expect(text.indexOf('doc-01.md')).toBeGreaterThanOrEqual(0)
-				expect(text.indexOf('doc-02.md')).toBeGreaterThanOrEqual(0)
-				expect(text.indexOf('doc-01.md')).toBeLessThan(text.indexOf('doc-02.md'))
-			} finally {
-				await proxy.stop()
-			}
+			const text = systemText(request)
+			expect(text).toContain('## Workspace')
+			expect(text).toContain('File: doc-01.md')
+			expect(text).toContain('THE-SENTINEL-VALUE-4471')
+			expect(text.indexOf('doc-01.md')).toBeGreaterThanOrEqual(0)
+			expect(text.indexOf('doc-02.md')).toBeGreaterThanOrEqual(0)
+			expect(text.indexOf('doc-01.md')).toBeLessThan(text.indexOf('doc-02.md'))
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 
 	it(
@@ -989,31 +907,25 @@ describe('AgentContext workspaces (hermetic provider behavior) — large-context
 			// Recipe: FAST_OPTIONS. Two workspaces are registered — the FIRST auto-activates
 			// (WorkspaceManagerInterface.add's documented behavior), the SECOND is added but left
 			// inactive. The inactive workspace's sentinel must never reach the wire.
-			const proxy = await createRecordingProxy()
-			try {
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const agent = createAgent(provider, { timeout: TIMEOUT })
-				const active = agent.context.workspaces.add() // auto-activates
-				active.write('active.md', 'ACTIVE-CONTENT-9931')
-				const inactive = agent.context.workspaces.add({ id: 'inactive' }) // leaves active unchanged
-				inactive.write('inactive.md', 'INACTIVE-SENTINEL-3312')
-				agent.context.messages.add({ role: 'user', content: 'Say hello.' })
-				await agent.generate().catch(() => {})
+			const request = await captureSettledRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
+					const active = agent.context.workspaces.add() // auto-activates
+					active.write('active.md', 'ACTIVE-CONTENT-9931')
+					const inactive = agent.context.workspaces.add({ id: 'inactive' }) // leaves active unchanged
+					inactive.write('inactive.md', 'INACTIVE-SENTINEL-3312')
+					agent.context.messages.add({ role: 'user', content: 'Say hello.' })
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const text = request === undefined ? '' : wireText(request)
-				expect(text).toContain('ACTIVE-CONTENT-9931')
-				expect(text).not.toContain('INACTIVE-SENTINEL-3312')
-			} finally {
-				await proxy.stop()
-			}
+			const text = wireText(request)
+			expect(text).toContain('ACTIVE-CONTENT-9931')
+			expect(text).not.toContain('INACTIVE-SENTINEL-3312')
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 
 	it(
@@ -1024,36 +936,30 @@ describe('AgentContext workspaces (hermetic provider behavior) — large-context
 			// WorkspaceOptions.seed's documented contract) are placed in the active workspace. The text file's content must
 			// fence into the system block; the image's base64 payload must never appear as fenced
 			// text in any wire message content.
-			const proxy = await createRecordingProxy()
-			try {
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const agent = createAgent(provider, { timeout: TIMEOUT })
-				const workspace = agent.context.workspaces.add({
-					seed: [
-						createFile({
-							path: 'picture.png',
-							content: createBinaryContent(TINY_PNG_BASE64, 'image/png'),
-						}),
-					],
-				})
-				workspace.write('report.md', 'REPORT-TEXT-2287')
-				agent.context.messages.add({ role: 'user', content: 'Say hello.' })
-				await agent.generate().catch(() => {})
+			const request = await captureSettledRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
+					const workspace = agent.context.workspaces.add({
+						seed: [
+							createFile({
+								path: 'picture.png',
+								content: createBinaryContent(TINY_PNG_BASE64, 'image/png'),
+							}),
+						],
+					})
+					workspace.write('report.md', 'REPORT-TEXT-2287')
+					agent.context.messages.add({ role: 'user', content: 'Say hello.' })
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const text = request === undefined ? '' : wireText(request)
-				expect(text).toContain('REPORT-TEXT-2287')
-				expect(text).not.toContain(TINY_PNG_BASE64)
-			} finally {
-				await proxy.stop()
-			}
+			const text = wireText(request)
+			expect(text).toContain('REPORT-TEXT-2287')
+			expect(text).not.toContain(TINY_PNG_BASE64)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 
 	it(
@@ -1062,39 +968,33 @@ describe('AgentContext workspaces (hermetic provider behavior) — large-context
 			// Recipe: FAST_OPTIONS. A user message is seeded first, then an active workspace holding
 			// only the seeded image file. The recorded body's LAST user-role message must carry the
 			// image's base64 payload in a non-empty `images` array.
-			const proxy = await createRecordingProxy()
-			try {
-				const provider = createOllama({
-					model: 'test-model',
-					url: proxy.url,
-					options: { num_predict: 8, temperature: 0 },
-				})
-				const agent = createAgent(provider, { timeout: TIMEOUT })
-				agent.context.messages.add(createUserMessage('What is in this image?'))
-				agent.context.workspaces.add({
-					seed: [
-						createFile({
-							path: 'attached.png',
-							content: createBinaryContent(TINY_PNG_BASE64, 'image/png'),
-						}),
-					],
-				})
-				await agent.generate().catch(() => {})
+			const request = await captureSettledRequest(
+				SCENARIO_PROVIDER,
+				(provider) => {
+					const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
+					agent.context.messages.add(createUserMessage('What is in this image?'))
+					agent.context.workspaces.add({
+						seed: [
+							createFile({
+								path: 'attached.png',
+								content: createBinaryContent(TINY_PNG_BASE64, 'image/png'),
+							}),
+						],
+					})
+					return agent.generate()
+				},
+				createOllama,
+			)
 
-				const request = proxy.requests[0]
-				expect(request).toBeDefined()
-				const messages = request === undefined ? [] : wireMessages(request)
-				const userMessages = messages.filter((message) => message.role === 'user')
-				const last = userMessages[userMessages.length - 1]
-				expect(last).toBeDefined()
-				expect(last?.images).toBeDefined()
-				expect(last?.images?.length ?? 0).toBeGreaterThan(0)
-				expect(last?.images).toContain(TINY_PNG_BASE64)
-			} finally {
-				await proxy.stop()
-			}
+			const messages = wireMessages(request)
+			const userMessages = messages.filter((message) => message.role === 'user')
+			const last = userMessages[userMessages.length - 1]
+			expect(last).toBeDefined()
+			expect(last?.images).toBeDefined()
+			expect(last?.images?.length ?? 0).toBeGreaterThan(0)
+			expect(last?.images).toContain(TINY_PNG_BASE64)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })
 
@@ -1123,7 +1023,7 @@ describe('Conversation.compact() (pure, no daemon) — the two deterministic sur
 		})
 		const result = await conversation.compact()
 		expect(result).toBeUndefined()
-		expect(invocations.count).toBe(0)
+		expect(invocations.calls).toEqual([])
 	})
 })
 
@@ -1135,9 +1035,9 @@ describe('createThrowingSummarizer', () => {
 })
 
 describe('Agent (wire) — only the active conversation reaches the wire', () => {
-	it("switching to conversation B sends only B's sentinel content, and removing the active conversation clears active", async () => {
-		const proxy = await createRecordingProxy()
-		try {
+	it(
+		"switching to conversation B sends only B's sentinel content, and removing the active conversation clears active",
+		async () => {
 			const conversations = createConversationManager()
 			const a = conversations.add({ id: 'alpha' }) // auto-activates
 			a.add([
@@ -1151,25 +1051,21 @@ describe('Agent (wire) — only the active conversation reaches the wire', () =>
 			])
 			conversations.switch('bravo')
 
-			const provider = createOllama({
-				model: 'test-model',
-				url: proxy.url,
-				options: { num_predict: 8, temperature: 0 },
-			})
-			const agent = createAgent(provider, { conversations, timeout: 60_000 })
-			agent.generate().catch(() => {}) // abort-once-recorded — only the request shape matters
-			await waitForRequest(proxy, 1)
-			const request = proxy.requests[0]
-			expect(request).toBeDefined()
-			const text = request === undefined ? '' : wireText(request)
+			// The call is left running once recorded — only the request shape matters.
+			const request = await captureOpenRequest(
+				SCENARIO_PROVIDER,
+				(provider) => createAgent(provider, { conversations, timeout: CASE_TIMEOUT }).generate(),
+				createOllama,
+			)
+
+			const text = wireText(request)
 			expect(text).toContain('BRAVO')
 			expect(text).not.toContain('ALPHA')
 
 			const removed = conversations.remove('bravo')
 			expect(removed).toBe(true)
 			expect(conversations.active).toBeUndefined()
-		} finally {
-			await proxy.stop()
-		}
-	}, 60_000)
+		},
+		CASE_TIMEOUT,
+	)
 })

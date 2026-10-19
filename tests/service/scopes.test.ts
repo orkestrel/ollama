@@ -7,10 +7,9 @@ import {
 import { retryUntil } from '@orkestrel/test'
 import { createOllama } from '@src/core'
 import { describe, expect, it } from 'vitest'
+import { CASE_TIMEOUT } from '../setup.js'
 import { createRecordingProxy, systemText } from '../setupServer.js'
 import { OLLAMA_CONFIG, RETRY_BUDGET, TOOL_OPTIONS } from '../setupService.js'
-
-const TIMEOUT = 60_000
 
 describe('AgentContext scope (live, behavioral) — switching scopes changes the answer', () => {
 	// The user's core proof: two mutually-exclusive instructions, each mandating a distinct
@@ -50,7 +49,7 @@ describe('AgentContext scope (live, behavioral) — switching scopes changes the
 							conversations,
 							instructions,
 							scope,
-							timeout: TIMEOUT,
+							timeout: CASE_TIMEOUT,
 						})
 						agent.context.messages.add({ role: 'user', content: 'Reply with one short sentence.' })
 
@@ -90,6 +89,6 @@ describe('AgentContext scope (live, behavioral) — switching scopes changes the
 			const textB = best.requestB === undefined ? '' : systemText(best.requestB)
 			expect(textB).not.toContain(APRICOT.content)
 		},
-		TIMEOUT,
+		CASE_TIMEOUT,
 	)
 })

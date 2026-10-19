@@ -1,11 +1,8 @@
 import type { ConversationInterface, Message } from '@orkestrel/agent'
-import type { SystemBrowser, SystemBrowserOptions } from '@orkestrel/browser/server'
-import { findSystemBrowsers } from '@orkestrel/browser/server'
 import { isRecord, isString } from '@orkestrel/contract'
 import { createOllama, OLLAMA_CHAT_PATH, OllamaProvider } from '@src/core'
-import { existsSync } from 'node:fs'
-import { join } from 'node:path'
-import { env, rootToPath, withScheme, WORKSPACE_ROOT } from './setupServer.js'
+import { SHORT_OPTIONS } from './setup.js'
+import { env, withScheme } from './setupServer.js'
 
 /** Names the live daemon and model selected for the service axis. */
 export const OLLAMA_CONFIG = Object.freeze({
@@ -139,6 +136,33 @@ export async function isOllamaReady(selected = OLLAMA_CONFIG.model): Promise<boo
 }
 
 /**
+ * Requests a daemon route and reports a failed attempt as an error that names the cause.
+ *
+ * @param url - The absolute URL to request
+ * @param init - The request options, without the deadline signal
+ * @param timeout - The deadline in milliseconds, armed inside the attempt
+ * @param message - Builds the error message from the text of the failure
+ * @returns The daemon's response, whatever its status
+ * @throws Thrown when the deadline cannot be armed or the request cannot be made, carrying the failure as its cause.
+ * @example
+ * ```ts
+ * const response = await fetchDaemon(`${OLLAMA_CONFIG.host}/api/tags`, {}, 5000, (reason) => `no daemon (${reason})`)
+ * ```
+ */
+export async function fetchDaemon(
+	url: string,
+	init: RequestInit,
+	timeout: number,
+	message: (reason: string) => string,
+): Promise<Response> {
+	try {
+		return await fetch(url, { ...init, signal: AbortSignal.timeout(timeout) })
+	} catch (error) {
+		throw new Error(message(String(error)), { cause: error })
+	}
+}
+
+/**
  * Warms the selected model with a one-token chat request.
  *
  * @param selected - The model to warm; defaults to the provider service model
@@ -150,9 +174,9 @@ export async function warmOllama(
 	selected = OLLAMA_CONFIG.model,
 	timeout = selected === OLLAMA_JUDGE_CONFIG.model ? 300_000 : 120_000,
 ): Promise<void> {
-	let response: Response
-	try {
-		response = await fetch(`${OLLAMA_CONFIG.host}/api/chat`, {
+	const response = await fetchDaemon(
+		`${OLLAMA_CONFIG.host}/api/chat`,
+		{
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({
@@ -163,14 +187,11 @@ export async function warmOllama(
 				options: { num_predict: 1 },
 				keep_alive: '30m',
 			}),
-			signal: AbortSignal.timeout(timeout),
-		})
-	} catch (error) {
-		throw new Error(
-			`Ollama warmup could not reach ${OLLAMA_CONFIG.host} for model ${selected} (${String(error)})`,
-			{ cause: error },
-		)
-	}
+		},
+		timeout,
+		(reason) =>
+			`Ollama warmup could not reach ${OLLAMA_CONFIG.host} for model ${selected} (${reason})`,
+	)
 	if (!response.ok) {
 		throw new Error(
 			`Ollama warmup failed (${response.status}) for model ${selected} at ${OLLAMA_CONFIG.host}`,
@@ -180,7 +201,7 @@ export async function warmOllama(
 }
 
 /** Names the request options for content and usage round-trips. */
-export const FAST_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0 })
+export const FAST_OPTIONS = Object.freeze({ ...SHORT_OPTIONS })
 
 /** Names the request options for multi-delta streaming round-trips. */
 export const STREAM_OPTIONS = Object.freeze({ num_predict: 16, temperature: 0 })
@@ -192,10 +213,10 @@ export const TOOL_OPTIONS = Object.freeze({ num_predict: 32, temperature: 0 })
 export const ABORT_OPTIONS = Object.freeze({ num_predict: 64, temperature: 0 })
 
 /** Names the request options for seeded deterministic round-trips. */
-export const SEED_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0, seed: 42 })
+export const SEED_OPTIONS = Object.freeze({ ...SHORT_OPTIONS, seed: 42 })
 
 /** Names the request options for native-thinking round-trips. */
-export const THINK_OPTIONS = Object.freeze({ num_predict: 8, temperature: 0 })
+export const THINK_OPTIONS = Object.freeze({ ...SHORT_OPTIONS })
 
 /**
  * Names the elapsed-time bound every live retry gives the `retryUntil` helper, in milliseconds.
@@ -219,66 +240,51 @@ export const TOOL_LOOP_OPTIONS = Object.freeze({ num_predict: 64, temperature: 0
  */
 export const PAGE_OPTIONS = Object.freeze({ num_predict: 32, temperature: 0 })
 
-// ── Live page proof gates ─────────────────────────────────────────────────────
-//
-// Every precondition the live page proof needs beyond the daemon, each a hard throw
-// naming its own fix. Each resolves on call and none at module load, so this module
-// stays importable by its own proof in the `setup` project, which `npm test` runs on
-// a host with no browser and no build.
+/** Represents one sampling table paired with the name of the export that holds it. */
+export type SamplingTable = readonly [name: string, table: Readonly<Record<string, unknown>>]
 
 /**
- * Lists the container-safe launch flags the live page proof's browser takes.
+ * Lists every sampling table above under its own export name, in declaration order.
  *
- * @remarks
- * Headless Chromium running as root — the common case in a sandboxed container — needs
- * sandboxing off because it requires a non-root user, needs `/dev/shm` bypassed because it
- * is usually too small, and needs the GPU off because none is reachable. Each flag is inert
- * on a developer workstation, so the proof carries one launch recipe rather than a host
- * branch.
+ * @remarks A proof that holds all the tables to one invariant reads this population rather than
+ * restating it, so a table added above joins that proof by joining this list.
  */
-export const PAGE_BROWSER_ARGS: readonly string[] = Object.freeze([
-	'--no-sandbox',
-	'--disable-dev-shm-usage',
-	'--disable-gpu',
+export const SAMPLING_TABLES: readonly SamplingTable[] = Object.freeze<SamplingTable[]>([
+	['FAST_OPTIONS', FAST_OPTIONS],
+	['STREAM_OPTIONS', STREAM_OPTIONS],
+	['TOOL_OPTIONS', TOOL_OPTIONS],
+	['ABORT_OPTIONS', ABORT_OPTIONS],
+	['SEED_OPTIONS', SEED_OPTIONS],
+	['THINK_OPTIONS', THINK_OPTIONS],
+	['TOOL_LOOP_OPTIONS', TOOL_LOOP_OPTIONS],
+	['PAGE_OPTIONS', PAGE_OPTIONS],
 ])
 
 /**
- * Resolves the Chromium-family browser the page proof drives, or throws naming what to install.
+ * Lists the sampling tables a second time, each under its own export name, stated apart from
+ * {@link SAMPLING_TABLES}.
  *
- * @param options - Candidate-source overrides; omitted ⇒ full default discovery
- * @returns The discovered browser executable and its classified engine
- * @throws Thrown when no candidate source resolves a browser executable.
+ * @remarks A proof compares the two lists entry by entry, by reference, so a table added to one list
+ * and not the other, a name that points at the wrong table, and a swapped pair of equal tables each
+ * fail it.
  */
-export function requirePageBrowser(options?: SystemBrowserOptions): SystemBrowser {
-	const found = findSystemBrowsers(options)[0]
-	if (found === undefined) {
-		throw new Error(
-			'The page proof requires a Chromium-family browser on this host and found none. ' +
-				'Install Chrome or Edge, or point PLAYWRIGHT_EXECUTABLE_PATH or CHROME_PATH at an executable.',
-		)
-	}
-	return found
-}
+export const SAMPLING_EXPORTS: readonly SamplingTable[] = Object.freeze<SamplingTable[]>([
+	['FAST_OPTIONS', FAST_OPTIONS],
+	['STREAM_OPTIONS', STREAM_OPTIONS],
+	['TOOL_OPTIONS', TOOL_OPTIONS],
+	['ABORT_OPTIONS', ABORT_OPTIONS],
+	['SEED_OPTIONS', SEED_OPTIONS],
+	['THINK_OPTIONS', THINK_OPTIONS],
+	['TOOL_LOOP_OPTIONS', TOOL_LOOP_OPTIONS],
+	['PAGE_OPTIONS', PAGE_OPTIONS],
+])
 
-/**
- * Resolves this workspace's built core entry, or throws naming the build that produces it.
- *
- * @param root - The workspace root holding `dist`; defaults to {@link WORKSPACE_ROOT}
- * @returns The absolute path of the built core entry the page's import map serves
- * @throws Thrown when the built core entry is absent.
- * @remarks The page's direct-daemon case imports `@orkestrel/ollama` from this workspace's
- * own build rather than from an installed copy, so an unbuilt tree would fail as a module
- * that does not resolve rather than as the missing build it is.
- */
-export function requireBuild(root: URL | string = WORKSPACE_ROOT): string {
-	const path = join(rootToPath(root), 'dist', 'src', 'core', 'index.js')
-	if (!existsSync(path)) {
-		throw new Error(
-			`The page proof serves this workspace's built core entry and found none at ${path}; run npm run build`,
-		)
-	}
-	return path
-}
+// ── Live page proof daemon gate ───────────────────────────────────────────────
+//
+// The one precondition the live page proof needs from the daemon, a hard throw naming
+// its own fix. It resolves on call. This module itself contacts the daemon at load, so
+// only the `service` project and the fixture-hosted `tests/setupService.test.ts` may
+// import it; the Node-only gates that need no daemon are in `tests/setupServer.ts`.
 
 /**
  * Checks that the daemon answers a cross-origin preflight for the page's own origin.
@@ -293,23 +299,20 @@ export function requireBuild(root: URL | string = WORKSPACE_ROOT): string {
  */
 export async function requireDaemonOrigin(origin: string): Promise<void> {
 	const url = `${OLLAMA_CONFIG.host}${OLLAMA_CHAT_PATH}`
-	let response: Response
-	try {
-		response = await fetch(url, {
+	const response = await fetchDaemon(
+		url,
+		{
 			method: 'OPTIONS',
 			headers: {
 				origin,
 				'access-control-request-method': 'POST',
 				'access-control-request-headers': 'content-type',
 			},
-			signal: AbortSignal.timeout(10_000),
-		})
-	} catch (error) {
-		throw new Error(
-			`The page proof could not preflight ${url} for origin ${origin} (${String(error)}); start the daemon`,
-			{ cause: error },
-		)
-	}
+		},
+		10_000,
+		(reason) =>
+			`The page proof could not preflight ${url} for origin ${origin} (${reason}); start the daemon`,
+	)
 	const allowed = response.headers.get('access-control-allow-origin')
 	if (!response.ok || (allowed !== origin && allowed !== '*')) {
 		throw new Error(

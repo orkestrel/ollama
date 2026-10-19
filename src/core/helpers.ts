@@ -32,10 +32,10 @@ import {
  * ```
  */
 export function escapeSpecialTokens(text: string): string {
-	let escaped = text
-	for (const token of MICA_SPECIAL_TOKENS)
-		escaped = escaped.replaceAll(token, `<\u200b${token.slice(1)}`)
-	return escaped
+	return MICA_SPECIAL_TOKENS.reduce(
+		(escaped, token) => escaped.replaceAll(token, `<\u200b${token.slice(1)}`),
+		text,
+	)
 }
 
 /**
@@ -61,30 +61,44 @@ export function renderJudgePrompt(
 	const instructions = question.instructions ?? ''
 	if (!isString(instructions))
 		throw new JudgeError('QUESTION', 'judge error: mica instructions must be text')
-	const lines: string[] = []
-	if (question.form === 'noul') {
-		for (const key of ['false', 'true'] as const) {
-			const text = question.criteria?.[key] ?? key
-			if (!isString(text))
-				throw new JudgeError('QUESTION', `judge error: mica criterion ${key} must be text`)
-			lines.push(`${key}: ${escapeSpecialTokens(text === '' ? key : text)}`)
-		}
-	} else {
-		const entries =
-			question.form === 'choice'
-				? Object.entries(question.criteria)
-				: question.criteria.map((text, index) => [String(index), text] as const)
-		for (const [key, text] of entries) {
-			if (text !== null && !isString(text))
-				throw new JudgeError('QUESTION', `judge error: mica criterion ${key} must be text or null`)
-			const label = labels.get(key)
-			const named =
-				question.form === 'choice' && key !== '' && key !== label && !/^[cs]?\p{Nd}+$/u.test(key)
-			lines.push(
-				`${label}) ${named ? `[${escapeSpecialTokens(key)}] ` : ''}${escapeSpecialTokens(text === null ? 'None' : text)}`,
-			)
-		}
-	}
+	const entries =
+		question.form === 'choice'
+			? Object.entries(question.criteria)
+			: question.form === 'score'
+				? question.criteria.map((text, index) => [String(index), text] as const)
+				: []
+	// The iterable below hands `Array.from` only the iterator protocol, as `for…of` consumed
+	// `entries`: a `map` result without an iterator throws instead of falling back to array-like
+	// access, and a hole is visited as `undefined`.
+	const lines =
+		question.form === 'noul'
+			? (['false', 'true'] as const).map((key) => {
+					const text = question.criteria?.[key] ?? key
+					if (!isString(text))
+						throw new JudgeError('QUESTION', `judge error: mica criterion ${key} must be text`)
+					return `${key}: ${escapeSpecialTokens(text === '' ? key : text)}`
+				})
+			: Array.from(
+					{
+						[Symbol.iterator]() {
+							return entries[Symbol.iterator]()
+						},
+					},
+					([key, text]) => {
+						if (text !== null && !isString(text))
+							throw new JudgeError(
+								'QUESTION',
+								`judge error: mica criterion ${key} must be text or null`,
+							)
+						const label = labels.get(key)
+						const named =
+							question.form === 'choice' &&
+							key !== '' &&
+							key !== label &&
+							!/^[cs]?\p{Nd}+$/u.test(key)
+						return `${label}) ${named ? `[${escapeSpecialTokens(key)}] ` : ''}${escapeSpecialTokens(text === null ? 'None' : text)}`
+					},
+				)
 	const ending =
 		question.form === 'noul'
 			? `Criteria:\n${lines.join('\n')}\nAnswer Yes if true, or No if false.`
@@ -144,13 +158,15 @@ export function extractTopLogprobs(value: unknown): readonly Logprob[] {
 	if (!isArray(top))
 		throw new JudgeError('PROTOCOL', 'judge error: missing first-position top logprobs')
 	const result: Logprob[] = []
-	const seen = new Set<string>()
 	for (const entry of top) {
 		const token: unknown = isObject(entry) ? Reflect.get(entry, 'token') : undefined
 		const logprob: unknown = isObject(entry) ? Reflect.get(entry, 'logprob') : undefined
-		if (!isString(token) || !isFiniteNumber(logprob) || seen.has(token))
+		if (
+			!isString(token) ||
+			!isFiniteNumber(logprob) ||
+			result.some((earlier) => earlier.token === token)
+		)
 			throw new JudgeError('PROTOCOL', 'judge error: invalid or duplicate top logprob token')
-		seen.add(token)
 		result.push({ token, logprob })
 	}
 	return result
@@ -180,21 +196,21 @@ export function computeAnswer(
 			'judge error: calibration temperature must be finite and positive',
 		)
 	const labels = buildJudgeLabels(question)
-	const available = new Map<string, number>()
+	// A log of the readings so far: a repeated token throws, and `includes` matches a key as a `Map` does.
+	const readings: Array<readonly [string, number]> = []
 	for (const entry of top) {
 		const { token, logprob } = entry
-		if (!isFiniteNumber(logprob) || available.has(token))
+		if (!isFiniteNumber(logprob) || readings.map(([earlier]) => earlier).includes(token))
 			throw new JudgeError('PROTOCOL', 'judge error: invalid or duplicate top logprob token')
-		available.set(token, logprob)
+		readings.push([token, logprob])
 	}
-	const missing: string[] = []
-	const candidates: Array<[string, number]> = []
-	for (const [key, label] of labels) {
-		const logprob = available.get(label)
-		if (logprob === undefined) missing.push(key)
-		else candidates.push([key, logprob])
-	}
+	const available = new Map(readings)
+	const answers = Array.from(labels, ([key, label]) => [key, available.get(label)] as const)
+	const missing = answers.filter(([, logprob]) => logprob === undefined).map(([key]) => key)
 	if (missing.length > 0) return { missing }
+	const candidates = answers.flatMap(([key, logprob]) =>
+		logprob === undefined ? [] : [[key, logprob] as const],
+	)
 	const peak = Math.max(...candidates.map(([, logprob]) => logprob))
 	const weights = candidates.map(
 		([key, logprob]) => [key, Math.exp((logprob - peak) / temperature)] as const,
@@ -428,21 +444,29 @@ export function extractTools(record: Readonly<Record<string, unknown>>): readonl
 	if (!isRecord(message)) return []
 	const calls = Reflect.get(message, 'tool_calls')
 	if (!isArray(calls)) return []
-	const out: ToolCall[] = []
-	for (const entry of calls) {
-		if (!isRecord(entry)) continue
-		const callable = Reflect.get(entry, 'function')
-		if (!isRecord(callable)) continue
-		const name = Reflect.get(callable, 'name')
-		if (!isString(name)) continue
-		const id = Reflect.get(entry, 'id')
-		out.push({
-			id: isString(id) ? id : crypto.randomUUID(),
-			name,
-			arguments: extractArguments(Reflect.get(callable, 'arguments')),
-		})
-	}
-	return out
+	// The iterable below hands `Array.from` only the iterator protocol, as `for…of` consumed it: an
+	// array without an iterator throws instead of falling back to array-like access, and a hole is
+	// visited as `undefined`.
+	return Array.from(
+		{
+			[Symbol.iterator]() {
+				return calls[Symbol.iterator]()
+			},
+		},
+		(entry) => {
+			if (!isRecord(entry)) return undefined
+			const callable = Reflect.get(entry, 'function')
+			if (!isRecord(callable)) return undefined
+			const name = Reflect.get(callable, 'name')
+			if (!isString(name)) return undefined
+			const id = Reflect.get(entry, 'id')
+			return {
+				id: isString(id) ? id : crypto.randomUUID(),
+				name,
+				arguments: extractArguments(Reflect.get(callable, 'arguments')),
+			}
+		},
+	).filter((call) => call !== undefined)
 }
 
 /**

@@ -4,7 +4,7 @@ import { createTokenBudget, isBudgetError } from '@orkestrel/budget'
 import { createNDJSONParser } from '@orkestrel/ndjson'
 import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
-import { OLLAMA_CHAT_PATH } from '@src/core'
+import { OLLAMA_CHAT_PATH, OllamaProvider } from '@src/core'
 import {
 	CASE_TIMEOUT,
 	createUserMessage,
@@ -114,6 +114,63 @@ describe('Agent budget (live) — an exhausted token budget trips the loop', () 
 
 describe('Agent budget (live) — an exhausted token budget trips MID-GENERATION', () => {
 	it(
+		'a separate tighter allowance stops at the meter while the cost budget and model retain headroom',
+		async () => {
+			const reasons = createRecorder<[reason: unknown]>()
+			const budget = createTokenBudget({ id: 'budget', max: 10_000, scope: 'completion' })
+			const allowance = createTokenBudget({ id: 'meter', max: 5, scope: 'completion' })
+			const provider = new OllamaProvider({
+				model: OLLAMA_CONFIG.model,
+				url: OLLAMA_CONFIG.host,
+				options: { num_predict: 512, temperature: 0 },
+			})
+			const agent = createAgent(provider, {
+				budget,
+				allowance,
+				timeout: CASE_TIMEOUT,
+				on: { abort: reasons.handler },
+			})
+			agent.context.messages.add({ role: 'user', content: LONG_ANSWER_PROMPT })
+
+			const { tokens, result } = await driveAgent(agent.stream())
+			const stop = result.stop
+
+			expect(result.partial).toBe(true)
+			expect(stop?.layer).toBe('meter')
+			if (stop?.layer !== 'meter') throw new Error('expected a meter-layer stop')
+			expect(stop).toMatchObject({
+				id: allowance.id,
+				max: allowance.max,
+				consumed: allowance.consumed,
+				estimate: Math.ceil(tokens.join('').length / 4),
+			})
+			expect(stop.consumed).toBeGreaterThanOrEqual(stop.max)
+			expect(stop.estimate).toBe(allowance.consumed)
+			expect(allowance.exhausted).toBe(true)
+			expect(allowance.signal.aborted).toBe(true)
+			expect(reasons.calls).toEqual([[allowance.signal.reason]])
+			const reason: unknown = allowance.signal.reason
+			expect(isBudgetError(reason)).toBe(true)
+			if (!isBudgetError(reason)) throw new Error('expected the allowance exhaustion reason')
+			expect(reason.context).toEqual({
+				id: stop.id,
+				max: stop.max,
+				consumed: stop.consumed,
+			})
+			expect(stop.usage).toEqual(result.usage)
+			expect(budget.consumed).toBe(result.usage?.completion ?? stop.estimate)
+			expect(budget.consumed).toBeLessThan(budget.max)
+			expect(budget.exhausted).toBe(false)
+			expect(budget.signal.aborted).toBe(false)
+			// An interrupted Ollama stream has no terminal usage report; it never reached the model cap.
+			expect(result.usage).toBeUndefined()
+			expect(result.content.length).toBeGreaterThan(0)
+			expect(result.content.length).toBeLessThan(1000)
+		},
+		CASE_TIMEOUT,
+	)
+
+	it(
 		'a tiny completion-token allowance aborts mid-stream (no tool loop needed) with partial: true, a BudgetError abort reason, a meter-layer stop, and content bounded by the budget arithmetic',
 		async () => {
 			// Content deltas are charged to the `allowance` incrementally as estimated tokens
@@ -163,6 +220,57 @@ describe('Agent budget (live) — an exhausted token budget trips MID-GENERATION
 })
 
 describe('Agent model layer (live) — the model ends an answer at its own token limit', () => {
+	it(
+		'loose token bounds let the model stop first and preserve the estimate beside reported usage',
+		async () => {
+			const reasons = createRecorder<[reason: unknown]>()
+			const budget = createTokenBudget({ id: 'budget', max: 10_000, scope: 'completion' })
+			const allowance = createTokenBudget({ id: 'meter', max: 10_000, scope: 'completion' })
+			const provider = new OllamaProvider({
+				model: OLLAMA_CONFIG.model,
+				url: OLLAMA_CONFIG.host,
+				options: FAST_OPTIONS,
+			})
+			const agent = createAgent(provider, {
+				budget,
+				allowance,
+				timeout: CASE_TIMEOUT,
+				on: { abort: reasons.handler },
+			})
+			agent.context.messages.add({ role: 'user', content: LONG_ANSWER_PROMPT })
+
+			const { tokens, usages, result } = await driveAgent(agent.stream())
+			const stop = result.stop
+			const usage = result.usage
+
+			expect(result.partial).toBe(false)
+			expect(stop?.layer).toBe('model')
+			if (stop?.layer !== 'model' || usage === undefined)
+				throw new Error('expected a model-layer stop with reported usage')
+			expect(stop).toEqual({
+				layer: 'model',
+				id: provider.id,
+				estimate: Math.ceil(tokens.join('').length / 4),
+				usage,
+			})
+			expect(stop.estimate).toBeGreaterThan(0)
+			expect(usages).toEqual([usage])
+			expect(usage.prompt).toBeGreaterThan(0)
+			expect(usage.completion).toBe(FAST_OPTIONS.num_predict)
+			expect(usage.total).toBe(usage.prompt + usage.completion)
+			expect(budget.consumed).toBe(usage.completion)
+			expect(allowance.consumed).toBe(stop.estimate)
+			expect(budget.consumed).toBeLessThan(budget.max)
+			expect(allowance.consumed).toBeLessThan(allowance.max)
+			expect(budget.exhausted).toBe(false)
+			expect(allowance.exhausted).toBe(false)
+			expect(budget.signal.aborted).toBe(false)
+			expect(allowance.signal.aborted).toBe(false)
+			expect(reasons.calls).toEqual([])
+		},
+		CASE_TIMEOUT,
+	)
+
 	it(
 		'a small num_predict cap ends the daemon answer with done_reason length on the terminal record',
 		async () => {
@@ -232,6 +340,58 @@ describe('Agent model layer (live) — the model ends an answer at its own token
 			expect(generated).not.toHaveProperty('truncated')
 			expect(result.partial).toBe(false)
 			expect(result).not.toHaveProperty('stop')
+		},
+		CASE_TIMEOUT,
+	)
+
+	it(
+		'an oversized prompt is silently truncated by default without a provider truncation flag or agent stop',
+		async () => {
+			const messages = [
+				createUserMessage('Background material. '.repeat(1024)),
+				{ id: 'acknowledged', role: 'assistant', content: 'Acknowledged.' } as const,
+				createUserMessage(SHORT_ANSWER_PROMPT),
+			]
+			const control = new OllamaProvider({
+				model: OLLAMA_CONFIG.model,
+				url: OLLAMA_CONFIG.host,
+				options: { num_ctx: 8192, num_predict: 256, temperature: 0 },
+			})
+			const provider = new OllamaProvider({
+				model: OLLAMA_CONFIG.model,
+				url: OLLAMA_CONFIG.host,
+				options: { num_ctx: 512, num_predict: 256, temperature: 0 },
+			})
+			expect(provider.encode({ messages })).not.toHaveProperty('truncate')
+			const full = await control.generate(messages, AbortSignal.timeout(CASE_TIMEOUT))
+			const generated = await provider.generate(messages, AbortSignal.timeout(CASE_TIMEOUT))
+			const complete = full.usage
+			const truncated = generated.usage
+			if (complete === undefined || truncated === undefined)
+				throw new Error('expected prompt usage for both context windows')
+			// The larger window measures the same prompt in daemon tokens, independent of a local estimate.
+			expect(complete.prompt).toBeGreaterThan(512)
+			expect(complete.prompt).toBeLessThan(8192)
+			expect(truncated.prompt).toBeGreaterThan(0)
+			expect(truncated.prompt).toBeLessThanOrEqual(512)
+			expect(truncated.prompt).toBeLessThan(complete.prompt)
+			expect(generated.content.length).toBeGreaterThan(0)
+			expect(generated).not.toHaveProperty('truncated')
+
+			const reasons = createRecorder<[reason: unknown]>()
+			const agent = createAgent(provider, {
+				timeout: CASE_TIMEOUT,
+				on: { abort: reasons.handler },
+			})
+			agent.context.messages.add(messages)
+			const result = await agent.generate()
+
+			expect(result.usage?.prompt).toBeGreaterThan(0)
+			expect(result.usage?.prompt).toBeLessThanOrEqual(512)
+			expect(result.content.length).toBeGreaterThan(0)
+			expect(result.partial).toBe(false)
+			expect(result).not.toHaveProperty('stop')
+			expect(reasons.calls).toEqual([])
 		},
 		CASE_TIMEOUT,
 	)

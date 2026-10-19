@@ -72,8 +72,8 @@
 		"prepack": "npm run build"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.30",
-		"@orkestrel/budget": "^0.0.13",
+		"@orkestrel/agent": "^0.0.31",
+		"@orkestrel/budget": "^0.0.14",
 		"@orkestrel/contract": "^0.0.19",
 		"@orkestrel/ndjson": "^0.0.12",
 		"@orkestrel/tool": "^0.0.19"
@@ -81,22 +81,22 @@
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.59.4",
 		"@orkestrel/abort": "^0.0.13",
-		"@orkestrel/browser": "^0.0.28",
+		"@orkestrel/browser": "^0.0.29",
 		"@orkestrel/guide": "^0.0.24",
-		"@orkestrel/probe": "^0.0.23",
+		"@orkestrel/probe": "^0.0.24",
 		"@orkestrel/router": "^0.0.17",
-		"@orkestrel/scaffold": "^0.0.102",
+		"@orkestrel/scaffold": "^0.0.103",
 		"@orkestrel/server": "^0.0.23",
-		"@orkestrel/test": "^0.0.25",
+		"@orkestrel/test": "^0.0.27",
 		"@orkestrel/timeout": "^0.0.13",
 		"@orkestrel/workspace": "^0.0.12",
-		"@types/node": "^26.6.4",
+		"@types/node": "^26.6.5",
 		"ollama": "0.6.3",
-		"oxfmt": "^0.72.0",
-		"oxlint": "^1.87.0",
+		"oxfmt": "^0.74.0",
+		"oxlint": "^1.89.0",
 		"typescript": "^6.0.3",
-		"vite": "^8.3.3",
-		"vitest": "^4.1.11"
+		"vite": "^8.3.4",
+		"vitest": "^4.1.12"
 	},
 	"engines": {
 		"node": ">=22.12.0"

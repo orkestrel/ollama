@@ -13,6 +13,7 @@ import type { ToolCall, ToolDefinition, ToolInterface, ToolResult } from '@orkes
 import type { TokenUsage } from '@orkestrel/budget'
 import type { RecorderInterface } from '@orkestrel/test'
 import type { FenceError, FenceObservation, StreamFenceCase } from './setup.js'
+import type { DistributionResolution } from './setupDistribution.js'
 import type { OllamaOptions } from '@src/core'
 import type { RouteInput } from '@orkestrel/router'
 import type { ServerInterface } from '@orkestrel/server'
@@ -4315,14 +4316,6 @@ export const DECLARATION_CONDITIONS = Object.freeze({
 	browser: BUNDLER_CONDITIONS.module,
 })
 
-/** Represents one compile driver: the compiler options its scratch project sets and the conditions it applies. */
-export interface Resolution {
-	readonly label: string
-	readonly resolution: string
-	readonly module: string
-	readonly conditions: Readonly<Record<PackageFormat, readonly string[]>>
-}
-
 /** Represents the target one exports-map entry resolved to. */
 export interface TargetResolution {
 	readonly target: string
@@ -4336,7 +4329,7 @@ export interface TargetResolution {
  * stays in each CommonJS probe that can resolve it. The option values are the spellings the
  * project file takes, so nothing here needs the compiler's own API to name them.
  */
-export const RESOLUTIONS: readonly Resolution[] = Object.freeze([
+export const RESOLUTIONS: readonly DistributionResolution[] = Object.freeze([
 	{
 		label: 'node16',
 		resolution: 'node16',
@@ -4363,7 +4356,7 @@ export const RESOLUTIONS: readonly Resolution[] = Object.freeze([
  * @remarks A browser application compiles through a bundler, so the browser drive answers under
  * this one alone, and naming it here keeps that selection tied to the driver it selects.
  */
-export const BROWSER_DRIVER: Resolution = requireValue(
+export const BROWSER_DRIVER: DistributionResolution = requireValue(
 	RESOLUTIONS.find((candidate) => candidate.label === 'bundler'),
 	"RESOLUTIONS carries no 'bundler' row",
 )
@@ -4421,7 +4414,7 @@ export interface ConsumerSurface {
 	readonly entry: DistributionEntry
 	readonly extension: string
 	readonly published: readonly string[]
-	readonly driver: Resolution
+	readonly driver: DistributionResolution
 }
 
 /** Represents one diagnostic of a compiler report: its first line, and the trimmed indented lines that elaborate it. */
@@ -4937,7 +4930,7 @@ export function selectEntries(
 export function selectDrivers(
 	entry: DistributionEntry,
 	format: PackageFormat,
-): readonly Resolution[] {
+): readonly DistributionResolution[] {
 	return RESOLUTIONS.filter(
 		(driver) => selectEntries([entry], driver.conditions[format]).length > 0,
 	)
@@ -4981,7 +4974,7 @@ export function selectUntypable(
 export function writeProject(
 	stage: DistributionStage,
 	name: string,
-	driver: Resolution,
+	driver: DistributionResolution,
 	files: readonly string[],
 ): string {
 	const path = join(stage.consumer, `tsconfig.${name}.json`)
@@ -5330,7 +5323,7 @@ export function openStage(
 export function checkResolution(
 	stage: DistributionStage,
 	name: string,
-	driver: Resolution,
+	driver: DistributionResolution,
 	extension: string,
 	format: PackageFormat,
 ): Compilation | undefined {

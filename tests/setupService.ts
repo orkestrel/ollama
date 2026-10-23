@@ -7,7 +7,7 @@ import { env, withScheme } from './setupServer.js'
 /** Names the live daemon and model selected for the service axis. */
 export const OLLAMA_CONFIG = Object.freeze({
 	host: withScheme(env('OLLAMA_HOST', 'http://localhost:11434')),
-	model: env('OLLAMA_MODEL', 'qwen3.5:2b-q4_K_M'),
+	model: env('OLLAMA_MODEL', 'qwen3.5:4b-q4_K_M'),
 })
 
 /** Names the live Mica calibration and the native decision model. */

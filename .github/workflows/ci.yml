@@ -47,6 +47,10 @@ jobs:
 
       - name: Provision live service
         run: bash scripts/ollama.sh
+        env:
+          OLLAMA_MODEL: qwen3.5:4b-q4_K_M
 
       - name: Run live service tests
         run: npm run test:service
+        env:
+          OLLAMA_MODEL: qwen3.5:4b-q4_K_M

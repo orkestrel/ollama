@@ -84,6 +84,11 @@ import {
 	boundPageAttempt,
 	BROWSER_DRIVER,
 	buildImportMap,
+	buildDaemonMode,
+	buildDaemonOptions,
+	createDaemonPeer,
+	DAEMON_MODEL,
+	DAEMON_VERSION,
 	buildModuleFixture,
 	buildRecordedRequest,
 	buildReferences,
@@ -288,6 +293,43 @@ import {
 	WEATHER_TOOL,
 	WORKSPACE_ROOT,
 } from './setupServer.js'
+
+describe('dedicated daemon protocol infrastructure', () => {
+	it('builds independent fixture declarations and scenario arguments without starting a child', async () => {
+		const ordinary = await buildDaemonOptions()
+		const selected = await buildDaemonMode('silence', { readiness: 3210 })
+		expect(ordinary.executable.arguments?.at(-1)).toBe('normal')
+		expect(selected.executable.arguments?.at(-1)).toBe('silence')
+		expect(selected.readiness).toBe(3210)
+		expect(selected.models).toEqual([DAEMON_MODEL])
+		expect(selected.executable.version).toBe(DAEMON_VERSION)
+		expect(selected.executable.digest).toMatch(/^[a-f0-9]{64}$/)
+		expect(selected.url).not.toBe(ordinary.url)
+	})
+
+	it('serves metadata and a controlled unload reply while recording exact request bytes', async () => {
+		const peer = await createDaemonPeer({ unload: 'selected-control' })
+		try {
+			await expect((await fetch(`${peer.url}/api/version`)).json()).resolves.toEqual({
+				version: DAEMON_VERSION,
+			})
+			await expect((await fetch(`${peer.url}/api/tags`)).json()).resolves.toEqual({
+				models: [DAEMON_MODEL],
+			})
+			await expect(
+				(await fetch(`${peer.url}/api/generate`, { method: 'POST', body: 'exact-request' })).json(),
+			).resolves.toEqual({ model: 'selected-control', done: true, eval_count: 0 })
+			expect(peer.requests).toEqual([
+				{ path: '/api/version', body: '' },
+				{ path: '/api/tags', body: '' },
+				{ path: '/api/generate', body: 'exact-request' },
+			])
+		} finally {
+			await peer.destroy()
+		}
+		await peer.destroy()
+	})
+})
 
 describe('createRelayServer', () => {
 	it('records accepted and refused request fields and mounts the authenticated inference route', async () => {

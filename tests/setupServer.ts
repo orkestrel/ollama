@@ -15,6 +15,11 @@ import type { RecorderInterface } from '@orkestrel/test'
 import type { FenceError, FenceObservation, StreamFenceCase } from './setup.js'
 import type { DistributionResolution } from './setupDistribution.js'
 import type { OllamaOptions } from '@src/core'
+import type { OllamaDaemonOptions } from '@src/server'
+import { Emitter } from '@orkestrel/emitter'
+import { createHash } from 'node:crypto'
+import { createServer as createHTTPServer } from 'node:http'
+import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { RouteInput } from '@orkestrel/router'
 import type { ServerInterface } from '@orkestrel/server'
 import type {
@@ -35,6 +40,7 @@ import {
 	resolveRoot,
 	waitForAbort,
 	waitForCondition,
+	waitForDelay,
 } from '@orkestrel/test'
 import { createLoopback, resolveContained } from '@orkestrel/test/server'
 import {
@@ -1958,6 +1964,261 @@ export async function reservePort(): Promise<number> {
 	const loopback = await createLoopback(createNetServer())
 	await loopback.destroy()
 	return loopback.port
+}
+
+// Dedicated daemon protocol fixtures stay hermetic and bind only ephemeral loopback ports.
+
+/** Names the version the dedicated protocol peer advertises. */
+export const DAEMON_VERSION = '0.40.8'
+
+/** Declares the exact model inventory entry the dedicated protocol peer advertises. */
+export const DAEMON_MODEL = Object.freeze({ name: 'fixture:雪', digest: 'fixture-digest' })
+
+/** Supplies inert valid input for validation proofs that perform no host I/O. */
+export const DAEMON_DECLARATION: OllamaDaemonOptions = Object.freeze({
+	executable: Object.freeze({
+		path: process.execPath,
+		digest: 'a'.repeat(64),
+		version: DAEMON_VERSION,
+	}),
+	url: 'http://127.0.0.1:31111',
+	workspace: fileURLToPath(WORKSPACE_ROOT),
+	models: Object.freeze([DAEMON_MODEL]),
+})
+
+/** Names metadata failures that require no child process. */
+export const METADATA_FAULTS = Object.freeze([
+	'redirect',
+	'oversized',
+	'slow',
+	'status',
+	'disconnect',
+] as const)
+
+/** Names child lifecycle refusals that require a real owned process. */
+export const DAEMON_LIFECYCLE_FAILURES = Object.freeze([
+	['silence', 'readiness'],
+	['exit', 'owner'],
+	['bind', 'owner'],
+	['die-reply', 'owner|metadata'],
+] as const)
+
+/**
+ * Bounds each spawning proof from the 2026-10-23 full npm test reading of 3577.9021 ms.
+ * @remarks Study load was unconfirmed at both process snapshots. The 15000 ms budget exceeds
+ * three times the slowest observed case (10733.7063 ms), leaving 11422.0979 ms above that case.
+ */
+export const DAEMON_LIFECYCLE_BUDGET = 15_000
+
+/** Names the permanent shutdown triggers the owned-tree proof exercises. */
+export const DAEMON_ENDINGS = Object.freeze(['stop', 'abort'] as const)
+
+/** Lists malformed declarations with an independent valid declaration as their control. */
+export const INVALID_DAEMON_OVERRIDES: ReadonlyArray<
+	readonly [string, Readonly<Record<string, unknown>>]
+> = Object.freeze([
+	['missing executable', { executable: undefined }],
+	[
+		'relative executable',
+		{ executable: { path: 'node', digest: 'a'.repeat(64), version: DAEMON_VERSION } },
+	],
+	['missing digest', { executable: { path: process.execPath, version: DAEMON_VERSION } }],
+	[
+		'uppercase digest',
+		{ executable: { path: process.execPath, digest: 'A'.repeat(64), version: DAEMON_VERSION } },
+	],
+	[
+		'empty version',
+		{ executable: { path: process.execPath, digest: 'a'.repeat(64), version: '' } },
+	],
+	['default port', { url: 'http://127.0.0.1:11434' }],
+	['ephemeral port', { url: 'http://127.0.0.1:0' }],
+	['implicit port', { url: 'http://127.0.0.1' }],
+	['foreign host', { url: 'http://localhost:31111' }],
+	['credentials', { url: 'http://name:password@127.0.0.1:31111' }],
+	['path', { url: 'http://127.0.0.1:31111/other' }],
+	['query', { url: 'http://127.0.0.1:31111?value=1' }],
+	['fragment', { url: 'http://127.0.0.1:31111#value' }],
+	['relative workspace', { workspace: '.' }],
+	['empty models', { models: [] }],
+	['duplicate models', { models: [DAEMON_MODEL, DAEMON_MODEL] }],
+	['missing model digest', { models: [{ name: 'fixture' }] }],
+	['zero readiness', { readiness: 0 }],
+	['negative zero readiness', { readiness: -0 }],
+	['fractional readiness', { readiness: 1.5 }],
+	['nonfinite readiness', { readiness: Number.NaN }],
+	['overflow readiness', { readiness: 2_147_483_648 }],
+	['zero byte limit', { metadata: { bytes: 0 } }],
+	['unsafe byte limit', { metadata: { bytes: Number.MAX_SAFE_INTEGER + 1 } }],
+	['invalid metadata timer', { metadata: { timeout: -1 } }],
+	['invalid environment', { environment: { TEST: 3 } }],
+	['NUL environment', { environment: { TEST: '\0' } }],
+	['relative store', { store: '.' }],
+	['invalid termination', { termination: { grace: -1 } }],
+])
+
+/**
+ * Builds a complete declaration targeting the protocol fixture rather than a real daemon.
+ * @param overrides - Declaration members the case controls
+ * @returns A declaration with a reserved dedicated port and the selected Node executable digest
+ */
+export async function buildDaemonOptions(
+	overrides?: Partial<OllamaDaemonOptions>,
+): Promise<OllamaDaemonOptions> {
+	return {
+		executable: {
+			path: process.execPath,
+			digest: createHash('sha256').update(readFileSync(process.execPath)).digest('hex'),
+			version: DAEMON_VERSION,
+			arguments: [
+				fileURLToPath(new URL('tests/src/server/fixtures/daemon.mjs', WORKSPACE_ROOT)),
+				'normal',
+			],
+		},
+		url: `http://127.0.0.1:${await reservePort()}`,
+		workspace: fileURLToPath(WORKSPACE_ROOT),
+		models: [DAEMON_MODEL],
+		readiness: 10_000,
+		metadata: { timeout: 5000 },
+		termination: { grace: 20, drain: 500 },
+		...overrides,
+	}
+}
+
+/**
+ * Builds a declaration selecting one raw protocol executable scenario.
+ * @param mode - The fixture scenario
+ * @param overrides - Declaration members the case controls
+ * @returns The complete fixture declaration
+ */
+export async function buildDaemonMode(
+	mode: string,
+	overrides?: Partial<OllamaDaemonOptions>,
+): Promise<OllamaDaemonOptions> {
+	const options = await buildDaemonOptions(overrides)
+	return {
+		...options,
+		executable: {
+			...options.executable,
+			arguments: [
+				fileURLToPath(new URL('tests/src/server/fixtures/daemon.mjs', WORKSPACE_ROOT)),
+				mode,
+			],
+		},
+	}
+}
+
+/** Configures an in-process protocol peer's independent refusal controls. */
+export interface DaemonPeerOptions {
+	readonly fault?: string
+	readonly delay?: number
+	readonly unload?: string
+}
+
+/** Serves deterministic Ollama metadata and unload replies over a real loopback socket. */
+export class DaemonPeer {
+	readonly #options: DaemonPeerOptions
+	readonly #requests: Array<{ readonly path: string; readonly body: string }> = []
+	readonly #emitter = new Emitter<{ readonly request: readonly [] }>()
+	readonly #controller = new AbortController()
+	readonly #server
+	#loopback: Awaited<ReturnType<typeof createLoopback>> | undefined
+
+	/** Creates a protocol peer without binding a socket. */
+	constructor(options: DaemonPeerOptions = {}) {
+		this.#options = options
+		this.#server = createHTTPServer((request, response) => {
+			void this.#answer(request, response)
+		})
+	}
+
+	/** Holds the dedicated origin after listening. */
+	get url(): string {
+		if (this.#loopback === undefined) throw new Error('Peer has not started')
+		return this.#loopback.url
+	}
+
+	/** Holds each request after its body arrives. */
+	get requests(): ReadonlyArray<{ readonly path: string; readonly body: string }> {
+		return [...this.#requests]
+	}
+
+	/** Holds the protocol request observation surface. */
+	get emitter() {
+		return this.#emitter
+	}
+
+	/** Binds the peer to an ephemeral loopback port. */
+	async start(): Promise<void> {
+		this.#loopback = await createLoopback(this.#server)
+	}
+
+	/** Releases pending replies, connections, and the listening port. */
+	async destroy(): Promise<void> {
+		this.#controller.abort()
+		await this.#loopback?.destroy()
+		this.#emitter.destroy()
+	}
+
+	async #answer(request: IncomingMessage, response: ServerResponse): Promise<void> {
+		const chunks: Buffer[] = []
+		for await (const chunk of request)
+			chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)))
+		this.#requests.push({ path: request.url ?? '/', body: Buffer.concat(chunks).toString() })
+		this.#emitter.emit('request')
+		if (this.#options.fault === 'disconnect') {
+			response.destroy()
+			return
+		}
+		if (this.#options.fault === 'redirect') {
+			response.writeHead(302, { location: '/api/generate' }).end('redirect')
+			return
+		}
+		if (this.#options.fault === 'status') {
+			response.writeHead(500).end('refused')
+			return
+		}
+		if (this.#options.fault === 'oversized') {
+			response.end('x'.repeat(1024))
+			return
+		}
+		if (this.#options.fault === 'partial') {
+			response.write('{"version":')
+			response.flushHeaders()
+			await waitForAbort(this.#controller.signal)
+			response.end()
+			return
+		}
+		if (this.#options.fault === 'slow') {
+			await waitForAbort(this.#controller.signal)
+			response.end()
+			return
+		}
+		if (this.#options.delay !== undefined) {
+			await waitForDelay(this.#options.delay)
+		}
+		response.setHeader('content-type', 'application/json')
+		response.end(
+			JSON.stringify(
+				request.url === '/api/version'
+					? { version: DAEMON_VERSION }
+					: request.url === '/api/tags'
+						? { models: [DAEMON_MODEL] }
+						: { model: this.#options.unload ?? DAEMON_MODEL.name, done: true, eval_count: 0 },
+			),
+		)
+	}
+}
+
+/**
+ * Creates a listening in-process peer with no child executable.
+ * @param options - Protocol refusal controls
+ * @returns The listening peer and its request log
+ */
+export async function createDaemonPeer(options?: DaemonPeerOptions): Promise<DaemonPeer> {
+	const peer = new DaemonPeer(options)
+	await peer.start()
+	return peer
 }
 
 // ── Live page proof gates ─────────────────────────────────────────────────────

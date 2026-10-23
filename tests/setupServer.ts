@@ -1974,6 +1974,12 @@ export const DAEMON_VERSION = '0.40.8'
 /** Declares the exact model inventory entry the dedicated protocol peer advertises. */
 export const DAEMON_MODEL = Object.freeze({ name: 'fixture:雪', digest: 'fixture-digest' })
 
+/** Declares distinct fixture identities for ordered maintenance proofs. */
+export const DAEMON_MODELS = Object.freeze([
+	DAEMON_MODEL,
+	Object.freeze({ name: 'fixture:cedar', digest: 'cedar-digest' }),
+])
+
 /** Supplies inert valid input for validation proofs that perform no host I/O. */
 export const DAEMON_DECLARATION: OllamaDaemonOptions = Object.freeze({
 	executable: Object.freeze({
@@ -2012,6 +2018,42 @@ export const DAEMON_LIFECYCLE_BUDGET = 15_000
 
 /** Names the permanent shutdown triggers the owned-tree proof exercises. */
 export const DAEMON_ENDINGS = Object.freeze(['stop', 'abort'] as const)
+
+/** Names the daemon's optional transport and its default control. */
+export const DAEMON_SENDERS = Object.freeze(['collaborator', 'global'] as const)
+
+/** Names each daemon send boundary a collaborator can refuse. */
+export const DAEMON_REFUSED_PATHS = Object.freeze(['/api/version', '/api/tags', '/api/generate'])
+
+/** Preserves the fixture's successful unload reply independently of the daemon's reader. */
+export const DAEMON_UNLOAD_REPLY = '{"model":"fixture:雪","done":true,"eval_count":0}'
+
+/**
+ * Re-chunks a real transport's response into single bytes while recording requests before send.
+ * @param transport - The underlying sender
+ * @param record - The request observer, called before the underlying sender
+ * @returns A fetch collaborator preserving status, headers, cancellation, and body bytes
+ */
+export function createRechunkingTransport(
+	transport: typeof globalThis.fetch,
+	record?: (request: Request) => void,
+): typeof globalThis.fetch {
+	return async (input, init) => {
+		record?.(new Request(input, init))
+		const response = await transport(input, init)
+		if (response.body === null) return response
+		return new Response(
+			response.body.pipeThrough(
+				new TransformStream<Uint8Array, Uint8Array>({
+					transform: (chunk, controller) => {
+						for (const byte of chunk) controller.enqueue(Uint8Array.of(byte))
+					},
+				}),
+			),
+			{ status: response.status, headers: response.headers },
+		)
+	}
+}
 
 /** Lists malformed declarations with an independent valid declaration as their control. */
 export const INVALID_DAEMON_OVERRIDES: ReadonlyArray<
@@ -2055,6 +2097,9 @@ export const INVALID_DAEMON_OVERRIDES: ReadonlyArray<
 	['NUL environment', { environment: { TEST: '\0' } }],
 	['relative store', { store: '.' }],
 	['invalid termination', { termination: { grace: -1 } }],
+	['non-callable fetch', { fetch: {} }],
+	['null fetch', { fetch: null }],
+	['string fetch', { fetch: 'fetch' }],
 ])
 
 /**

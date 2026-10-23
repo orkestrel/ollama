@@ -11,6 +11,19 @@ describe('daemon declaration validators', () => {
 		expect(isOllamaModel(options.models[0])).toBe(true)
 	})
 
+	it('accepts an omitted, undefined, or callable fetch and refuses a throwing fetch accessor', () => {
+		expect(isOllamaDaemonOptions({ ...DAEMON_DECLARATION, fetch: undefined })).toBe(true)
+		expect(isOllamaDaemonOptions({ ...DAEMON_DECLARATION, fetch: globalThis.fetch })).toBe(true)
+		expect(
+			isOllamaDaemonOptions({
+				...DAEMON_DECLARATION,
+				get fetch() {
+					throw new Error('unreadable fetch')
+				},
+			}),
+		).toBe(false)
+	})
+
 	it.each(INVALID_DAEMON_OVERRIDES)(
 		'refuses the malformed %s declaration before I/O',
 		(_label, override) => {

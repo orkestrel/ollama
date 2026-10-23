@@ -6,6 +6,9 @@ import { appendFileSync, writeFileSync, existsSync, readFileSync } from 'node:fs
 
 const [mode = 'normal'] = process.argv.slice(2)
 const origin = new URL(`http://${process.env.OLLAMA_HOST}`)
+const models = process.env.FIXTURE_MODELS
+	? JSON.parse(process.env.FIXTURE_MODELS)
+	: [{ name: 'fixture:雪', digest: mode === 'digest' ? 'wrong-digest' : 'fixture-digest' }]
 if (origin.hostname !== '127.0.0.1' || origin.port === '11434' || origin.port === '') {
 	throw new Error('The fixture requires a dedicated loopback port')
 }
@@ -54,21 +57,14 @@ if (mode === 'sentinel' || mode === 'runner') {
 				request.url === '/api/version'
 					? { version: mode === 'version' ? 'wrong-version' : '0.40.8' }
 					: request.url === '/api/tags'
-						? {
-								models: [
-									{
-										name: 'fixture:雪',
-										digest: mode === 'digest' ? 'wrong-digest' : 'fixture-digest',
-									},
-								],
-							}
+						? { models }
 						: {
 								model:
 									process.env.FIXTURE_UNLOAD && existsSync(process.env.FIXTURE_UNLOAD)
 										? readFileSync(process.env.FIXTURE_UNLOAD, 'utf8')
 										: mode === 'unload'
 											? 'other-model'
-											: 'fixture:雪',
+											: JSON.parse(Buffer.concat(chunks).toString()).model,
 								done: true,
 								eval_count: 0,
 							},

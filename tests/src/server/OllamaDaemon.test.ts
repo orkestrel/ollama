@@ -1,20 +1,163 @@
 import { appendFileSync, copyFileSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createServer } from 'node:net'
+import { createHash } from 'node:crypto'
 import { createLoopback, createScratch, isRunning } from '@orkestrel/test/server'
 import { createRecorder, waitForCondition } from '@orkestrel/test'
 import { createSession } from '@orkestrel/process/server'
 import { OllamaDaemon } from '@src/server'
 import {
 	buildDaemonMode,
+	createRechunkingTransport,
 	DAEMON_ENDINGS,
 	DAEMON_LIFECYCLE_BUDGET,
 	DAEMON_LIFECYCLE_FAILURES,
 	DAEMON_MODEL,
+	DAEMON_MODELS,
+	DAEMON_REFUSED_PATHS,
+	DAEMON_SENDERS,
+	DAEMON_UNLOAD_REPLY,
+	runWithFetch,
 } from '../../setupServer.js'
 import { describe, expect, it } from 'vitest'
 
 describe('OllamaDaemon lifecycle', () => {
+	it.each(DAEMON_SENDERS)(
+		'routes every request through the %s sender and retains re-chunked maintenance bytes',
+		async (sender) => {
+			const requests = createRecorder<readonly [Request]>()
+			const globals = createRecorder<readonly [string]>()
+			const original = globalThis.fetch.bind(globalThis)
+			const transport = createRechunkingTransport(original, requests.handler)
+			const options = {
+				...(await buildDaemonMode('normal', {
+					models: DAEMON_MODELS,
+					environment: { FIXTURE_MODELS: JSON.stringify(DAEMON_MODELS) },
+				})),
+				...(sender === 'collaborator' ? { fetch: transport } : {}),
+			}
+			const daemon = new OllamaDaemon(options)
+			options.fetch = () => Promise.reject(new Error('caller replaced its fetch'))
+			try {
+				await runWithFetch(
+					(input, init) => {
+						globals.handler(new Request(input, init).url)
+						if (sender === 'collaborator')
+							throw new Error('global fetch reached despite collaborator')
+						return transport(input, init)
+					},
+					async () => {
+						const identity = await daemon.start()
+						await daemon.unload()
+						await daemon.unload()
+						const bodies = await Promise.all(
+							requests.calls.map(async ([request]) => Buffer.from(await request.arrayBuffer())),
+						)
+						expect(requests.calls.map(([request]) => [request.method, request.url])).toEqual([
+							['GET', `${options.url}/api/version`],
+							['GET', `${options.url}/api/tags`],
+							['POST', `${options.url}/api/generate`],
+							['POST', `${options.url}/api/generate`],
+							['POST', `${options.url}/api/generate`],
+							['POST', `${options.url}/api/generate`],
+						])
+						const unload = Buffer.from('{"model":"fixture:雪","keep_alive":0}')
+						const cedar = Buffer.from('{"model":"fixture:cedar","keep_alive":0}')
+						expect(bodies).toEqual([Buffer.alloc(0), Buffer.alloc(0), unload, cedar, unload, cedar])
+						expect(requests.calls.every(([request]) => request.redirect === 'manual')).toBe(true)
+						expect(requests.calls.every(([request]) => !request.signal.aborted)).toBe(true)
+						expect(requests.calls[2]?.[0].headers.get('content-type')).toBe('application/json')
+						expect(daemon.maintenance.map((record) => record.sequence)).toEqual([0, 1, 2, 3])
+						for (const record of daemon.maintenance) {
+							const expected = record.model.name === DAEMON_MODEL.name ? unload : cedar
+							const response = Buffer.from(
+								record.model.name === DAEMON_MODEL.name
+									? DAEMON_UNLOAD_REPLY
+									: '{"model":"fixture:cedar","done":true,"eval_count":0}',
+							)
+							expect(record.request).toEqual({
+								content: expected.toString('base64'),
+								size: expected.byteLength,
+								digest: createHash('sha256').update(expected).digest('hex'),
+								complete: true,
+							})
+							expect(record.response).toEqual({
+								content: response.toString('base64'),
+								size: response.byteLength,
+								digest: createHash('sha256').update(response).digest('hex'),
+								complete: true,
+							})
+							expect(record.status).toBe(200)
+							expect(record.error).toBeUndefined()
+							expect(record.timing?.counts.decode).toBe(0)
+						}
+						expect(globals.calls).toEqual(
+							sender === 'collaborator' ? [] : requests.calls.map(([request]) => [request.url]),
+						)
+						expect(await daemon.stop()).toBe(true)
+						expect(isRunning(identity.pid)).toBe(false)
+					},
+				)
+			} finally {
+				await daemon.destroy()
+			}
+		},
+		DAEMON_LIFECYCLE_BUDGET,
+	)
+
+	it.each(DAEMON_REFUSED_PATHS)(
+		'preserves a collaborator rejection at %s and joins the owned child on stop',
+		async (path) => {
+			const scratch = createScratch()
+			const pid = join(scratch.path, 'pid')
+			const original = globalThis.fetch.bind(globalThis)
+			const refused = new Error('consumer transport refused')
+			const requests = createRecorder<readonly [string]>()
+			const stopped = createRecorder<readonly [boolean]>()
+			const daemon = new OllamaDaemon(
+				await buildDaemonMode('normal', {
+					environment: { FIXTURE_PID: pid },
+					on: { stop: stopped.handler },
+					fetch: (input, init) => {
+						const request = new Request(input, init)
+						requests.handler(new URL(request.url).pathname)
+						return new URL(request.url).pathname === path
+							? Promise.reject(refused)
+							: original(input, init)
+					},
+				}),
+			)
+			try {
+				const pending =
+					path === '/api/generate' ? daemon.start().then(() => daemon.unload()) : daemon.start()
+				await expect(pending).rejects.toMatchObject({ code: 'metadata', cause: refused })
+				expect(daemon.identity?.models).toEqual(
+					path === '/api/generate' ? [DAEMON_MODEL] : undefined,
+				)
+				expect(isRunning(Number(readFileSync(pid, 'utf8')))).toBe(path === '/api/generate')
+				const record = expect.objectContaining({
+					request: expect.objectContaining({ complete: true }),
+					error: expect.objectContaining({ code: 'metadata', cause: refused }),
+				})
+				expect(daemon.maintenance).toEqual(path === '/api/generate' ? [record] : [])
+				expect(daemon.maintenance[0]?.response).toBeUndefined()
+				expect(requests.calls).toEqual(
+					DAEMON_REFUSED_PATHS.slice(0, DAEMON_REFUSED_PATHS.indexOf(path) + 1).map((route) => [
+						route,
+					]),
+				)
+				expect(stopped.calls).toEqual(path === '/api/generate' ? [] : [[true]])
+				expect(await daemon.stop()).toBe(true)
+				expect(isRunning(Number(readFileSync(pid, 'utf8')))).toBe(false)
+				expect(stopped.calls).toEqual([[true]])
+			} finally {
+				await daemon.destroy()
+				scratch.destroy()
+			}
+		},
+		DAEMON_LIFECYCLE_BUDGET,
+	)
+
 	it(
 		'shares startup, verifies identity before maintenance, retains receipts, and refuses restart',
 		async () => {

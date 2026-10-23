@@ -143,6 +143,7 @@ export function isOllamaDaemonOptions(value: unknown): value is OllamaDaemonOpti
 			return false
 		return (
 			(value.signal === undefined || value.signal instanceof AbortSignal) &&
+			(value.fetch === undefined || isFunction(value.fetch)) &&
 			(value.error === undefined || isFunction(value.error)) &&
 			(value.on === undefined || (isRecord(value.on) && Object.values(value.on).every(isFunction)))
 		)

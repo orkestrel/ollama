@@ -1,3 +1,4 @@
+import type { ProviderOptions } from '@orkestrel/agent'
 import type { EmitterErrorHandler, EmitterHooks, EmitterInterface } from '@orkestrel/emitter'
 import type { SessionOptions } from '@orkestrel/process'
 import type { OllamaTiming } from '@src/core'
@@ -70,9 +71,13 @@ export interface OllamaMetadataOptions {
  * grace and stream-drain settings and their defaults. `signal` aborts startup or use and
  * starts the same permanent stop; an already aborted signal refuses before spawn.
  * `on` installs initial lifecycle listeners; `error` receives isolated listener failures.
+ * `fetch` carries every version probe, model inventory, and unload request. Default: the
+ * global `fetch` bound to `globalThis`. The collaborator must honor the supplied signal
+ * and manual redirect policy and return an unread standard response body; the daemon
+ * retains its byte and timer bounds when reading that body.
  * The daemon owns a snapshot of the declaration before doing I/O.
  */
-export interface OllamaDaemonOptions {
+export interface OllamaDaemonOptions extends Pick<ProviderOptions, 'fetch'> {
 	readonly on?: EmitterHooks<OllamaDaemonEventMap>
 	readonly error?: EmitterErrorHandler
 	readonly executable: OllamaExecutable

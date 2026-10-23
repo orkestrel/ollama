@@ -13,13 +13,71 @@ import {
 } from '@src/server'
 import {
 	createDaemonPeer,
+	createRechunkingTransport,
 	DAEMON_MODEL,
+	DAEMON_UNLOAD_REPLY,
 	DAEMON_VERSION,
 	METADATA_FAULTS,
+	runWithFetch,
 } from '../../setupServer.js'
 import { describe, expect, it } from 'vitest'
 
 describe('daemon protocol helpers', () => {
+	it('keeps byte bounds exact across a collaborator that splits Unicode into single bytes', async () => {
+		const peer = await createDaemonPeer()
+		const requests = createRecorder<readonly [Request]>()
+		const transport = createRechunkingTransport(globalThis.fetch.bind(globalThis), requests.handler)
+		const body = Buffer.from(DAEMON_UNLOAD_REPLY)
+		const request = retainOllamaBytes(Buffer.from('{"model":"fixture:雪","keep_alive":0}'), true)
+		try {
+			await runWithFetch(
+				() => Promise.reject(new Error('global fetch reached despite collaborator')),
+				async () => {
+					const exact = await readOllamaReply(
+						peer.url,
+						'/api/generate',
+						{ bytes: body.byteLength },
+						undefined,
+						request,
+						transport,
+					)
+					expect(exact.error).toBeUndefined()
+					expect(exact.status).toBe(200)
+					expect(exact.response).toEqual({
+						content: body.toString('base64'),
+						size: body.byteLength,
+						digest: createHash('sha256').update(body).digest('hex'),
+						complete: true,
+					})
+					const limit = body.indexOf(Buffer.from('雪')) + 1
+					const partial = await readOllamaReply(
+						peer.url,
+						'/api/generate',
+						{ bytes: limit },
+						undefined,
+						request,
+						transport,
+					)
+					expect(partial.error).toMatchObject({ code: 'metadata' })
+					expect(partial.status).toBe(200)
+					expect(partial.response).toEqual({
+						content: body.subarray(0, limit).toString('base64'),
+						size: limit,
+						digest: createHash('sha256').update(body.subarray(0, limit)).digest('hex'),
+						complete: false,
+					})
+					expect(requests.count).toBe(2)
+					expect(peer.requests).toEqual([
+						{ path: '/api/generate', body: '{"model":"fixture:雪","keep_alive":0}' },
+						{ path: '/api/generate', body: '{"model":"fixture:雪","keep_alive":0}' },
+					])
+				},
+			)
+		} finally {
+			await peer.destroy()
+		}
+	})
+
 	it('refuses an absent announcement even when the candidate origin is malformed', () => {
 		expect(matchesOllamaAnnouncement('no listener announcement', 'not-an-origin')).toBe(false)
 	})

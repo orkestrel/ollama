@@ -318,6 +318,8 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 				'/api/version',
 				this.#options.metadata,
 				signal,
+				undefined,
+				this.#options.fetch,
 			)
 			signal.throwIfAborted()
 			this.#requireLive(session)
@@ -325,7 +327,14 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 			if (version.response === undefined)
 				throw new OllamaError('Version body is absent', { code: 'metadata' })
 			verifyOllamaVersion(readOllamaJSON(version.response), this.#options.executable.version)
-			const inventory = await readOllamaReply(this.url, '/api/tags', this.#options.metadata, signal)
+			const inventory = await readOllamaReply(
+				this.url,
+				'/api/tags',
+				this.#options.metadata,
+				signal,
+				undefined,
+				this.#options.fetch,
+			)
 			signal.throwIfAborted()
 			this.#requireLive(session)
 			if (inventory.error !== undefined) throw inventory.error
@@ -375,6 +384,7 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 				this.#options.metadata,
 				this.#lifetime.signal,
 				request,
+				this.#options.fetch,
 			)
 			try {
 				if (reply.error !== undefined) throw reply.error

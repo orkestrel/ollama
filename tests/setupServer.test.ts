@@ -26,6 +26,7 @@ import { attempt, isError, isRecord, isString } from '@orkestrel/contract'
 import { createDispatcher } from '@orkestrel/router'
 import { createServer } from '@orkestrel/server'
 import {
+	collectStream,
 	captureError,
 	createRecorder,
 	createTeardown,
@@ -87,6 +88,7 @@ import {
 	buildDaemonMode,
 	buildDaemonOptions,
 	createDaemonPeer,
+	createRechunkingTransport,
 	DAEMON_MODEL,
 	DAEMON_VERSION,
 	buildModuleFixture,
@@ -295,6 +297,42 @@ import {
 } from './setupServer.js'
 
 describe('dedicated daemon protocol infrastructure', () => {
+	it('re-chunks response bytes without decoding and records before the real send', async () => {
+		const peer = await createDaemonPeer()
+		const original = globalThis.fetch.bind(globalThis)
+		const sent = createRecorder<readonly [string]>()
+		const requests = createRecorder<readonly [Request]>()
+		try {
+			const transport = createRechunkingTransport(
+				(input, init) => {
+					sent.handler('send')
+					return original(input, init)
+				},
+				(request) => {
+					sent.handler('record')
+					requests.handler(request)
+				},
+			)
+			const response = await transport(`${peer.url}/api/generate`, { method: 'POST', body: '雪' })
+			expect(response.status).toBe(200)
+			expect(response.headers.get('content-type')).toBe('application/json')
+			if (response.body === null) throw new Error('Missing re-chunked body')
+			const chunks = await collectStream(response.body)
+			expect(chunks.every((chunk) => chunk.byteLength === 1)).toBe(true)
+			expect(Buffer.concat(chunks).toString()).toBe(
+				'{"model":"fixture:雪","done":true,"eval_count":0}',
+			)
+			expect(sent.calls).toEqual([['record'], ['send']])
+			expect(await requests.calls[0]?.[0].text()).toBe('雪')
+			const empty = await createRechunkingTransport(() => Promise.resolve(new Response(null)))(
+				'http://fixture.invalid',
+			)
+			expect(empty.body).toBeNull()
+		} finally {
+			await peer.destroy()
+		}
+	})
+
 	it('builds independent fixture declarations and scenario arguments without starting a child', async () => {
 		const ordinary = await buildDaemonOptions()
 		const selected = await buildDaemonMode('silence', { readiness: 3210 })

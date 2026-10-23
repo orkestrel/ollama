@@ -830,6 +830,7 @@ await new GuideCommand({
 				url: 'http://127.0.0.1:11437',
 				models: [{ name: 'qwen3.5:2b-q4_K_M', digest: 'b'.repeat(64) }],
 				workspace: '/srv/ollama',
+				fetch: globalThis.fetch.bind(globalThis),
 			}
 			let refusal: unknown
 			try {

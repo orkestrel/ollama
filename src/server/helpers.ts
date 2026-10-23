@@ -1,4 +1,10 @@
-import type { OllamaBytes, OllamaMaintenance, OllamaMetadataOptions, OllamaModel } from './types.js'
+import type {
+	OllamaBytes,
+	OllamaDaemonOptions,
+	OllamaMaintenance,
+	OllamaMetadataOptions,
+	OllamaModel,
+} from './types.js'
 import type { OllamaTiming } from '@src/core'
 import { arrayOf, isRecord, isString, parseJSONAs } from '@orkestrel/contract'
 import { mergePlatformEnvironment } from '@orkestrel/process/server'
@@ -244,6 +250,7 @@ export async function readOllamaBody(
  * @param options - Per-request byte and timer bounds
  * @param signal - Cancellation shared with startup or stop
  * @param request - The exact unload body, omitted for metadata GETs
+ * @param transport - The fetch collaborator; defaults to the global fetch bound to globalThis
  * @returns The retained response observations, including any refusal
  * @example
  * ```ts
@@ -256,6 +263,7 @@ export async function readOllamaReply(
 	options: OllamaMetadataOptions = {},
 	signal?: AbortSignal,
 	request?: OllamaBytes,
+	transport?: OllamaDaemonOptions['fetch'],
 ): Promise<Pick<OllamaMaintenance, 'response' | 'status' | 'error'>> {
 	const controller = new AbortController()
 	const timeout = options.timeout ?? OLLAMA_METADATA_TIMEOUT
@@ -275,7 +283,7 @@ export async function readOllamaReply(
 			timeout > 2_147_483_647
 		)
 			throw new OllamaError('Invalid dedicated metadata request', { code: 'invalid' })
-		const response = await fetch(new URL(path, origin), {
+		const response = await (transport ?? globalThis.fetch.bind(globalThis))(new URL(path, origin), {
 			method: request === undefined ? 'GET' : 'POST',
 			redirect: 'manual',
 			signal:

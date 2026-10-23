@@ -75,7 +75,9 @@
 		"@orkestrel/agent": "^0.0.31",
 		"@orkestrel/budget": "^0.0.14",
 		"@orkestrel/contract": "^0.0.19",
+		"@orkestrel/emitter": "^0.0.12",
 		"@orkestrel/ndjson": "^0.0.12",
+		"@orkestrel/process": "^0.0.15",
 		"@orkestrel/tool": "^0.0.19"
 	},
 	"devDependencies": {

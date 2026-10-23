@@ -178,8 +178,11 @@ export type OllamaDaemonEventMap = {
  * Under U22, D1's replacement refusal is detection by executable hashes before start and
  * after stop. D3's owner refusal is detection by the occupied-port check, the owned child's
  * listen announcement, and its liveness at each readiness reply. Neither closes the port
- * handoff race or supplies native custody. An abrupt host death can leave runner processes
- * alive; a tree stop cannot recover descendants after the root's native exit is observed.
+ * handoff race or supplies native custody. On POSIX, the session detaches its child, so an
+ * abrupt host death can leave both the daemon root and its runners alive, holding the port.
+ * On Windows, the child isn't detached: the root in libuv's kill-on-close job ends with the
+ * host, but runners outside that job can survive. A tree stop cannot recover descendants
+ * after the root's native exit is observed.
  * D2 retains explicit endpoint and case-folded environment selection. D4 retains declared
  * maintenance bytes and the published process session's tree stop and exit barrier.
  */
@@ -210,6 +213,8 @@ export interface OllamaDaemonInterface {
 	 * @remarks
 	 * Requires a started, live daemon. An overlapping unload refuses with `state`.
 	 * The first refused attempt ends the operation; earlier records remain in maintenance.
+	 * A transport or collaborator failure, or a refused reply, rejects this call and leaves
+	 * the daemon running until `stop()`. A rejection during `start()` stops and joins the child.
 	 * Stop or cancellation aborts the request and retains its bounded partial observation.
 	 *
 	 * @returns The immutable records made by this call

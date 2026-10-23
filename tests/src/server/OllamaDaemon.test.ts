@@ -213,6 +213,41 @@ describe('OllamaDaemon lifecycle', () => {
 		DAEMON_LIFECYCLE_BUDGET,
 	)
 
+	it(
+		'refuses a mismatched inventory digest and joins its child before rejecting startup',
+		async () => {
+			const scratch = createScratch()
+			const pid = join(scratch.path, 'pid')
+			const requests = scratch.write('requests.log', '')
+			const started = createRecorder<readonly [unknown]>()
+			const stopped = createRecorder<readonly [boolean]>()
+			const daemon = new OllamaDaemon(
+				await buildDaemonMode('digest', {
+					environment: { FIXTURE_PID: pid, FIXTURE_REQUESTS: requests },
+					on: { start: started.handler, stop: stopped.handler },
+				}),
+			)
+			try {
+				await expect(daemon.start()).rejects.toMatchObject({ code: 'model' })
+				expect(daemon.identity).toBeUndefined()
+				expect(daemon.maintenance).toEqual([])
+				expect(started.calls).toEqual([])
+				expect(readFileSync(requests, 'utf8')).toBe(
+					'{"path":"/api/version","body":""}\n{"path":"/api/tags","body":""}\n',
+				)
+				expect(existsSync(pid)).toBe(true)
+				expect(isRunning(Number(readFileSync(pid, 'utf8')))).toBe(false)
+				expect(stopped.calls).toEqual([[true]])
+				expect(await daemon.stop()).toBe(true)
+				expect(stopped.calls).toEqual([[true]])
+			} finally {
+				await daemon.destroy()
+				scratch.destroy()
+			}
+		},
+		DAEMON_LIFECYCLE_BUDGET,
+	)
+
 	it('refuses a stale executable digest before creating a child', async () => {
 		const scratch = createScratch()
 		const pid = join(scratch.path, 'pid')

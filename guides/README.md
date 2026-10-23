@@ -5,15 +5,16 @@ directory.
 
 ## By concept
 
-| Concept | Spec                     | Source                    | Tests                                                                                              |
-| ------- | ------------------------ | ------------------------- | -------------------------------------------------------------------------------------------------- |
-| Ollama  | [`ollama.md`](ollama.md) | [`src/core`](../src/core) | Hermetic: [`tests/src/core`](../tests/src/core); live service: [`tests/service`](../tests/service) |
+| Concept | Spec                     | Source                                                     | Tests                                                                                                                                            |
+| ------- | ------------------------ | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Ollama  | [`ollama.md`](ollama.md) | [`src/core`](../src/core)<br>[`src/server`](../src/server) | Hermetic: [`tests/src/core`](../tests/src/core) and [`tests/src/server`](../tests/src/server); live service: [`tests/service`](../tests/service) |
 
 ## By directory
 
-| Directory  | Guide                    |
-| ---------- | ------------------------ |
-| `src/core` | [`ollama.md`](ollama.md) |
+| Directory    | Guide                    |
+| ------------ | ------------------------ |
+| `src/core`   | [`ollama.md`](ollama.md) |
+| `src/server` | [`ollama.md`](ollama.md) |
 
 ## Mirrored dependency guides
 
@@ -30,7 +31,10 @@ and whose `ProviderInterface` a consumer codes against; `@orkestrel/ndjson`
 `@orkestrel/contract` ([`contract.md`](contract.md)), whose guards narrow every
 wire `unknown`; `@orkestrel/tool` ([`tool.md`](tool.md)), which owns the tool-call
 shapes; `@orkestrel/budget` ([`budget.md`](budget.md)), which owns the usage
-shape. No module under `src/` imports `@orkestrel/timeout` — the base arms every
+shape. The server face adds `@orkestrel/process`, whose process session the
+dedicated daemon composes, and `@orkestrel/emitter`, which carries the daemon's
+lifecycle events; their guides ship with those packages and aren't mirrored
+here. No module under `src/` imports `@orkestrel/timeout` — the base arms every
 deadline — so the manifest declares it as a development dependency
 ([`timeout.md`](timeout.md)) for the guide's bounding pattern, which imports it as a
 consumer would.

@@ -22,9 +22,12 @@ npm install @orkestrel/ollama
 
 - Node.js >= 22, or any browser with `fetch` and `ReadableStream`
 - A reachable Ollama daemon (default `http://localhost:11434`) with a pulled
-  model — required at runtime by any consumer, and by this repository's live
-  `service` test project; the `src:core` project is hermetic and passes with
-  the daemon down
+  model — required at runtime by the core face, and by this repository's live
+  `service` test project; the `src:core` and `src:server` projects are hermetic
+  and pass with the daemon down
+- For the `./server` entry, Node.js and an Ollama executable at an absolute
+  path, with its SHA-256 digest, its version, and the `/api/tags` digest of each
+  declared model recorded before the run
 - ESM + CJS (dual-format build)
 
 ## Usage
@@ -74,16 +77,20 @@ longer than the settled content — see [`guides/ollama.md`](guides/ollama.md).
 ## Guide
 
 For the full surface — `createOllama`, `OllamaProvider`, `OllamaOptions`, the
-wire seams (`frame` / `body` / `read` / `finish`), tool calls
+wire seams (`frame` / `encode` / `read` / `finish`), tool calls
 (`ToolDefinition` / `ToolCall` from `@orkestrel/tool`), thinking, the
-context-framing default, and the browser relay — see
-[`guides/ollama.md`](guides/ollama.md).
+context-framing default, the browser relay, and the dedicated daemon session in
+`@orkestrel/ollama/server` (`createOllamaDaemon`, `OllamaDaemon`, `OllamaError`)
+— see [`guides/ollama.md`](guides/ollama.md).
 
 ## Package
 
-The `exports` field in `package.json` publishes the `.` entry alone — a dual
-ESM + CommonJS build of `src/core`, host-independent so the same build serves a
-server process and a browser page.
+The `exports` field in `package.json` publishes two entries, each a dual
+ESM + CommonJS build. The `.` entry is built from `src/core`, host-independent
+so the same build serves a server process and a browser page. The `./server`
+entry is built from `src/server` and runs in Node only: it starts a declared
+Ollama executable on a dedicated loopback port, verifies its version and model
+digests, unloads the declared models, and stops the process tree it started.
 
 ## License
 

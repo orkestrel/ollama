@@ -58,14 +58,13 @@ export function createOllamaJudge(options: OllamaJudgeOptions): JudgeInterface {
  *
  * @example createOllama + generate
  * ```ts
- * import { createAbort } from '@orkestrel/abort'
  * import type { TokenUsage } from '@orkestrel/budget'
  * import { createOllama } from '@orkestrel/ollama'
  *
  * declare function charge(usage: TokenUsage): void // your billing integration
  *
  * const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M', options: { temperature: 0 } })
- * const abort = createAbort()
+ * const abort = new AbortController()
  * const messages = [
  * 	{ id: '1', role: 'user', content: 'Summarize the release notes for version 2.0.' },
  * ] as const

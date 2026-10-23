@@ -17,8 +17,13 @@ const GUIDE_SPEC = 'guides/ollama.md'
 const README_SPEC = 'README.md'
 /** The package identity that binds its manifest, module map, and README pitch. */
 const PACKAGE_NAME = '@orkestrel/ollama'
-/** Each import specifier this package's own guides may resolve against. */
-const MODULES = Object.freeze({ [PACKAGE_NAME]: 'src/core', '@src/core': 'src/core' })
+/** Each import specifier this package's own guides may resolve against, per published face. */
+const MODULES = Object.freeze({
+	[PACKAGE_NAME]: 'src/core',
+	'@src/core': 'src/core',
+	[`${PACKAGE_NAME}/server`]: 'src/server',
+	'@src/server': 'src/server',
+})
 /**
  * Declarations deliberately kept out of the barrel, as `computeSymbolKey` strings.
  *
@@ -53,7 +58,7 @@ await new GuideCommand({
 	} = await import('@orkestrel/agent')
 	const { createNDJSONParser } = await import('@orkestrel/ndjson')
 	const { createDispatcher } = await import('@orkestrel/router')
-	const { requireValue } = await import('@orkestrel/test')
+	const { createRecorder, requireValue } = await import('@orkestrel/test')
 	const barrel = await import('@src/core')
 	const {
 		createOllama,
@@ -67,6 +72,14 @@ await new GuideCommand({
 		renderJudgeIdentity,
 		renderJudgePrompt,
 	} = barrel
+	const {
+		createOllamaDaemon,
+		isOllamaError,
+		isOllamaOrigin,
+		readOllamaTerminal,
+		retainOllamaBytes,
+		verifyOllamaModels,
+	} = await import('@src/server')
 	const {
 		createRelayServer,
 		createStreamingTransport,
@@ -796,6 +809,141 @@ await new GuideCommand({
 							message.content.includes('</instructions>'),
 					),
 			).toBe(true)
+		})
+	})
+
+	// The server face's hermetic fences, transcribed. None starts a process: the declaration
+	// fence constructs, stops, and restarts a session that never spawns, and the digest and unload
+	// fences read recorded 0.40.8 bodies. The dedicated daemon fence starts a real executable, so
+	// only its lifecycle lines are guarded here, as text.
+	describe('server face fences', () => {
+		const guideText = requireValue(files[GUIDE_SPEC], `Missing file: ${GUIDE_SPEC}`)
+
+		// `guides/ollama.md` § Refuse a declaration before any I/O.
+		it('refuses the default port at construction and stops an unstarted session without a child', async () => {
+			expect(isOllamaOrigin('http://127.0.0.1:11437')).toBe(true)
+			expect(isOllamaOrigin('http://127.0.0.1:11434')).toBe(false)
+			expect(isOllamaOrigin('http://localhost:11437')).toBe(false)
+
+			const declaration = {
+				executable: { path: '/opt/ollama/bin/ollama', digest: 'a'.repeat(64), version: '0.40.8' },
+				url: 'http://127.0.0.1:11437',
+				models: [{ name: 'qwen3.5:2b-q4_K_M', digest: 'b'.repeat(64) }],
+				workspace: '/srv/ollama',
+			}
+			let refusal: unknown
+			try {
+				createOllamaDaemon({ ...declaration, url: 'http://127.0.0.1:11434' })
+			} catch (error) {
+				refusal = error
+			}
+			expect(isOllamaError(refusal) && refusal.code).toBe('invalid')
+
+			const stopped = createRecorder<readonly [boolean]>()
+			const daemon = createOllamaDaemon({ ...declaration, on: { stop: stopped.handler } })
+			expect(await daemon.stop()).toBe(true)
+			expect(stopped.calls).toEqual([[true]])
+			expect(daemon.identity).toBeUndefined()
+			expect(
+				await daemon.start().catch((error: unknown) => isOllamaError(error) && error.code),
+			).toBe('state')
+			expect(daemon.maintenance).toEqual([])
+			await daemon.destroy()
+		})
+
+		// `guides/ollama.md` § Verify a declared model digest, over the recorded 0.40.8 digests.
+		it('accepts the inventory digest and refuses the manifest file digest with model', () => {
+			const TAGS_DIGEST = '78a738cc751e89cba72bb1feabf70f30c31772eb81a89a66af94ecea90dc5d11'
+			const MANIFEST_DIGEST = '0645cd5db74c6b4e379efe781f6eada45759366e9123e2553a2b0801f81079f3'
+			const inventory = { models: [{ name: 'qwen3.5:2b-q4_K_M', digest: TAGS_DIGEST }] }
+
+			expect(
+				verifyOllamaModels(inventory, [{ name: 'qwen3.5:2b-q4_K_M', digest: TAGS_DIGEST }]),
+			).toBeUndefined()
+			let mismatch: unknown
+			try {
+				verifyOllamaModels(inventory, [{ name: 'qwen3.5:2b-q4_K_M', digest: MANIFEST_DIGEST }])
+			} catch (error) {
+				mismatch = error
+			}
+			expect(isOllamaError(mismatch) && mismatch.code).toBe('model')
+			expect(isOllamaError(mismatch) && mismatch.context?.received).toEqual([TAGS_DIGEST])
+		})
+
+		// `guides/ollama.md` § Read a retained unload reply, over the recorded 0.40.8 reply.
+		it('retains the exact unload request and reads the recorded terminal reply', () => {
+			const model = {
+				name: 'qwen3.5:2b-q4_K_M',
+				digest: '78a738cc751e89cba72bb1feabf70f30c31772eb81a89a66af94ecea90dc5d11',
+			}
+			const request = retainOllamaBytes(
+				Buffer.from(JSON.stringify({ model: model.name, keep_alive: 0 })),
+				true,
+			)
+			expect(Buffer.from(request.content, 'base64').toString()).toBe(
+				'{"model":"qwen3.5:2b-q4_K_M","keep_alive":0}',
+			)
+			expect(request.size).toBe(44)
+			const reply = retainOllamaBytes(
+				Buffer.from(
+					'{"model":"qwen3.5:2b-q4_K_M","created_at":"2026-10-23T14:08:45.7014834Z","response":"","done":true,"done_reason":"unload"}',
+				),
+				true,
+			)
+			const timing = readOllamaTerminal(reply, model)
+			expect(timing?.durations.total).toBeUndefined()
+			expect(timing?.invalid).toEqual([])
+		})
+
+		// The prose after that fence: each refused terminal reply throws `unload`.
+		it('refuses another model, an unfinished reply, an error record, and an incomplete body with unload', () => {
+			const model = { name: 'qwen3.5:2b-q4_K_M', digest: 'declared' }
+			const refusals = [
+				retainOllamaBytes(Buffer.from('{"model":"gemma3:1b","done":true}'), true),
+				retainOllamaBytes(Buffer.from('{"model":"qwen3.5:2b-q4_K_M","done":false}'), true),
+				retainOllamaBytes(
+					Buffer.from(
+						'{"model":"qwen3.5:2b-q4_K_M","error":"refused"}\n{"model":"qwen3.5:2b-q4_K_M","done":true}',
+					),
+					true,
+				),
+				retainOllamaBytes(Buffer.from('{"model":"qwen3.5:2b-q4_K_M","done":true}'), false),
+			]
+			for (const bytes of refusals) {
+				let refusal: unknown
+				try {
+					readOllamaTerminal(bytes, model)
+				} catch (error) {
+					refusal = error
+				}
+				expect(isOllamaError(refusal) && refusal.code).toBe('unload')
+			}
+		})
+
+		it('carries the server fence lines the transcriptions copy', () => {
+			expect(guideText).toContain(
+				"isOllamaOrigin('http://127.0.0.1:11434') // false — the default port is never a dedicated one",
+			)
+			expect(guideText).toContain("isOllamaError(refusal) && refusal.code // 'invalid'")
+			expect(guideText).toContain('await daemon.stop() // true — no child was created')
+			expect(guideText).toContain(
+				"await daemon.start().catch((error: unknown) => isOllamaError(error) && error.code) // 'state'",
+			)
+			expect(guideText).toContain("isOllamaError(mismatch) && mismatch.code // 'model'")
+			expect(guideText).toContain('// \'{"model":"qwen3.5:2b-q4_K_M","keep_alive":0}\'')
+			expect(guideText).toContain('request.size // 44')
+			expect(guideText).toContain('timing?.invalid // []')
+		})
+
+		// The dedicated daemon fence spawns, so this guards its lifecycle lines as text only.
+		it('keeps the start, unload, stop, and destroy lines in the dedicated daemon fence', () => {
+			expect(guideText).toContain('const identity = await daemon.start()')
+			expect(guideText).toContain('const maintenance = await daemon.unload()')
+			expect(guideText).toContain('const confirmed = await daemon.stop()')
+			expect(guideText).toContain('await daemon.destroy()')
+			expect(guideText).toContain(
+				"import { createOllamaDaemon, isOllamaError } from '@orkestrel/ollama/server'",
+			)
 		})
 	})
 })

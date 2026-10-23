@@ -180,7 +180,7 @@ for a missing or inherited key, and for a member carrying neither. Per-key tuple
 claim the narrowing carries rather than something the reading checks, so a caller relying on it
 establishes the pairing between an event and the recorder stored under that event first;
 `createRecorders` establishes it by wiring each recorder to exactly the event it stores that recorder
-under. Every hostile read is contained, so a value whose keys or getters throw answers `false`
+under. Every read of untrusted input is contained, so a value whose keys or getters throw answers `false`
 instead of propagating.
 
 #### Helpers
@@ -277,7 +277,7 @@ markup or from a tag and its classes; `createHarness` mounts a whole statechart 
 back the root it mounted; `buildContrast`, `buildEscapes`, and `buildCensus` each build
 a detached control the caller appends where it is reading; `clearStorage` takes nothing at all, and
 `removeDatabase` takes a database name. The predicates, the element readers, and the describers name
-a node the caller already has — `isRendered`, `isReachable`, `readHit`, `readText`, `readRole`,
+a node the caller already has — `isRendered`, `isReachable`, `supportsSegmentedFocus`, `readHit`, `readText`, `readRole`,
 `readName`, `readStates`, `readProtocolPoint`, `readProtocolNode`, `readAccessibilityNode`,
 `readActiveElement`, `countElements`, `containsNode`, `readCensus`, `describeTree`, `describeFocus`, `extractOrphans`,
 `readRows`, `readStyle`, `readToken`, `readPixels`, `readContrast`, `readColorContrast`,
@@ -335,24 +335,27 @@ a union's arms escaped as `\|`.
 
 A `Shape` cell holds the constant's declared type.
 
-| API                  | Kind  | Shape                              | Summary                                                                                                    |
-| -------------------- | ----- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `ACCESSIBLE_ROLES`   | const | `readonly string[]`                | Names the interactive ARIA roles a bare accessible name is searched across.                                |
-| `CANVAS_COLOR`       | const | `Color`                            | Names the color a browser paints an unstyled document with: opaque white.                                  |
-| `CAPTURE_PANE`       | const | `string`                           | Names the attribute marking the runner's tester pane, and the rule that sizes it, while a frame is staged. |
-| `CAPTURE_STAGINGS`   | const | `number`                           | Bounds the restagings one capture takes before it refuses a document whose height never settles.           |
-| `CONTENT_ROLES`      | const | `readonly string[]`                | Names the roles whose accessible name is the text a reader can see inside them.                            |
-| `FIELD_ROLES`        | const | `Readonly<Record<string, string>>` | Names the role each `input` type carries.                                                                  |
-| `FOCUSABLE_SELECTOR` | const | `string`                           | Names what sequential keyboard navigation can reach, before disabled and unrendered elements go.           |
-| `HEADER_ROLES`       | const | `Readonly<Record<string, string>>` | Names the role a `th` carries for the header axis its `scope` names.                                       |
-| `IMPLICIT_ROLES`     | const | `Readonly<Record<string, string>>` | Names the role each listed tag carries in the accessibility tree when it declares none of its own.         |
-| `MEDIA_STAGE`        | const | `string`                           | Names the tester root's attribute holding the media readings observed before the first stage.              |
-| `POINTER_HOLD`       | const | `string`                           | Names the tester root's attribute holding the pressed pointer's page coordinates.                          |
+| API                     | Kind  | Shape                              | Summary                                                                                                    |
+| ----------------------- | ----- | ---------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `ACCESSIBLE_ROLES`      | const | `readonly string[]`                | Names the interactive ARIA roles a bare accessible name is searched across.                                |
+| `CANVAS_COLOR`          | const | `Color`                            | Names the color a browser paints an unstyled document with: opaque white.                                  |
+| `CAPTURE_PANE`          | const | `string`                           | Names the attribute marking the runner's tester pane, and the rule that sizes it, while a frame is staged. |
+| `CAPTURE_STAGINGS`      | const | `number`                           | Bounds the restagings one capture takes before it refuses a document whose height never settles.           |
+| `CONTENT_ROLES`         | const | `readonly string[]`                | Names the roles whose accessible name is the text a reader can see inside them.                            |
+| `FIELD_ROLES`           | const | `Readonly<Record<string, string>>` | Names the role each `input` type carries.                                                                  |
+| `FOCUSABLE_SELECTOR`    | const | `string`                           | Names what sequential keyboard navigation can reach, before disabled and unrendered elements go.           |
+| `SEGMENTED_INPUT_TYPES` | const | `readonly string[]`                | Names the native input types whose editable segments share one focused element.                            |
+| `FOCUS_SEGMENT_LIMIT`   | const | `number`                           | Bounds consecutive focus landings and the Tab presses budgeted per segmented input.                        |
+| `HEADER_ROLES`          | const | `Readonly<Record<string, string>>` | Names the role a `th` carries for the header axis its `scope` names.                                       |
+| `IMPLICIT_ROLES`        | const | `Readonly<Record<string, string>>` | Names the role each listed tag carries in the accessibility tree when it declares none of its own.         |
+| `MEDIA_STAGE`           | const | `string`                           | Names the tester root's attribute holding the media readings observed before the first stage.              |
+| `POINTER_HOLD`          | const | `string`                           | Names the tester root's attribute holding the pressed pointer's page coordinates.                          |
 
 #### Helpers
 
 | API                        | Kind     | Signature                                                                                                                       | Summary                                                                                                                                                                                                                                                                         |
 | -------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `supportsSegmentedFocus`   | function | `(element: Element) => boolean`                                                                                                 | Determines whether a native input exposes separately editable segments under one focused element.                                                                                                                                                                               |
 | `resolveAccessible`        | function | `(name: string) => HTMLElement` / `(role: string, name: string) => HTMLElement`                                                 | Resolves one visible, focus-reachable interactive element by its exact accessible name. A wholly-off-viewport target is scrolled into view before reachability is measured.                                                                                                     |
 | `resolveAccessibleWithin`  | function | `(region: string, role: string, name: string) => HTMLElement`                                                                   | Resolves one human-reachable control by role and accessible-name text inside a named region.                                                                                                                                                                                    |
 | `resolveRendered`          | function | `(first: string, second?: string) => HTMLElement`                                                                               | Resolves one rendered, focus-reachable interactive element without requiring it to intersect the viewport yet.                                                                                                                                                                  |
@@ -537,12 +540,21 @@ resolution on its own, and `holdAccessibleWithin` and `traverseAccessibleWithin`
 resolves the way `holdAccessible` and `traverseAccessible` drive a document-wide one, so a twin of
 the same name in another region is left alone.
 
-`traverseAccessible` charges a step only when focus actually lands on an element, ends when focus
-revisits one — that is a complete cycle of the tab order — and re-resolves the target by name on
-every step, because a framework may replace the node between resolution and focus arrival. Its hard
-cap is three times the page's candidate count plus ten, including disabled controls and elements
-with `tabindex="-1"`, so a page whose focus never settles fails instead of hanging.
-`driveTraversal` is that loop over any resolver, and `driveHold` is the one pointer drive every hold
+`traverseAccessible` charges a step only when focus actually lands on an element and re-resolves
+the target by name on every step, because a framework may replace the node between resolution and
+focus arrival. Consecutive landings on the same native `date`, `time`, `datetime-local`, `month`, or
+`week` input pass through its editable segments and count that control once, up to
+`FOCUS_SEGMENT_LIMIT` landings. A longer run or any other revisit ends the traversal, including a
+consecutive repeat on a button in a focus trap. Any different landing starts a separate run.
+The `supportsSegmentedFocus` predicate is true for an input whose `type` is in `SEGMENTED_INPUT_TYPES`,
+checked against the element's own document's `HTMLInputElement`, so a same-origin frame's input
+counts. It is false where the document has no window. The hard cap is `FOCUS_SEGMENT_LIMIT` times
+the page's candidate count plus ten, including disabled controls and elements with `tabindex="-1"`.
+The limit budgets ten presses per candidate. Chromium measured nine landings on a `datetime-local`
+input with `step="0.001"`: year, month, day, hour, minute, second, millisecond, and meridiem segments,
+plus the picker indicator. The budget leaves one spare press per input, so a page of segmented
+inputs can finish while a page whose focus never settles still fails.
+`driveTraversal` implements this forward Tab traversal for any resolver. `driveHold` is the one pointer drive every hold
 verb shares, releasing the pointer before refusing when the frame wait or the pressed-state read
 fails, as well as when the press misses; each verb supplies its resolver and the name its refusals
 voice.
@@ -604,7 +616,7 @@ answers as the scope's scheme. The element's own and inherited custom properties
 property that does not inherit included, and an `input`, an SVG element, or any other element
 resolves like any other. A custom property is named by letters, digits, `_`, and `-` after its `--`,
 and a name the scope leaves undeclared is not carried, so its `var()` fallback still applies. The
-scope element is never written: the probe is new, so it has no earlier style to start a transition
+scope element is never written: the probe is freshly created, so it has no earlier style to start a transition
 from, a transition running on the scope keeps running and `currentColor` reads the color the scope
 shows at that moment, and the scope's geometry and scroll position stay as they were. No attribute,
 style, or child of the scope changes, so a `MutationObserver` on it records nothing. A disconnected
@@ -663,7 +675,7 @@ unreadable surface too.
 color it actually sits on. When no layer paints it hands that floor straight back.
 
 `readRing` reads and never acts. Focus arrives through the published verbs, and this measures what
-the browser painted once it landed: the `outline` the cascade declares, and the first color in a
+the browser painted after it landed: the `outline` the cascade declares, and the first color in a
 `box-shadow`. A control that is not matching `:focus-visible`, a control left the browser's own
 `outline-style: auto` ring, and a focus style that only changes the control's own fill all report
 `undefined` — in each case no measurement taken here would be about focus. `worn` names the element
@@ -720,7 +732,7 @@ where that distinction matters.
 
 `stagePane` unscales the runner's tester and lifts it to the window's origin, because a frame shot
 through the runner's fitting scale is a thumbnail of the surface. That couples it to Vitest's own
-tester layout, which is contract rather than accident: `vitest@4.1.11` is the version behind the
+tester layout, which is contract rather than accident: `vitest@4.1.12` is the version behind the
 `iframe[data-vitest]` selector and the `--tester-transform`, `--tester-margin-left`,
 `--viewport-width`, and `--viewport-height` custom properties it writes. A release that renames any
 of them reddens the size check rather than writing a wrong frame. Always hand the pane back with
@@ -909,7 +921,7 @@ A `Shape` cell holds the constant's declared type.
 | ------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `readInventory`          | function | `(root: URL \| string, targets: readonly string[], options?: InventoryOptions) => Readonly<Record<string, string>>` | Reads files from selected targets below a root directory.                                            |
 | `resolveContained`       | function | `(root: string, target: string) => string \| undefined`                                                             | Resolves a target that stays below a root directory.                                                 |
-| `requireContained`       | function | `(root: string, target: string) => string`                                                                          | Resolves a target that stays below a root directory, refusing an escape.                             |
+| `requireContained`       | function | `(root: string, target: string) => string`                                                                          | Resolves a target that stays below a root directory, refusing a path outside it.                     |
 | `hasScratchPath`         | function | `(root: string, target: string) => boolean`                                                                         | Reports whether a contained entry exists under a scratch directory without following its final link. |
 | `isExcluded`             | function | `(key: string, exclusions: readonly string[]) => boolean`                                                           | Reports whether a root-relative key matches an exclusion.                                            |
 | `readIdentity`           | function | `(status: Stats) => ScratchIdentity`                                                                                | Reads the identity of one allocated directory off a host status.                                     |
@@ -948,10 +960,10 @@ delete `resolveContained` and import `resolveContainedPath` from `@orkestrel/sca
 package already carries as a `devDependency`, rather than adding a third variant.
 
 `requireContained` is that same resolution with the refusal every contained scratch operation makes
-of an escape: it throws `Path outside scratch directory: <target>` where `resolveContained` answers
+of a path outside the root: it throws `Path outside scratch directory: <target>` where `resolveContained` answers
 `undefined`. Every `ScratchInterface` member and the `files` seeding pass through it, so the check
-and its one message are stated once rather than at each member. Read `resolveContained` where an
-escape is an answer the caller handles rather than a refusal it wants raised.
+and its one message are stated once rather than at each member. Read `resolveContained` where
+a path outside the root is an answer the caller handles rather than a refusal it wants raised.
 
 `isExcluded` is the exclusion rule itself, and `readInventory` applies it to a named target and a
 walked entry alike. An exclusion matches whole segments of a root-relative key, so it drops the key
@@ -962,9 +974,9 @@ is exported because a consumer walking its own tree wants that rule rather than 
 what `exclude` means.
 
 `matchesIdentity` is the comparison `destroy()` makes before it removes anything: whether the
-identity read from the allocated path now is the identity recorded when the directory was allocated.
+identity read from the allocated path is the identity recorded when the directory was allocated.
 All three fields are compared because none of them alone identifies an allocation. A device is
-shared by every directory on one filesystem, an index node is reused once its directory is removed,
+shared by every directory on one filesystem, an index node is reused after its directory is removed,
 and a creation time repeats within the host's timestamp resolution. It is exported so a fixture that
 manages its own directory can make the same check rather than trusting a path. `readIdentity` reads
 that triple off a `node:fs` `Stats`, and it is the one reading `createScratch` takes at allocation,
@@ -1023,7 +1035,7 @@ that names the mechanism it needs: an unprivileged Windows host answers `support
 `true` through a junction while answering `supportsFileLinks` `false`, so a fixture that reads a
 file through a link asks the second question rather than the first. `supportsMode` answers whether a
 permission bit is stored, which is narrower than whether it is enforced — a POSIX host running as
-uid `0` stores every bit faithfully and bypasses the access check those bits describe, so a proof
+uid `0` stores every bit faithfully and is exempt from the access check those bits describe, so a proof
 that needs a refusal probes that refusal itself.
 
 #### Factories
@@ -1045,7 +1057,7 @@ starts the generated directory name, and defaults to `orkestrel-test-`; allocati
 contains `/` or `\`, which is what stops a prefix steering the allocation out of its parent. Nothing
 else is refused: a fragment carrying no separator is one path segment, so `release-0..2-` allocates.
 `files` seeds files on allocation, keyed by path below the scratch directory; allocation removes the
-directory it recently made and rethrows when a key escapes or the host refuses a write.
+directory it recently made and rethrows when a key resolves outside it or the host refuses a write.
 
 `createLoopback` takes a `node:net` `Server` — `node:http`'s and `node:https`'s both extend it — and
 never constructs one. It listens on port `0` at `127.0.0.1`, waits for the `listening` event, and
@@ -1460,7 +1472,7 @@ These hold across `src/core`, `src/browser`, `src/server`, and this guide.
    nor a directory, or when a target resolves outside the root. A missing target surfaces the host's
    own `ENOENT` rather than a message from this package. It skips a symlink met while walking rather
    than following it. A target may be written relative to the root or as an absolute path inside it,
-   and one that escapes is refused either way.
+   and one that resolves outside the root is refused either way.
 
    A link in the **middle** of a named target is a separate refusal, and the only one that reaches
    it: the symbolic-link check reads the final segment, which such a link is not. The named target is
@@ -1491,13 +1503,13 @@ These hold across `src/core`, `src/browser`, `src/server`, and this guide.
    case are the same file varies by filesystem, so the suite probes the running host and asserts
    what the probe returned instead of assuming either answer.
 
-7. **`createScratch` refuses a lexical escape, not a symbolic link.** It allocates with
+7. **`createScratch` refuses a path lexically outside its directory, not a symbolic link.** It allocates with
    `mkdtempSync` below `parent`, which creates the directory at mode `0700` on a host that applies
    POSIX permission bits. The suite gates that assertion on `supportsMode`, so the mode is proven
    where the probe answers `true` and the case is skipped where it answers `false`. A Windows host
    answers `false` and reads the same allocation back as `0666`, so the bits describe nothing it
    applies. Every member that takes a target — `write`, `read`, `has`, `names`, `ensure`, `link`,
-   and `remove` — throws when that target lexically escapes the allocated directory, and a failed
+   and `remove` — throws when that target lexically resolves outside the allocated directory, and a failed
    seed removes the directory before rethrowing. `remove` adds a refusal the others do not need: a
    target naming the allocation itself, lexically or through an intermediate symbolic link. The
    lexical half compares paths. The physical half reads only the final entry with `lstat` and
@@ -1594,7 +1606,7 @@ These hold across `src/core`, `src/browser`, `src/server`, and this guide.
     lists every member with the reading it breaks. Every member makes a naive read throw or violates
     a naive structural assumption; a total guard survives every member without throwing. Each has a
     direct probe for that failure. The negative control keeps an inert value from entering the corpus
-    under a hostile name. Whether it accepts or refuses one is that guard's own contract. Membership
+    under a name suggesting untrusted input. Whether it accepts or refuses one is that guard's own contract. Membership
     may grow in a release, so consumers loop over the whole array, assert their guard's expected
     answer per index, and attribute each failure by that index instead of naming or counting members
     locally.
@@ -1604,7 +1616,7 @@ These hold across `src/core`, `src/browser`, `src/server`, and this guide.
     into a description of the markup. `build` creates a node, `mount` attaches one, `render` does
     both, `clearStorage` takes nothing at all, and `removeDatabase` takes a database name. The
     predicates, the element readers, and the describers do take a node —
-    `isRendered`, `isReachable`, `readHit`, `readText`, `readRole`, `readName`, `readStates`,
+    `isRendered`, `isReachable`, `supportsSegmentedFocus`, `readHit`, `readText`, `readRole`, `readName`, `readStates`,
     `readCensus`, `describeTree`, `describeFocus`, `extractOrphans`, `readRows`, `readStyle`,
     `readToken`, `readPixels`, `readContrast`, `readColorContrast`, `readLayers`, `readBackdrop`,
     and `readRing` — and each is a reader of a node the caller already has rather than a verb that
@@ -1707,7 +1719,7 @@ These hold across `src/core`, `src/browser`, `src/server`, and this guide.
     stopped, and `steps` and `output` hand out snapshots. There is no shared instance: a file that
     needs one journal per scenario creates one per scenario.
 18. **The capture layer depends on the Vitest runner's own tester layout, deliberately.** A
-    screenshot is taken off the page the runner painted, and `vitest@4.1.11` lays its tester out
+    screenshot is taken off the page the runner painted, and `vitest@4.1.12` lays its tester out
     inside a smaller page and fits it by scaling the pane the tester sits in, so a frame shot through
     that scale is a thumbnail of the surface. `stagePane` therefore reaches into that layout: the
     `iframe[data-vitest]` selector and the `--tester-transform`, `--tester-margin-left`,
@@ -1777,15 +1789,15 @@ that applies POSIX permission bits, and the suite asserts that mode where `suppo
 answers `false` the mode protects nothing, and the allocation carries only the access its parent
 directory already gives. The mode does not keep out a sibling test worker or the code under test on
 any host, because both run as the same uid, and they are the population that would create a link
-here. Its containment check is lexical: it refuses a relative path that escapes the allocated
+here. Its containment check is lexical: it refuses a relative path that resolves outside the allocated
 directory, which is the accident that actually happens — a test writing `../foo`. It does not walk
 the path's segments for symbolic links, because per-segment walking is sandbox behavior and this is
 not a sandbox.
 
 So a link inside the allocation was created by the test process or by the code the test drives, and
 handing `scratch.path` to the code under test is the ordinary use of this helper. `link` is this
-package's own entry in that population: it creates a symbolic link on request, it refuses only an
-escaping target, and its source may name anything. The source stays unchecked except on the fallback
+package's own entry in that population: it creates a symbolic link on request, it refuses only a
+target outside its directory, and its source may name anything. The source stays unchecked except on the fallback
 path, which stats it to decide whether a junction can point there. [Traversal](#traversal) states
 what each member does with a link it meets, and a contained path reaching outside the allocation
 through one is the result. This helper does not defend against that.
@@ -1829,7 +1841,7 @@ a time in the following table, and some of them ship while others do not.
 
 A member is one implementation group carried by one package, under whatever name that package
 spells it and whether it exports the helper or declares it inside a test file. Repeated calls routed
-through one shared implementation stay one member, and a set of adversarial values fed through one
+through one shared implementation stay one member, and a set of unexpected values fed through one
 totality loop is one member rather than one per value. Read the first column as the group rather
 than as an export: **nothing in this section is importable**, and the only names you can install are
 in [Surface](#surface).
@@ -1841,12 +1853,12 @@ or when a consumer appears the ruling did not consider.
 | Candidate                                                                                        | Ruling  | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | ------------------------------------------------------------------------------------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | A recorder map over an emitter's events, with its map, event-map, subscriber, and totality types | Ships   | It ships as `createRecorders`, with `RecorderMap` and `EventSourceInterface` beside it. Inference is what the earlier refusal turned on, and the shape improves it without settling it: a source parameter typed `EventSourceInterface<TMap>` is an inference site, so a call against one names no type argument, while a concrete class supplies none and the call names both. A keying limit survives that: `TName` derives from the events array's element type, so an array declared with a wider union than its contents keys the map past the events actually listed, and [Bounds a shipped helper carries](#bounds-a-shipped-helper-carries) states what to pass instead. A published signature still cannot import a consumer's event map, so the interface asks for the subscribe half alone and the consumer's own map is what it is instantiated with.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| Hostile guard-input sets                                                                         | Ships   | `form`, `table`, and `supervisor` each feed one adversarial set through total readers, and the set is a mechanism rather than a policy: a guard's own contract decides the answers, not the corpus. It ships as `createHostileValues`; its members do not each become a factory, and every member carries a naive-reader negative control.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Unexpected guard-input sets                                                                      | Ships   | `form`, `table`, and `supervisor` each feed one unexpected-value set through total readers, and the set is a mechanism rather than a policy: a guard's own contract decides the answers, not the corpus. It ships as `createHostileValues`; its members do not each become a factory, and every member carries a naive-reader negative control.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Raw invocation — `invokeRaw`                                                                     | Ships   | It ships as `invokeUnchecked`, with `readProperty` beside it for the read. Native `Reflect.apply` still makes the call; what these add is the boundary — a callability refusal before the call, a target refusal before the read, and one named place where an unchecked runtime result meets the type its caller claims. The claim stays the caller's, and so does the guard that narrows what came back. Without them a consumer that bans `as` cannot drive a foreign object at all.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | Condition polling — wall-clock predicate loops                                                   | Ships   | The wait-family contract states the distinction: the no-polling architecture law governs a product's idle wakeup, and a test instrument waiting on a fact another process produces has no event to park on. It ships as `waitForCondition`. `retryUntil` ships on the same reading, because retrying a real operation is not re-reading a predicate; and where an event does exist, `waitForEvent` is the door.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Deep nesting beyond a guard's cap                                                                | Refused | `table` builds a record chain and `supervisor` builds nested arrays. The two nest different containers, so one shared factory needs a selector argument that changes the construction algorithm — a mode switch rather than a mechanism.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | Canonical wire fixpoint assertions                                                               | Refused | `form` and `table` each serialize, parse untrusted JSON, serialize again, and compare exact bytes. The comparison is an assertion over the consumer's own codecs rather than a reusable mechanism, so the shape stays consumer-local and [Prove a wire fixpoint](#prove-a-wire-fixpoint) publishes the pattern instead.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| Numeric corpora, hostile-key tables, and deep-freeze                                             | Refused | A numeric corpus or a hostile-object table is test policy — what a given suite decided to check — rather than a mechanism, and one factory covering the variants would need a mode argument. `createHostileValues` ships because a guard's totality is a property of the guard; these encode a decision about coverage.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Numeric corpora, unexpected-key tables, and deep-freeze                                          | Refused | A numeric corpus or an unexpected-object table is test policy — what a given suite decided to check — rather than a mechanism, and one factory covering the variants would need a mode argument. `createHostileValues` ships because a guard's totality is a property of the guard; these encode a decision about coverage.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Clearing web storage between tests                                                               | Ships   | Emptying local and session storage together is one mechanism, and the `afterEach` hook that must run after a failed test too is where every browser suite needs it. It ships as `clearStorage`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | Class-ancestry orphan detection                                                                  | Ships   | A rendered element carrying a child class with no container class above it is a real invariant a stylesheet cannot state, and the check is mechanism when the class names are parameters rather than one framework's. It ships as `extractOrphans(root, child, parent)`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | A DOM element builder                                                                            | Ships   | It ships as `build` for the element and `mount` for the attachment, and `render` widened to take a tag and its class list as well as markup. A class list, a text, and an attribute map are what a fixture actually varies, and expressing that variation through markup means assembling a string. Nothing here assembles a tree one call at a time: a fixture with children is still written as markup.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -1942,8 +1954,11 @@ the helper rather than to the host, and each names what to reach for instead.
   host stands for what it holds, and focus in a frame from another origin throws, because the page
   cannot name a control there. A hidden or disabled stop is returned like any other. A consumer that
   refuses one throws from the predicate it passes. The walk ends where focus returns to the body or
-  revisits a stop, and throws only when it outlasts the count `countElements` reads, which includes
-  open shadow roots and same-origin frames. A control inside a same-origin frame belongs to the
+  revisits a stop, except that consecutive landings on the same native segmented input pass through
+  its segments and contribute one stop, up to `FOCUS_SEGMENT_LIMIT` landings including the initial
+  focused element. A longer run or a consecutive repeat on any other element ends the walk.
+  Any different landing starts a separate run. The press cap is `FOCUS_SEGMENT_LIMIT` times the count `countElements` reads, which includes
+  open shadow roots and same-origin frames; exceeding it throws. A control inside a same-origin frame belongs to the
   frame's window, so it fails this window's `instanceof HTMLElement`. `collectTabStops` is the same
   walk bounded to a region by `containsNode`, which places a control inside an open shadow root or a
   same-origin frame in the region that holds its host or frame element. The start element is the
@@ -1961,7 +1976,7 @@ the helper rather than to the host, and each names what to reach for instead.
   `parkPointer`, so a held press stays held and only loses its hover and pressed paint; `pointer: false`
   leaves the pointer, its hover, and that paint where they are. It waits out every finite animation
   in the document, root element included, then pauses each endless one at its first frame and
-  resolves to the resume. Call the resume from a `finally` block once the frame is shot. A settle
+  resolves to the resume. Call the resume from a `finally` block after the frame is shot. A settle
   whose wait exhausts throws before it holds anything, so it owes no resume.
 - **`readShotPixel` reads a shot at the runner's scale.** The position is a fraction of the shot,
   and a fraction of `1` reads its last row or column. Where the runner scales the tester, the shot's
@@ -2028,7 +2043,7 @@ the helper rather than to the host, and each names what to reach for instead.
   It resolves the reply since 0.0.27, where 0.0.26 resolved nothing. A callback typed to return
   `void | Promise<void>`, such as a teardown or an `onTestFinished` hook, that returns
   `sendProtocol(…)` directly no longer type-checks. Write `async () => { await sendProtocol(…) }`.
-- **`readProtocolPoint` reads the layout now, and `readProtocolNode` hands back an id to use at
+- **`readProtocolPoint` reads the layout at the call, and `readProtocolNode` hands back an id to use at
   once.** The point is the layout at the call, so a box that moves afterwards moves the point it
   named. Each frame on the way up adds its border and its padding, because its content starts inside
   both. An element no document holds is refused, because its window still names the tester frame and
@@ -2046,7 +2061,7 @@ the helper rather than to the host, and each names what to reach for instead.
   handler took and destroys it before destroying the loopback.
 - **`destroyScratch`'s behavior under a permission hold is unproven where the hold cannot bind.** The
   retry path is proven against a real host refusal, and a host that produces no such refusal cannot
-  exercise it: a container running as uid `0` bypasses the access check the mode bits describe, so
+  exercise it: a container running as uid `0` is exempt from the access check the mode bits describe, so
   the suite reads a runtime probe and skips that case rather than asserting either answer. Read
   `supportsMode` for the narrower question of whether the bits are stored at all.
 - **`createRecorders` keys its map from the events array's declared element type.** An array declared
@@ -2062,7 +2077,7 @@ the helper rather than to the host, and each names what to reach for instead.
   the quota, and the grant are.
 - **`readProperty`'s `TypeError` names the target, never the read.** It refuses a target that is
   neither an object nor a function before it reads anything, and a getter that throws on an accepted
-  target hands that throw straight to the caller. Wrap the call in `captureError` where a hostile
+  target hands that throw straight to the caller. Wrap the call in `captureError` where an untrusted
   getter is the subject.
 - **`readPixels` reports a measured contribution rather than a parsed length.** A resolved value
   carrying no leading number — `'auto'`, `'none'`, `''` — reads as `0`, because none of them
@@ -2513,9 +2528,9 @@ for (const [index, value] of values.entries()) {
 ```
 
 The corpus is the positive proof input. Keep a negative control for every member too: perform the
-naive read or the naive structural reading that member is meant to break, and prove it answers the
-way the member's own hostility says. Without that control, an inert value can make the totality loop
-look stronger without exercising another hostile boundary.
+naive read or the naive structural reading that member is meant to break, and prove it fails the
+way the member's structure dictates. Without that control, an inert value can make the totality loop
+look stronger without exercising another untrusted-input boundary.
 
 This package's own suite carries one control per member, in corpus order, and each names the reading
 that member breaks:
@@ -2855,7 +2870,7 @@ readInventory(root, ['src/core/index.ts'], { extensions: ['.ts'], exclude: ['src
 ### Own a temporary directory
 
 This demonstration builds a scratch directory seeded with a file, writes and reads inside it,
-refuses an escaping write, and nests one allocation inside another.
+refuses a write outside its directory, and nests one allocation inside another.
 
 ```ts
 import { createScratch } from '@orkestrel/test/server'
@@ -3114,9 +3129,9 @@ jar.read('session') // undefined
 jar.header // 'theme=dark'
 ```
 
-### Refuse an escaping path in your own fixture
+### Refuse a path outside the root in your own fixture
 
-`readInventory` and `createScratch` refuse an escape with this predicate. Reach for it when a
+`readInventory` and `createScratch` refuse a path outside the root with this predicate. Reach for it when a
 fixture of your own resolves a caller-supplied path below a root.
 
 ```ts
@@ -3808,7 +3823,7 @@ finds beside it, because a picture does not show how far a pane scrolls.
 ### Measure a document's content edge
 
 A capture stages the pane at the height the document needs, and the body's box cannot answer for
-that height once the pane is taller than the document. In the following fence the document holds
+that height after the pane grows taller than the document. In the following fence the document holds
 1600 rows of fixed content and nothing is bound to the viewport.
 
 ```ts
@@ -3885,7 +3900,7 @@ picking one of them.
   is either slower than it needs to be or shorter than the slowest host, and it reports nothing when
   it fails. Name the fact instead, and let `waitForCondition`, `retryUntil`, or `waitForEvent` decide
   when it holds.
-- **Let `readInventory` refuse.** A symlinked root or an escaping target is an error, not a
+- **Let `readInventory` refuse.** A symlinked root or a target outside the root is an error, not a
   filtered result, so a misconfigured walk fails loudly instead of returning a short map.
 - **Reach for `parent` only when the allocation must be somewhere named.** The default keeps it out
   of the repository, and a path inside a package tree is walked by every tool that reads that tree.
@@ -3944,7 +3959,7 @@ Each entry names the contracts its file proves. The test names carry the cases.
   with every remaining handler still run, both together aggregated in run order, a handler added
   during a run kept for the next call, the count reset before the handlers run, and a `destroy()`
   that is called empty and called twice. `createHostileValues` proves a naive-reader failure for
-  every member, frozen and fresh membership, and one total guard's benign and hostile answers with
+  every member, frozen and fresh membership, and one total guard's answers for ordinary and unexpected inputs with
   loop-index attribution.
 - [`tests/src/browser/helpers.test.ts`](../tests/src/browser/helpers.test.ts),
   [`tests/src/browser/journeys/helpers.test.ts`](../tests/src/browser/journeys/helpers.test.ts),
@@ -4021,10 +4036,14 @@ Each entry names the contracts its file proves. The test names carry the cases.
   Each acting verb takes its happy path and every voice it owns, including both
   region-scoped refusals and both native-disclosure ones; `clickAccessibleWithin` also takes a
   glyph-captioned control inside a region a glyph-carrying heading labels, which is the loose match
-  proving unchanged. `traverseAccessible` takes a Tab-reachable
-  target; as the cap control, a lone target whose own focus handler blurs it, so focus never lands
+  proving unchanged. `traverseAccessible` takes a Tab-reachable target, a crossing for each type in
+  `SEGMENTED_INPUT_TYPES`, and a page of fractional-second `datetime-local` inputs that traversal
+  and census both cross with spare presses for another landing per input. As the cap control, it
+  takes a lone target whose own focus handler blurs it, so focus never lands
   and the cap fails with an empty trail; and, as the cycle control, the same self-blurring target
   behind a reachable decoy, so the traversal completes one cycle and reports the decoy in its trail.
+  `driveTraversal` takes a non-modal button trap with a resolvable target and refuses after the
+  repeated landing, plus a segmented input trap that refuses within its consecutive landing budget.
   The page readers take their own inputs: `readPerception` takes one named region including its
   visually hidden text, a region a glyph-carrying heading labels through `aria-labelledby`, a painted
   region an `aria-hidden` attribute withholds, and its not-visible and ambiguous refusals, `readPage`
@@ -4041,8 +4060,16 @@ Each entry names the contracts its file proves. The test names carry the cases.
   frame holding focus with nothing inside, and a frame from another origin refused;
   `countElements` takes the shadow and frame content a plain query misses; `containsNode` takes a
   region's own content, a shadow root's and a frame's, and a detached node left outside;
-  `stepFocus` takes one press per landing, none past the consumer's last read, a limit of zero, and
-  a landing on nothing. `walkFocus` and `collectTabStops` take the buttons of an open shadow root
+  `stepFocus` takes one press per landing, none past the consumer's last read, a limit of zero,
+  a landing on nothing, repeated segment landings for each type in `SEGMENTED_INPUT_TYPES`, and
+  the measured nine landings of a fractional-second `datetime-local` input with a spare press in
+  its budget. `supportsSegmentedFocus` takes the frozen type list, every listed type beside text
+  and number inputs, a button and a non-input carrying `type="date"`, an input from a same-origin
+  frame, and a document with no window. `walkFocus` takes a date input counted once before the
+  following control, a single-button modal trap that returns after one press, and a lone segmented
+  input trap that returns within its consecutive landing budget. `collectTabStops` takes a region
+  holding a date input with every stop listed and a trapped date input returned within that budget.
+  `walkFocus` and `collectTabStops` take the buttons of an open shadow root
   and of a same-origin frame between two light controls, a start element inside a shadow root, a
   start element immediately before the region that reaches the region's first stop, and
   focus in a foreign frame refused; `readProtocolPoint` takes a padded frame beside a bordered one,
@@ -4206,8 +4233,8 @@ Each entry names the contracts its file proves. The test names carry the cases.
   or drag event whose `{ composed: false }` override keeps it inside the root.
 - [`tests/src/server/helpers.test.ts`](../tests/src/server/helpers.test.ts) — the `readInventory` and
   wait-family contracts, and each pure leaf against its own inputs. `resolveContained` takes
-  contained relative and absolute targets and both spellings of an escape, and `requireContained`
-  takes the same contained pair and each escape refused with the message naming the target it was
+  contained relative and absolute targets and both spellings of a path outside the root, and `requireContained`
+  takes the same contained pair and each path outside the root refused with the message naming the target it was
   given. `readIdentity` takes a real
   allocation's three fields, that allocation matching itself across a `stat` and an `lstat`, and a
   second allocation reading as a different identity. `readErrorCode` takes a real `ENOENT` off the
@@ -4248,14 +4275,14 @@ Each entry names the contracts its file proves. The test names carry the cases.
   leaves a moved allocation alone. Then one group per subject.
   `destruction` takes `write`, `read`, `has`, `names`, `ensure`, `link`, and `remove` after
   `destroy()`, with `write`, `ensure`, and `link` also proven not to rebuild the allocation root, and
-  `remove` proving its root and escape refusals answer before the destroyed-allocation one.
+  `remove` proving its root and path-containment refusals answer before the destroyed-allocation one.
   `names` takes its sorted output, including the population that discriminates a dropped `.sort()`.
   `ensure` takes an empty directory, every missing parent, and a repeated call. `link` takes
   traversal through a planted link, the final segment `has` reports rather than follows, and the
   `EEXIST` an occupied final segment throws. `remove` takes a file beside a kept
   sibling, an empty directory, a populated subtree, a missing target, an ancestor link back to the
   allocation with every seeded file read back afterwards, a final link whose destination is read back
-  afterwards, a sibling directory reached through that same ancestor link, an escaping target with
+  afterwards, a sibling directory reached through that same ancestor link, a target outside the root with
   the file outside left intact, the root refused as `''`, as `'.'`, and as its absolute path, a
   foreign directory swapped onto the allocated path that `remove('')` refuses, and that same swap
   under `destroy()`, which removes nothing either. `parent` and `prefix` take their own refusals.

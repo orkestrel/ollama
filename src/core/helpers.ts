@@ -67,7 +67,7 @@ export function renderJudgePrompt(
 			: question.form === 'score'
 				? question.criteria.map((text, index) => [String(index), text] as const)
 				: []
-	// The iterable below hands `Array.from` only the iterator protocol, as `for…of` consumed
+	// The following iterable hands `Array.from` only the iterator protocol, as `for…of` consumed
 	// `entries`: a `map` result without an iterator throws instead of falling back to array-like
 	// access, and a hole is visited as `undefined`.
 	const lines =
@@ -444,7 +444,7 @@ export function extractTools(record: Readonly<Record<string, unknown>>): readonl
 	if (!isRecord(message)) return []
 	const calls = Reflect.get(message, 'tool_calls')
 	if (!isArray(calls)) return []
-	// The iterable below hands `Array.from` only the iterator protocol, as `for…of` consumed it: an
+	// The following iterable hands `Array.from` only the iterator protocol, as `for…of` consumed it: an
 	// array without an iterator throws instead of falling back to array-like access, and a hole is
 	// visited as `undefined`.
 	return Array.from(

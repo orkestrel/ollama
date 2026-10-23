@@ -1,18 +1,16 @@
-import { parseJSONAs } from '@orkestrel/contract'
-import { createOllamaDaemon, isOllamaDaemonOptions } from '@src/server'
+import { createOllamaDaemon } from '@src/server'
 import { expect, it } from 'vitest'
+import { resolveDaemonDeclaration } from '../setupServer.js'
+import { OLLAMA_CONFIG } from '../setupService.js'
 
-// The live window supplies offline executable identity and declared model digests.
-// This suite intentionally requires the service project's ordinary readiness setup too.
+// The service project provisions the inventory; this proof uses a separate daemon endpoint.
 it('starts the selected real serve executable, verifies its inventory, unloads, and confirms stop', async () => {
-	const declaration = parseJSONAs(
-		process.env.OLLAMA_DAEMON_DECLARATION ?? '',
-		isOllamaDaemonOptions,
-	)
-	if (declaration === undefined)
-		throw new Error(
-			'OLLAMA_DAEMON_DECLARATION must contain the complete dedicated daemon declaration with offline executable and model identities',
-		)
+	const declaration = await resolveDaemonDeclaration({
+		host: OLLAMA_CONFIG.host,
+		model: OLLAMA_CONFIG.model,
+		executable: process.env.OLLAMA_DAEMON_EXECUTABLE,
+		declaration: process.env.OLLAMA_DAEMON_DECLARATION,
+	})
 	const daemon = createOllamaDaemon(declaration)
 	try {
 		const identity = await daemon.start()

@@ -40,7 +40,8 @@ import { createOllama, OllamaProvider } from '@src/core'
 import { createNDJSONParser } from '@orkestrel/ndjson'
 import { afterAll, describe, expect, it } from 'vitest'
 import { createScratch } from '@orkestrel/test/server'
-import { realpathSync } from 'node:fs'
+import { chmodSync, realpathSync, readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { createServer as createNetServer } from 'node:net'
 import { join, parse } from 'node:path'
 import workspace from '../vite.config.js'
@@ -91,6 +92,9 @@ import {
 	createRechunkingTransport,
 	DAEMON_MODEL,
 	DAEMON_VERSION,
+	DAEMON_DECLARATION,
+	DAEMON_SERVICE_REFUSALS,
+	resolveDaemonDeclaration,
 	buildModuleFixture,
 	buildRecordedRequest,
 	buildReferences,
@@ -1984,6 +1988,101 @@ describe('the page outcome guards', () => {
 	})
 })
 
+describe('resolveDaemonDeclaration', () => {
+	it('uses a validated explicit declaration before any executable or service lookup', async () => {
+		expect(
+			await resolveDaemonDeclaration({
+				host: 'not-an-origin',
+				model: 'absent',
+				executable: 'absent',
+				declaration: JSON.stringify(DAEMON_DECLARATION),
+			}),
+		).toEqual(DAEMON_DECLARATION)
+		await expect(
+			resolveDaemonDeclaration({ host: 'not-an-origin', model: 'absent', declaration: '' }),
+		).rejects.toThrow('OLLAMA_DAEMON_DECLARATION is invalid')
+	})
+
+	it('derives canonical executable bytes, the daemon version, the inventory digest, and a distinct loopback endpoint without generation', async () => {
+		const peer = await createDaemonPeer()
+		try {
+			const declaration = await resolveDaemonDeclaration({
+				host: peer.url,
+				model: DAEMON_MODEL.name,
+				executable: process.execPath,
+			})
+			expect(declaration.executable).toEqual({
+				path: realpathSync(process.execPath),
+				digest: createHash('sha256').update(readFileSync(process.execPath)).digest('hex'),
+				version: DAEMON_VERSION,
+			})
+			expect(declaration.models).toEqual([DAEMON_MODEL])
+			expect(declaration.workspace).toBe(realpathSync(process.cwd()))
+			const dedicated = new URL(declaration.url)
+			expect(dedicated.hostname).toBe('127.0.0.1')
+			expect(dedicated.port).not.toBe('11434')
+			expect(dedicated.port).not.toBe(new URL(peer.url).port)
+			expect(peer.requests).toEqual([
+				{ path: '/api/version', body: '' },
+				{ path: '/api/tags', body: '' },
+			])
+		} finally {
+			await peer.destroy()
+		}
+	})
+
+	it('resolves the PATH executable without spawning it', async () => {
+		const scratch = createScratch()
+		const peer = await createDaemonPeer()
+		try {
+			const path = scratch.write(
+				process.platform === 'win32' ? 'ollama.exe' : 'ollama',
+				'MZ inert executable identity fixture',
+			)
+			chmodSync(path, 0o755)
+			const declaration = await resolveDaemonDeclaration({
+				host: peer.url,
+				model: DAEMON_MODEL.name,
+				environment: { PATH: scratch.path, PATHEXT: '.EXE' },
+			})
+			expect(declaration.executable.path).toBe(realpathSync.native(path))
+			expect(declaration.executable.digest).toBe(
+				createHash('sha256').update('MZ inert executable identity fixture').digest('hex'),
+			)
+		} finally {
+			await peer.destroy()
+			scratch.destroy()
+		}
+	})
+
+	it('fails before metadata when PATH names no executable', async () => {
+		await expect(
+			resolveDaemonDeclaration({
+				host: 'not-an-origin',
+				model: 'absent',
+				environment: { PATH: '', PATHEXT: '.EXE' },
+			}),
+		).rejects.toThrow('Set OLLAMA_DAEMON_EXECUTABLE or install ollama on PATH')
+	})
+
+	for (const row of DAEMON_SERVICE_REFUSALS) {
+		it(`refuses provisioned metadata: ${JSON.stringify(row.options)}`, async () => {
+			const peer = await createDaemonPeer(row.options)
+			try {
+				await expect(
+					resolveDaemonDeclaration({
+						host: peer.url,
+						model: DAEMON_MODEL.name,
+						executable: process.execPath,
+					}),
+				).rejects.toThrow(row.message)
+			} finally {
+				await peer.destroy()
+			}
+		})
+	}
+})
+
 describe('buildUncachedResponse', () => {
 	it('preserves the body and media type with the default or explicit status', async () => {
 		const normal = buildUncachedResponse('control', 'text/plain; charset=utf-8')
@@ -2272,7 +2371,7 @@ describe('createFenceModules and runWithFetch', () => {
 			'made',
 		)
 
-		expect(made.calls).toHaveLength(1)
+		expect(made.calls).toEqual([[abort]])
 		expect(made.calls[0]?.[0]).toBe(abort)
 		expect(made.calls[0]?.[0].signal.aborted).toBe(false)
 		expect(
@@ -2359,7 +2458,9 @@ describe('extractStreamFences and readStreamFences', () => {
 
 		expect(guide.startsWith("import type { ProviderDelta } from '@orkestrel/agent'\n")).toBe(true)
 		expect(guide.endsWith('} else throw error\n}')).toBe(true)
-		expect(readme.startsWith("import { createAbort } from '@orkestrel/abort'\n")).toBe(true)
+		expect(readme.startsWith("import { createOllama } from '@orkestrel/ollama'\n")).toBe(true)
+		expect(readme).toContain('const abort = new AbortController()')
+		expect(readme).not.toContain('@orkestrel/abort')
 		expect(readme).toContain("import type { ProviderDelta } from '@orkestrel/agent'")
 		expect(readme.endsWith('\tdeltas.push(step.value)\n}')).toBe(true)
 	})

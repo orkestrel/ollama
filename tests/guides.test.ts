@@ -58,7 +58,7 @@ await new GuideCommand({
 	} = await import('@orkestrel/agent')
 	const { createNDJSONParser } = await import('@orkestrel/ndjson')
 	const { createDispatcher } = await import('@orkestrel/router')
-	const { createRecorder, requireValue } = await import('@orkestrel/test')
+	const { captureError, createRecorder, requireValue } = await import('@orkestrel/test')
 	const barrel = await import('@src/core')
 	const {
 		createOllama,
@@ -832,12 +832,9 @@ await new GuideCommand({
 				workspace: '/srv/ollama',
 				fetch: globalThis.fetch.bind(globalThis),
 			}
-			let refusal: unknown
-			try {
+			const refusal = captureError(() => {
 				createOllamaDaemon({ ...declaration, url: 'http://127.0.0.1:11434' })
-			} catch (error) {
-				refusal = error
-			}
+			})
 			expect(isOllamaError(refusal) && refusal.code).toBe('invalid')
 
 			const stopped = createRecorder<readonly [boolean]>()
@@ -861,12 +858,9 @@ await new GuideCommand({
 			expect(
 				verifyOllamaModels(inventory, [{ name: 'qwen3.5:2b-q4_K_M', digest: TAGS_DIGEST }]),
 			).toBeUndefined()
-			let mismatch: unknown
-			try {
+			const mismatch = captureError(() => {
 				verifyOllamaModels(inventory, [{ name: 'qwen3.5:2b-q4_K_M', digest: MANIFEST_DIGEST }])
-			} catch (error) {
-				mismatch = error
-			}
+			})
 			expect(isOllamaError(mismatch) && mismatch.code).toBe('model')
 			expect(isOllamaError(mismatch) && mismatch.context?.received).toEqual([TAGS_DIGEST])
 		})
@@ -911,12 +905,9 @@ await new GuideCommand({
 				retainOllamaBytes(Buffer.from('{"model":"qwen3.5:2b-q4_K_M","done":true}'), false),
 			]
 			for (const bytes of refusals) {
-				let refusal: unknown
-				try {
+				const refusal = captureError(() => {
 					readOllamaTerminal(bytes, model)
-				} catch (error) {
-					refusal = error
-				}
+				})
 				expect(isOllamaError(refusal) && refusal.code).toBe('unload')
 			}
 		})

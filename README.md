@@ -20,7 +20,7 @@ npm install @orkestrel/ollama
 
 ## Requirements
 
-- Node.js >= 22, or any browser with `fetch` and `ReadableStream`
+- Node.js >= 22.18.0, or any browser with `fetch` and `ReadableStream`
 - A reachable Ollama daemon (default `http://localhost:11434`) with a pulled
   model — required at runtime by the core face, and by this repository's live
   `service` test project; the `src:core` and `src:server` projects are hermetic
@@ -33,11 +33,10 @@ npm install @orkestrel/ollama
 ## Usage
 
 ```ts
-import { createAbort } from '@orkestrel/abort'
 import { createOllama } from '@orkestrel/ollama'
 
 const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M' })
-const abort = createAbort()
+const abort = new AbortController()
 const messages = [{ id: '1', role: 'user', content: 'Reply with exactly: ok' }] as const
 
 const result = await provider.generate(messages, abort.signal)

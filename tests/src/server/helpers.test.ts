@@ -66,7 +66,10 @@ describe('daemon protocol helpers', () => {
 						digest: createHash('sha256').update(body.subarray(0, limit)).digest('hex'),
 						complete: false,
 					})
-					expect(requests.count).toBe(2)
+					expect(requests.calls.map(([record]) => [record.url, record.method])).toEqual([
+						[`${peer.url}/api/generate`, 'POST'],
+						[`${peer.url}/api/generate`, 'POST'],
+					])
 					expect(peer.requests).toEqual([
 						{ path: '/api/generate', body: '{"model":"fixture:雪","keep_alive":0}' },
 						{ path: '/api/generate', body: '{"model":"fixture:雪","keep_alive":0}' },
@@ -253,7 +256,7 @@ describe('daemon protocol helpers', () => {
 			const reply = await pending
 			expect(reply.error).toBeDefined()
 			expect(reply.response?.complete).toBe(false)
-			expect(received.count).toBe(1)
+			expect(received.calls).toEqual([[]])
 		} finally {
 			controller.abort()
 			await peer.destroy()

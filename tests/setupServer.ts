@@ -41,10 +41,12 @@ import {
 	waitForAbort,
 	waitForCondition,
 	waitForDelay,
+	retryUntil,
 } from '@orkestrel/test'
 import { createLoopback, resolveContained } from '@orkestrel/test/server'
 import {
 	arrayOf,
+	attempt as attemptAccess,
 	isArray,
 	isBoolean,
 	isError,
@@ -59,11 +61,15 @@ import { createServer } from '@orkestrel/server'
 import { createTool, isToolCall } from '@orkestrel/tool'
 import { createRelay, isProviderAbortError } from '@orkestrel/agent'
 import { createOllama, OllamaProvider } from '@src/core'
+import { isOllamaDaemonOptions, readOllamaJSON, readOllamaReply } from '@src/server'
+import { resolveExecutable } from '@orkestrel/process/server'
 import type { ChildProcess, SpawnSyncReturns } from 'node:child_process'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { createServer as createNetServer } from 'node:net'
 import {
+	accessSync,
+	constants,
 	existsSync,
 	globSync,
 	mkdirSync,
@@ -76,7 +82,7 @@ import {
 } from 'node:fs'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { dirname, isAbsolute, join, posix, relative, resolve } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, posix, relative, resolve } from 'node:path'
 import {
 	DONE_RECORD,
 	extractAnchoredFence,
@@ -1966,6 +1972,93 @@ export async function reservePort(): Promise<number> {
 	return loopback.port
 }
 
+/** Declares the provisioned metadata and optional executable or complete service override. */
+export interface DaemonServiceInput {
+	readonly host: string
+	readonly model: string
+	readonly executable?: string | undefined
+	readonly declaration?: string | undefined
+	readonly environment?: Readonly<Record<string, string | undefined>>
+}
+
+/**
+ * Derives a dedicated daemon declaration from the provisioned service without starting a process.
+ *
+ * @remarks An explicit declaration wins and is validated before any host operation. The process
+ * resolver owns Windows executable lookup; POSIX PATH lookup checks executable access because
+ * that resolver leaves POSIX command lookup to the native spawn.
+ * @param input - The provisioned host, selected model, and optional overrides
+ * @returns The validated override or a declaration with canonical executable and inventory identities
+ * @throws Thrown when the override, executable, metadata, or dedicated port cannot be resolved.
+ */
+export async function resolveDaemonDeclaration(
+	input: DaemonServiceInput,
+): Promise<OllamaDaemonOptions> {
+	if (input.declaration !== undefined) {
+		const declaration = parseJSONAs(input.declaration, isOllamaDaemonOptions)
+		if (declaration === undefined) throw new Error('OLLAMA_DAEMON_DECLARATION is invalid')
+		return declaration
+	}
+	const environment = input.environment ?? process.env
+	const selected =
+		input.executable ??
+		resolveExecutable('ollama', { environment }) ??
+		(process.platform === 'win32'
+			? undefined
+			: (environment.PATH ?? '')
+					.split(delimiter)
+					.map((directory) => resolve(directory, 'ollama'))
+					.find((path) => {
+						const accessible = attemptAccess(() => {
+							accessSync(path, constants.X_OK)
+							return statSync(path).isFile()
+						})
+						return accessible.success && accessible.value
+					}))
+	if (selected === undefined)
+		throw new Error('Set OLLAMA_DAEMON_EXECUTABLE or install ollama on PATH')
+	const executable = realpathSync.native(selected)
+	const [version, inventory] = await Promise.all(
+		['/api/version', '/api/tags'].map(async (path) => {
+			const reply = await readOllamaReply(input.host, path)
+			if (reply.error !== undefined) throw reply.error
+			if (reply.response === undefined) throw new Error(`No daemon metadata at ${path}`)
+			return readOllamaJSON(reply.response)
+		}),
+	)
+	if (!isRecord(version) || !isString(version.version) || version.version === '')
+		throw new Error('The provisioned daemon reports no version')
+	if (!isRecord(inventory) || !isArray(inventory.models))
+		throw new Error('The provisioned daemon reports no model inventory')
+	const matches = inventory.models.filter(
+		(model) => isRecord(model) && (model.name === input.model || model.model === input.model),
+	)
+	const model: unknown = matches[0]
+	if (matches.length !== 1 || !isRecord(model) || !isString(model.digest) || model.digest === '')
+		throw new Error(`The provisioned daemon must report one inventory digest for ${input.model}`)
+	const host = new URL(input.host)
+	const service = Number(host.port || (host.protocol === 'https:' ? '443' : '80'))
+	const port = await retryUntil(
+		'a dedicated daemon port apart from the provisioned service',
+		reservePort,
+		(candidate) => candidate !== 11434 && candidate !== service,
+		{ budget: 5000 },
+	)
+	const declaration = {
+		executable: {
+			path: executable,
+			digest: createHash('sha256').update(readFileSync(executable)).digest('hex'),
+			version: version.version,
+		},
+		url: `http://127.0.0.1:${port}`,
+		models: [{ name: input.model, digest: model.digest }],
+		workspace: realpathSync(process.cwd()),
+	}
+	if (!isOllamaDaemonOptions(declaration))
+		throw new Error('The derived daemon declaration is invalid')
+	return declaration
+}
+
 // Dedicated daemon protocol fixtures stay hermetic and bind only ephemeral loopback ports.
 
 /** Names the version the dedicated protocol peer advertises. */
@@ -2158,7 +2251,27 @@ export interface DaemonPeerOptions {
 	readonly fault?: string
 	readonly delay?: number
 	readonly unload?: string
+	readonly version?: unknown
+	readonly models?: unknown
 }
+
+/** Lists metadata refusals of an automatically derived service declaration. */
+export const DAEMON_SERVICE_REFUSALS = Object.freeze([
+	Object.freeze({ options: { version: '' }, message: 'reports no version' }),
+	Object.freeze({ options: { version: 42 }, message: 'reports no version' }),
+	Object.freeze({ options: { models: {} }, message: 'reports no model inventory' }),
+	Object.freeze({ options: { models: [] }, message: 'must report one inventory digest' }),
+	Object.freeze({
+		options: { models: [DAEMON_MODEL, DAEMON_MODEL] },
+		message: 'must report one inventory digest',
+	}),
+	Object.freeze({
+		options: { models: [{ name: DAEMON_MODEL.name, digest: '' }] },
+		message: 'must report one inventory digest',
+	}),
+	Object.freeze({ options: { fault: 'status' }, message: 'Metadata status or redirect refused' }),
+	Object.freeze({ options: { fault: 'oversized' }, message: 'Incomplete or malformed' }),
+])
 
 /** Serves deterministic Ollama metadata and unload replies over a real loopback socket. */
 export class DaemonPeer {
@@ -2246,9 +2359,9 @@ export class DaemonPeer {
 		response.end(
 			JSON.stringify(
 				request.url === '/api/version'
-					? { version: DAEMON_VERSION }
+					? { version: this.#options.version ?? DAEMON_VERSION }
 					: request.url === '/api/tags'
-						? { models: [DAEMON_MODEL] }
+						? { models: this.#options.models ?? [DAEMON_MODEL] }
 						: { model: this.#options.unload ?? DAEMON_MODEL.name, done: true, eval_count: 0 },
 			),
 		)
@@ -6264,3 +6377,39 @@ export const PAGE_ALLOWANCES: readonly number[] = Object.freeze([
 	PAGE_INTERVALS.observe,
 	PAGE_INTERVALS.late,
 ])
+
+/** Holds the installed-package driver for cross-format and cross-installation error guards. */
+export const OLLAMA_ERROR_COPIES_DRIVER = `import assert from 'node:assert/strict'
+import { cpSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+const installed = process.argv[2]
+if (installed === undefined) throw new Error('The installed package path is required')
+const copy = join(dirname(installed), 'ollama-error-copy')
+cpSync(installed, copy, { recursive: true })
+const require = createRequire(import.meta.url)
+const original = await import('@orkestrel/ollama/server')
+const commonjs = require('@orkestrel/ollama/server')
+const copied = await import(pathToFileURL(join(copy, 'dist/src/server/index.js')).href)
+const copiedCommonJS = require(join(copy, 'dist/src/server/index.cjs'))
+const entries = [original, commonjs, copied, copiedCommonJS]
+for (const source of entries) {
+	const error = new source.OllamaError('Fixture refusal', { code: 'model', context: { model: 'fixture' } })
+	const subclass = new (class extends source.OllamaError {
+		name = 'RenamedDaemonError'
+	})('Subclass refusal', { code: 'model' })
+	const lookalike = Object.assign(new TypeError('Fixture refusal'), { name: 'OllamaError', code: 'model' })
+	const plain = { name: 'OllamaError', message: 'Fixture refusal', code: 'model' }
+	Object.defineProperty(plain, Symbol.for('@orkestrel/ollama.OllamaError'), { value: plain })
+	for (const target of entries) {
+		assert.equal(target.isOllamaError(error), true)
+		assert.equal(target.isOllamaError(subclass), true)
+		assert.equal(target.isOllamaError(lookalike), false)
+		assert.equal(target.isOllamaError(new Proxy(error, {})), false)
+		assert.equal(target.isOllamaError(plain), false)
+	}
+}
+console.log('Cross-format and cross-installation error guards passed')
+`

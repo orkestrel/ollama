@@ -177,7 +177,7 @@ describe('OllamaDaemon lifecycle', () => {
 				expect(daemon.start()).toBe(first)
 				const identity = await first
 				expect(daemon.start()).toBe(first)
-				expect(started.count).toBe(1)
+				expect(started.calls).toEqual([[identity]])
 				expect(identity.models).toEqual([DAEMON_MODEL])
 				expect(isRunning(identity.pid)).toBe(true)
 				expect(Object.isFrozen(identity)).toBe(true)

@@ -22,6 +22,8 @@
 		"noEmit": true,
 		"paths": {
 			"@src/core": ["./src/core/index.ts"],
+			"@src/server": ["./src/server/index.ts"],
+			"@orkestrel/ollama/server": ["./src/server/index.ts"],
 			"@orkestrel/ollama": ["./src/core/index.ts"]
 		}
 	},

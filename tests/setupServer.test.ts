@@ -4441,6 +4441,7 @@ describe('the exported walker reports the real workspace', () => {
 		).toEqual(hermetic.map((project) => [project.label, true]))
 		expect(population).toEqual(
 			expect.arrayContaining([
+				'tests/src/server/errors.test.ts',
 				'tests/setup.ts',
 				'tests/setupPolicy.ts',
 				'tests/setupServer.ts',
@@ -4473,6 +4474,8 @@ describe('the exported walker reports the real workspace', () => {
 			).toEqual(['url'])
 		}
 		expect(closure.has('src/core/index.ts')).toBe(true)
+		expect(closure.has('src/server/index.ts')).toBe(true)
+		expect(closure.has('src/server/errors.ts')).toBe(true)
 		expect(closure.has('vite.config.ts')).toBe(true)
 		expect([...closure.keys()].filter((path) => path.startsWith('tests/service/'))).toEqual([])
 	})

@@ -3014,6 +3014,7 @@ export const COMPUTED_URL_FILES: Readonly<Record<string, string>> = Object.freez
  */
 export const HERMETIC_WITNESSES: Readonly<Record<string, string>> = Object.freeze({
 	'src:core': 'tests/src/core/helpers.test.ts',
+	'src:server': 'tests/src/server/errors.test.ts',
 	policy: 'tests/policy.test.ts',
 	config: 'tests/config.test.ts',
 	setup: 'tests/setupStore.test.ts',

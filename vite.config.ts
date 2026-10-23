@@ -3,7 +3,12 @@ import { mergeConfig } from 'vite'
 import { defineConfig } from 'vitest/config'
 import manifest from './package.json' with { type: 'json' }
 import tsconfig from './tsconfig.json' with { type: 'json' }
-import { enforceBuildLog } from './configs/helpers.js'
+import {
+	enforceBuildLog,
+	environmentBoundary,
+	outputBoundary,
+	resolveExternal,
+} from './configs/helpers.js'
 import { fileURLToPath, URL } from 'node:url'
 
 export function resolveWorkspacePath(relativePath: string): string {
@@ -132,6 +137,17 @@ function isNamedPlugin(plugin: PluginOption): plugin is { name: string } {
 	)
 }
 
+function resolveSourceExternal(id: string): boolean {
+	return (
+		id === '@src/core' ||
+		resolveExternal(id, {
+			peers,
+			refused: [],
+			siblings: [resolveWorkspacePath('src/core/index.ts')],
+		})
+	)
+}
+
 export function srcCore(override?: UserConfig): UserConfig {
 	const project: UserConfig = {
 		resolve,
@@ -146,6 +162,56 @@ export function srcCore(override?: UserConfig): UserConfig {
 			name: { label: 'src:core', color: 'magenta' },
 			include: ['tests/src/core/**/*.test.ts'],
 			setupFiles: ['./tests/setup.ts'],
+			environment: 'node',
+			browser: { enabled: false },
+		},
+	}
+	return mergeOverride(project, override)
+}
+
+function resolveServerFilename(format: string): string {
+	return format === 'es' ? 'index.js' : 'index.cjs'
+}
+
+export function srcServer(override?: UserConfig): UserConfig {
+	const project: UserConfig = {
+		resolve,
+		publicDir: false,
+		plugins: [outputBoundary('dist/src/server'), environmentBoundary('src/server')],
+		build: {
+			emptyOutDir: true,
+			sourcemap: true,
+			minify: false,
+			lib: {
+				entry: resolveWorkspacePath('src/server/index.ts'),
+				formats: ['es', 'cjs'],
+				fileName: resolveServerFilename,
+			},
+			outDir: 'dist/src/server',
+			target: 'node22',
+			rolldownOptions: {
+				onLog: enforceBuildLog,
+				platform: 'node',
+				external: resolveSourceExternal,
+				output: [
+					{
+						format: 'es',
+						entryFileNames: 'index.js',
+						paths: { '@src/core': '../core/index.js' },
+					},
+					{
+						format: 'cjs',
+						entryFileNames: 'index.cjs',
+						paths: { '@src/core': '../core/index.cjs' },
+					},
+				],
+			},
+		},
+		test: {
+			name: { label: 'src:server', color: 'red' },
+			include: ['tests/src/server/**/*.test.ts'],
+			exclude: ['tests/src/core/**/*.test.ts'],
+			setupFiles: ['./tests/setup.ts', './tests/setupServer.ts'],
 			environment: 'node',
 			browser: { enabled: false },
 		},
@@ -299,6 +365,17 @@ export function probe(override?: UserConfig): UserConfig {
 export default defineConfig({
 	resolve,
 	test: {
-		projects: [srcCore, policy, config, setup, guides, conformance, service, distribution, probe],
+		projects: [
+			srcCore,
+			srcServer,
+			policy,
+			config,
+			setup,
+			guides,
+			conformance,
+			service,
+			distribution,
+			probe,
+		],
 	},
 })

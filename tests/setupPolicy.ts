@@ -45,6 +45,18 @@ export interface PolicySource {
 	readonly content: string
 }
 
+/** Pairs a collected Vue import fixture with its native and independent restriction outcomes. */
+export interface PolicyVueImportCase extends PolicySource {
+	readonly boundary: boolean
+	readonly restricted: boolean
+}
+
+/** Pairs a collected composable fixture with its placement and domain outcomes. */
+export interface PolicyVueDomainCase extends PolicySource {
+	readonly misplaced: boolean
+	readonly malformed: boolean
+}
+
 /** Describes one policy failure the sweep reports. */
 export interface PolicyViolation {
 	readonly rule: PolicyRule
@@ -348,7 +360,7 @@ export function createPolicyLazyCase<T>(
  *
  * @remarks
  * An index in `entries` produces a value the reader accepts, an index in `refusals` produces a
- * value the reader fails on once it has the value, and an index in `failures` fails when the
+ * value the reader fails on after it has the value, and an index in `failures` fails when the
  * getter runs. Every other index is a hole. A list with `iterable` set to `false` has no iterator,
  * which a loop refuses and `Array.from` and `values()` do not; it is an iterator list otherwise.
  */
@@ -4656,16 +4668,468 @@ export const COMPUTED_IMPORT_PATHS: readonly string[] = Object.freeze([
 	'.orkestrel/sample/instruments/harness/load.mts',
 ])
 
+/** Lists nested same-face imports carrying a native collection sentinel in each source. */
+export const POLICY_VUE_RELATIVE_SOURCES: readonly PolicySource[] = Object.freeze([
+	{
+		path: 'app/vue/components/Panel.vue',
+		content: [
+			'<script lang="ts">',
+			"import * as boundary from '../composables/useTheme.js'",
+			'void boundary',
+			'debugger',
+			'</script>',
+			'',
+		].join('\n'),
+	},
+	{
+		path: 'app/vue/components/dialogs/Panel.vue',
+		content: [
+			'<script setup lang="ts">',
+			"import * as boundary from '../../composables/useTheme.js'",
+			'void boundary',
+			'debugger',
+			'</script>',
+			'',
+		].join('\n'),
+	},
+	{
+		path: 'app/vue/features/editor/dialogs/helpers.ts',
+		content: [
+			"import * as boundary from '../../../components/Toolbar.vue'",
+			'void boundary',
+			'debugger',
+			'',
+		].join('\n'),
+	},
+	{
+		path: 'app/vue/features/helpers.ts',
+		content: [
+			"import * as boundary from '../print/index.js'",
+			'void boundary',
+			'debugger',
+			'',
+		].join('\n'),
+	},
+	{
+		path: 'src/vue/features/helpers.ts',
+		content: [
+			"import * as boundary from '../print/index.js'",
+			'void boundary',
+			'debugger',
+			'',
+		].join('\n'),
+	},
+	{
+		path: 'src/vue/features/editor/helpers.ts',
+		content: [
+			"import * as boundary from '../../components/Toolbar.js'",
+			'void boundary',
+			'debugger',
+			'',
+		].join('\n'),
+	},
+])
+
+/** Supplies a valid direct Vue composable with its collection sentinel inside the exported function. */
+export const POLICY_VUE_COMPOSABLE_SOURCE: PolicySource = Object.freeze({
+	path: 'app/vue/composables/useTheme.ts',
+	content: [
+		'/** Reads the selected theme. */',
+		'export function useTheme(): string {',
+		'\tdebugger',
+		"\treturn 'light'",
+		'}',
+		'',
+	].join('\n'),
+})
+
+/** Lists lexical destinations independently of the host running the test. */
+export const POLICY_VUE_TARGET_CASES: ReadonlyArray<
+	readonly [string, string, string, string | undefined]
+> = Object.freeze([
+	[
+		'/work/app/vue/components/Panel.vue',
+		'/work',
+		'../composables/useTheme.js',
+		'app/vue/composables/useTheme.js',
+	],
+	[
+		'/work/app/vue/components/dialogs/Panel.vue',
+		'/work/',
+		'../../composables/useTheme.js',
+		'app/vue/composables/useTheme.js',
+	],
+	['/work/src/vue/features/editor/helpers.ts', '/work', '../../types.js', 'src/vue/types.js'],
+	[
+		'/work/app/vue/features/editor/dialogs/Panel.vue',
+		'/work',
+		'../../../components/Toolbar.vue',
+		'app/vue/components/Toolbar.vue',
+	],
+	['/work/app/vue/helpers.ts', '/work', '../print/index.js', 'app/print/index.js'],
+	['/work/app/vue/features/helpers.ts', '/work', '../print/index.js', 'app/vue/print/index.js'],
+	['/work/src/vue/features/helpers.ts', '/work', '../print/index.js', 'src/vue/print/index.js'],
+	['/work/app/vue/helpers.ts', '/work', '../browser?x', 'app/browser'],
+	['/work/app/vue/helpers.ts', '/work', '../browser/#fragment', 'app/browser'],
+	['/work/app/vue/helpers.ts', '/work', './entry.js?raw#fragment', 'app/vue/entry.js'],
+	['/work/app/vue/helpers.ts', '/work', './%2e%2e/entry.js', 'app/vue/%2e%2e/entry.js'],
+	['/work/app/vue/helpers.ts', '/work', '../../src/vue/helpers.js', 'src/vue/helpers.js'],
+	[
+		'/work/src/vue/nested/app/vue/helpers.ts',
+		'/work',
+		'../print/index.js',
+		'src/vue/nested/app/print/index.js',
+	],
+	['/app/vue/helpers.ts', '/', './entry.js', 'app/vue/entry.js'],
+	['C:/work/app/vue/features/helpers.ts', 'C:/work/', '../types.js', 'app/vue/types.js'],
+	['C:\\work\\app\\vue\\features\\helpers.ts', 'C:\\work\\', '../types.js', 'app/vue/types.js'],
+	['C:\\app\\vue\\helpers.ts', 'C:\\', './entry.js', 'app/vue/entry.js'],
+	[
+		'\\\\host\\share\\work\\app\\vue\\features\\helpers.ts',
+		'\\\\host\\share\\work\\',
+		'../types.js',
+		'app/vue/types.js',
+	],
+	['//host/share/app/vue/helpers.ts', '//host/share', './entry.js', 'app/vue/entry.js'],
+	['/work-other/app/vue/helpers.ts', '/work', './entry.js', undefined],
+	['C:/work-other/app/vue/helpers.ts', 'C:/work', './entry.js', undefined],
+	['c:/work/app/vue/helpers.ts', 'C:/work', './entry.js', undefined],
+	['D:/work/app/vue/helpers.ts', 'C:/work', './entry.js', undefined],
+	['//host/other/app/vue/helpers.ts', '//host/share', './entry.js', undefined],
+	['/work/app/vuex/helpers.ts', '/work', './entry.js', undefined],
+	['/work/other/app/vue/helpers.ts', '/work', './entry.js', undefined],
+	['app/vue/helpers.ts', '/work', './entry.js', undefined],
+	['/work/app/vue/helpers.ts', 'work', './entry.js', undefined],
+	['/work/../other/app/vue/helpers.ts', '/work/../other', './entry.js', undefined],
+	['/work/app/vue/helpers.ts', '/work', '../../../print/index.js', undefined],
+	['/work/app/vue/helpers.ts', '/work', './../types.js', undefined],
+	['/work/app/vue/helpers.ts', '/work', '.././types.js', undefined],
+	['/work/app/vue/helpers.ts', '/work', './name/../types.js', undefined],
+	['/work/app/vue/helpers.ts', '/work', './name/./types.js', undefined],
+	['/work/app/vue/helpers.ts', '/work', './name//types.js', undefined],
+	['/work/app/vue/helpers.ts', '/work', '..\\types.js', undefined],
+	['/work/app/vue/helpers.ts', '/work', '/machine/entry.js', undefined],
+	['/work/app/vue/helpers.ts', '/work', '@src/vue', undefined],
+	['/work/app/vue/helpers.ts', '/work', '././entry.js', undefined],
+	['/work/app/vue/helpers.ts', '/work', './.', undefined],
+	['/work/app/vue/helpers.ts', '/work', '././entry.js?raw#fragment', undefined],
+	['/work/app/vue/helpers.ts', '/work', './entry.js', 'app/vue/entry.js'],
+	['/work/app/vue/features/helpers.ts', '/work', '../entry.js', 'app/vue/entry.js'],
+	['/work/app/vue/helpers.ts', '/work', '.', 'app/vue'],
+	['/work/app/vue/helpers.ts', '/work', './', 'app/vue'],
+])
+
+/** Lists the two existing override owners without inferring faces from a filename suffix. */
+export const POLICY_VUE_FACES = Object.freeze(['src/vue', 'app/vue'] as const)
+
+/** Lists importer locations that a directly invoked Vue rule must refuse to classify. */
+export const POLICY_VUE_UNCLASSIFIED_FILES = Object.freeze([
+	'../outside/app/vue/helpers.ts',
+	'other/app/vue/helpers.ts',
+	'app/vuex/helpers.ts',
+])
+
+/** Lists native source-bearing syntax, distinguishing forms that need TypeScript parsing. */
+export const POLICY_VUE_IMPORT_FORMS = Object.freeze([
+	{ name: 'value', before: 'import * as boundary from ', after: '\nvoid boundary', typed: false },
+	{ name: 'type', before: 'import type { Boundary } from ', after: '', typed: true },
+	{ name: 'named', before: 'export { boundary } from ', after: '', typed: false },
+	{ name: 'star', before: 'export * from ', after: '', typed: false },
+	{ name: 'namedType', before: 'export type { Boundary } from ', after: '', typed: true },
+	{ name: 'starType', before: 'export type * from ', after: '', typed: true },
+	{ name: 'dynamic', before: 'void import(', after: ')', typed: false },
+])
+
+/** Lists every configured extension and both native Vue script extraction forms. */
+export const POLICY_VUE_POPULATIONS = Object.freeze([
+	{ name: 'cjs', extension: 'cjs', before: '', after: '', typed: false },
+	{ name: 'cts', extension: 'cts', before: '', after: '', typed: true },
+	{ name: 'js', extension: 'js', before: '', after: '', typed: false },
+	{ name: 'jsx', extension: 'jsx', before: '', after: '', typed: false },
+	{ name: 'mjs', extension: 'mjs', before: '', after: '', typed: false },
+	{ name: 'mts', extension: 'mts', before: '', after: '', typed: true },
+	{ name: 'ts', extension: 'ts', before: '', after: '', typed: true },
+	{ name: 'tsx', extension: 'tsx', before: '', after: '', typed: true },
+	{
+		name: 'script',
+		extension: 'vue',
+		before: '<script lang="ts">\n',
+		after: '</script>\n',
+		typed: true,
+	},
+	{
+		name: 'setup',
+		extension: 'vue',
+		before: '<script setup lang="ts">\n',
+		after: '</script>\n',
+		typed: true,
+	},
+])
+
+/** Crosses admitted nested imports and refused sibling imports with the actual syntax populations. */
+export const POLICY_VUE_IMPORT_CASES: readonly PolicyVueImportCase[] = Object.freeze(
+	POLICY_VUE_FACES.flatMap((face) =>
+		POLICY_VUE_POPULATIONS.flatMap((population) =>
+			POLICY_VUE_IMPORT_FORMS.filter((form) => !form.typed || population.typed).flatMap((form) =>
+				[false, true].map((boundary) => ({
+					path: `${face}/${boundary ? '' : 'features/editor/'}${population.name}${form.name}.${population.extension}`,
+					content:
+						population.before +
+						form.before +
+						JSON.stringify(boundary ? '../print/index.js' : '../../components/Toolbar.vue') +
+						form.after +
+						'\ndebugger\n' +
+						population.after,
+					boundary,
+					restricted: false,
+				})),
+			),
+		),
+	),
+)
+
+/** Lists relative destinations and independent raw-spelling bans under the complete configuration. */
+export const POLICY_VUE_BOUNDARY_ROWS: ReadonlyArray<readonly [string, string, boolean, boolean]> =
+	Object.freeze([
+		['helpers.ts', '../print/index.js', true, false],
+		['helpers.ts', '../src/print/index.js', true, false],
+		['helpers.ts', '../print.ext/index.js', true, false],
+		['helpers.ts', '../vuex/index.js', true, false],
+		['helpers.ts', '../corex/index.js', true, false],
+		['helpers.ts', '../browserx/index.js', true, false],
+		['helpers.ts', '../print?raw', true, false],
+		['helpers.ts', '../print#fragment', true, false],
+		['features/helpers.ts', '../print/index.js', false, false],
+		['features/helpers.ts', '../print.ext/index.js', false, false],
+		['features/editor/dialogs/helpers.ts', '../../../components/Toolbar.vue', false, false],
+		['features/editor/helpers.ts', '../../../print/index.js', true, false],
+		['features/editor/helpers.ts', '../../../../src/print/index.js', true, false],
+		['features/helpers.ts', '../types.js?raw#fragment', false, false],
+		['helpers.ts', './index.js', false, false],
+		['helpers.ts', '../../../outside/index.js', true, false],
+		['helpers.ts', '@src/core', false, false],
+		['helpers.ts', '@src/browser', false, false],
+		['helpers.ts', '@src/vue', false, false],
+		['helpers.ts', '@src/print', false, true],
+		['helpers.ts', '@src/corex', false, true],
+		['helpers.ts', '@src/', false, true],
+		['helpers.ts', '@src/server', false, true],
+		['helpers.ts', '@orkestrel/sample/server', false, true],
+		['helpers.ts', 'node:fs', false, true],
+		['helpers.ts', 'fs/promises', false, true],
+		['helpers.ts', '/machine/entry.js', false, true],
+		['helpers.ts', 'C:/machine/entry.js', false, true],
+		['helpers.ts', 'C:\\machine\\entry.js', false, true],
+		['helpers.ts', 'file:///machine/entry.js', false, true],
+		['helpers.ts', 'https://host/entry.js', false, true],
+		['helpers.ts', 'data:text/javascript,export{}', false, true],
+		['helpers.ts', '..\\print\\index.js', false, true],
+		['helpers.ts', './../types.js', true, true],
+		['helpers.ts', '.././types.js', true, true],
+		['helpers.ts', './name/../types.js', true, true],
+		['helpers.ts', './name/./types.js', true, true],
+		['helpers.ts', './name//types.js', true, true],
+		['helpers.ts', 'typescript', false, true],
+		['helpers.ts', '../server/index.js', true, true],
+		['features/helpers.ts', '../server/index.js', false, true],
+	])
+
+/** Supplies face-specific alias requirements and preserves existing application-relative admissions. */
+export const POLICY_VUE_OWNER_ROWS: Readonly<
+	Record<string, ReadonlyArray<readonly [string, string, boolean, boolean]>>
+> = Object.freeze({
+	'src/vue': [
+		['helpers.ts', '../browser?x', false, true],
+		['helpers.ts', '../browser#fragment', false, true],
+		['helpers.ts', '@app/core', false, true],
+		['features/helpers.ts', '../../../app/core/types.js', true, true],
+		['features/helpers.ts', '../../core/helpers.js', false, true],
+		['features/helpers.ts', '../../browser/helpers.js', false, true],
+		['features/helpers.ts', '../core/helpers.js', false, true],
+		['features/helpers.ts', '../browser/helpers.js', false, true],
+		['nested/app/vue/helpers.ts', '../print/index.js', false, false],
+	],
+	'app/vue': [
+		['helpers.ts', '../browser?x', false, false],
+		['helpers.ts', '../browser#fragment', false, false],
+		['helpers.ts', '../browser/index.js', false, false],
+		['features/helpers.ts', '../../browser/helpers.js', false, false],
+		['helpers.ts', '../core/index.js', false, false],
+		['helpers.ts', '../../src/core/index.js', false, false],
+		['helpers.ts', '../../src/browser/index.js', false, false],
+		['helpers.ts', '../../src/vue/index.js', false, false],
+		['helpers.ts', '@app/core', false, false],
+		['helpers.ts', '@app/browser', false, false],
+		['helpers.ts', '@app/vue', false, false],
+		['helpers.ts', '@app/print', false, true],
+		['helpers.ts', '@app/server', false, true],
+		['features/helpers.ts', '../../server/index.js', true, true],
+		['helpers.ts', '../../src/server/index.js', true, true],
+		['nested/src/vue/helpers.ts', '../print/index.js', false, false],
+	],
+})
+
+/** Materializes the boundary rows as separate collected modules without resolving their targets. */
+export const POLICY_VUE_BOUNDARY_CASES: readonly PolicyVueImportCase[] = Object.freeze([
+	...POLICY_VUE_FACES.flatMap((face) =>
+		[...POLICY_VUE_BOUNDARY_ROWS, ...(POLICY_VUE_OWNER_ROWS[face] ?? [])].map(
+			([file, source, boundary, restricted], index) => ({
+				path: `${face}/${file.replace('helpers.ts', `boundary${index}.ts`)}`,
+				content:
+					'import * as boundary from ' + JSON.stringify(source) + '\nvoid boundary\ndebugger\n',
+				boundary,
+				restricted,
+			}),
+		),
+	),
+	...POLICY_VUE_FACES.flatMap((face) => [
+		{
+			path: `${face}/leadingdotentry.ts`,
+			content: 'import * as boundary from "././entry.js"\nvoid boundary\ndebugger\n',
+			boundary: true,
+			restricted: false,
+		},
+		{
+			path: `${face}/leadingdotonly.ts`,
+			content: 'import * as boundary from "./."\nvoid boundary\ndebugger\n',
+			boundary: true,
+			restricted: false,
+		},
+		{
+			path: `${face}/leadingdotquery.ts`,
+			content: 'import * as boundary from "././entry.js?raw#fragment"\nvoid boundary\ndebugger\n',
+			boundary: true,
+			restricted: false,
+		},
+	]),
+])
+
+/** Lists nonliteral sources and source-less exports the relative rule leaves to their existing owners. */
+export const POLICY_VUE_COMPUTED_FORMS = Object.freeze([
+	'const target = "../print/index.js"; void import(target)',
+	'void import("../print/" + "index.js")',
+	'void import(`../print/index.js`)',
+	'const boundary = 1; export { boundary }',
+])
+
+/** Supplies collection sentinels for nonliteral and source-less forms in every configured population. */
+export const POLICY_VUE_COMPUTED_CASES: readonly PolicyVueImportCase[] = Object.freeze(
+	POLICY_VUE_FACES.flatMap((face) =>
+		POLICY_VUE_POPULATIONS.flatMap((population) =>
+			POLICY_VUE_COMPUTED_FORMS.map((content, index) => ({
+				path: `${face}/computed${population.name}${index}.${population.extension}`,
+				content: population.before + content + '\ndebugger\n' + population.after,
+				boundary: false,
+				restricted: false,
+			})),
+		),
+	),
+)
+
+/** Lists the measured CommonJS parser refusals by original relative filename, token, and offset. */
+export const POLICY_VUE_PARSER_ROWS: ReadonlyArray<readonly [string, string, number]> =
+	Object.freeze([
+		['cjsvalue.cjs', 'import', 0],
+		['features/editor/cjsvalue.cjs', 'import', 0],
+		['cjsnamed.cjs', 'export', 0],
+		['features/editor/cjsnamed.cjs', 'export', 0],
+		['cjsstar.cjs', 'export', 0],
+		['features/editor/cjsstar.cjs', 'export', 0],
+		['computedcjs3.cjs', 'export', 20],
+	])
+
+/** Retains each original parser-refused input on both faces with its exact expected native location. */
+export const POLICY_VUE_PARSER_CASES = Object.freeze(
+	POLICY_VUE_FACES.flatMap((face) =>
+		POLICY_VUE_PARSER_ROWS.map(([file, keyword, offset]) => {
+			const path = `${face}/${file}`
+			const source = [...POLICY_VUE_IMPORT_CASES, ...POLICY_VUE_COMPUTED_CASES].find(
+				(candidate) => candidate.path === path,
+			)
+			if (source === undefined) throw new Error(`Missing original Vue parser fixture ${path}`)
+			return {
+				...source,
+				keyword,
+				message: `Cannot use ${keyword} statement outside a module`,
+				span: { offset, length: keyword.length, line: 1, column: offset + 1 },
+			}
+		}),
+	),
+)
+
+/** Retains all other original inputs under strict rule-code and debugger-sentinel validation. */
+export const POLICY_VUE_PARSED_CASES: readonly PolicyVueImportCase[] = Object.freeze(
+	[...POLICY_VUE_IMPORT_CASES, ...POLICY_VUE_COMPUTED_CASES].filter(
+		(source) => !POLICY_VUE_PARSER_CASES.some((refused) => refused.path === source.path),
+	),
+)
+
+/** Preserves the two removed relative alternatives solely for scratch regression controls. */
+export const POLICY_VUE_ORIGINAL_RELATIVES: Readonly<Record<string, string>> = Object.freeze({
+	'src/vue': String.raw`(?:\.\./)+(?:src/)?(?:[^/.scbv][^/.]*|s|s[^/.r][^/.]*|sr|sr[^/.c][^/.]*|src[^/.][^/.]*|c|c[^/.o][^/.]*|co|co[^/.r][^/.]*|cor|cor[^/.e][^/.]*|core[^/.][^/.]*|b|b[^/.r][^/.]*|br|br[^/.o][^/.]*|bro|bro[^/.w][^/.]*|brow|brow[^/.s][^/.]*|brows|brows[^/.e][^/.]*|browse|browse[^/.r][^/.]*|browser[^/.][^/.]*|v|v[^/.u][^/.]*|vu|vu[^/.e][^/.]*|vue[^/.][^/.]*)(?:/|$)`,
+	'app/vue': String.raw`(?:\.\./)+(?:src/|app/)?(?:[^/.sacbv][^/.]*|s|s[^/.r][^/.]*|sr|sr[^/.c][^/.]*|src[^/.][^/.]*|a|a[^/.p][^/.]*|ap|ap[^/.p][^/.]*|app[^/.][^/.]*|c|c[^/.o][^/.]*|co|co[^/.r][^/.]*|cor|cor[^/.e][^/.]*|core[^/.][^/.]*|b|b[^/.r][^/.]*|br|br[^/.o][^/.]*|bro|bro[^/.w][^/.]*|brow|brow[^/.s][^/.]*|brows|brows[^/.e][^/.]*|browse|browse[^/.r][^/.]*|browser[^/.][^/.]*|v|v[^/.u][^/.]*|vu|vu[^/.e][^/.]*|vue[^/.][^/.]*)(?:/|$)`,
+})
+
+/** Lists direct domain failures and look-alike folders that must remain unregistered. */
+export const POLICY_VUE_DOMAIN_CASES: readonly PolicyVueDomainCase[] = Object.freeze([
+	{ ...POLICY_VUE_COMPOSABLE_SOURCE, misplaced: false, malformed: false },
+	{
+		path: 'app/vue/composables/useWrong.ts',
+		content: 'export function useMode(): void { debugger }\n',
+		misplaced: false,
+		malformed: true,
+	},
+	{
+		path: 'app/vue/composables/useHidden.ts',
+		content: 'function useHidden(): void { debugger }\n',
+		misplaced: false,
+		malformed: true,
+	},
+	{
+		path: 'app/vue/composables/useMany.ts',
+		content: 'export function useMany(): void { debugger }\nexport function useOther(): void {}\n',
+		misplaced: false,
+		malformed: true,
+	},
+	{
+		path: 'app/vue/composables/useExtra.ts',
+		content: 'const extra = 1\nexport function useExtra(): void { debugger; void extra }\n',
+		misplaced: false,
+		malformed: true,
+	},
+	...[
+		'app/vue/composables/nested/useTheme.ts',
+		'app/vue/composables/nested/app/vue/composables/useTheme.ts',
+		'app/vue/composablesExtra/useTheme.ts',
+		'app/vue/other/useTheme.ts',
+		'src/vue/composables/useTheme.ts',
+		'app/vue/composables/index.ts',
+		'app/vue/composables/main.ts',
+		'app/vue/composables/UseTheme.ts',
+	].map((path) => ({
+		path,
+		content: POLICY_VUE_COMPOSABLE_SOURCE.content,
+		misplaced: true,
+		malformed: false,
+	})),
+	{
+		path: 'app/vue/composables/helpers.ts',
+		content: POLICY_VUE_COMPOSABLE_SOURCE.content,
+		misplaced: false,
+		malformed: false,
+	},
+])
+
 /**
- * Reads import restrictions and collection sentinels from the installed linter.
+ * Reads native diagnostic records through the installed linter without assigning rule codes.
  * @param directory - The fixture workspace containing the lint configuration.
- * @param paths - The fixtures carrying debugger collection sentinels.
- * @returns Diagnostic codes paired with workspace-relative paths.
+ * @param paths - The fixtures expected to produce native diagnostics.
+ * @returns Readonly native records for the caller's rule or parser validation contract.
  */
-export function readImportDiagnostics(
+export function readNativeDiagnostics(
 	directory: string,
 	paths: readonly string[],
-): ReadonlySet<string> {
+): ReadonlyArray<Readonly<Record<string, unknown>>> {
 	const manifestPath = createRequire(import.meta.url).resolve('oxlint/package.json')
 	const manifest = readConfigRecord(JSON.parse(readFileSync(manifestPath, 'utf8')))
 	const entry =
@@ -4691,11 +5155,37 @@ export function readImportDiagnostics(
 		)
 	const diagnostics = readConfigRecord(JSON.parse(result.stdout)).diagnostics
 	if (!Array.isArray(diagnostics)) throw new Error('Missing lint diagnostics')
+	return diagnostics.map(readConfigRecord)
+}
+
+/**
+ * Reads import restrictions and collection sentinels from the installed linter.
+ * @param directory - The fixture workspace containing the lint configuration.
+ * @param paths - The fixtures carrying debugger collection sentinels.
+ * @returns Diagnostic codes paired with workspace-relative paths.
+ */
+export function readImportDiagnostics(
+	directory: string,
+	paths: readonly string[],
+): ReadonlySet<string> {
+	const diagnostics = readNativeDiagnostics(directory, paths)
 	const codes = new Set(
 		diagnostics.map((value: unknown) => {
 			const diagnostic = readConfigRecord(value)
 			if (typeof diagnostic.code !== 'string' || typeof diagnostic.filename !== 'string')
-				throw new Error('Missing diagnostic location')
+				throw new Error(
+					'Missing diagnostic location: ' +
+						JSON.stringify({
+							offending: value,
+							invalidDiagnostics: diagnostics.filter((candidate: unknown) => {
+								const candidateRecord = readConfigRecord(candidate)
+								return (
+									typeof candidateRecord.code !== 'string' ||
+									typeof candidateRecord.filename !== 'string'
+								)
+							}),
+						}),
+				)
 			return (
 				diagnostic.code +
 				' ' +

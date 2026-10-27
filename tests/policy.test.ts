@@ -796,7 +796,7 @@ describe('denylist currency', () => {
 
 	it('reports a table row neither set names', () => {
 		// The control: a table carrying one row outside the membership, which the reader returns
-		// and neither set holds, so the comparison above would fail on it.
+		// and neither set holds, so the preceding comparison would fail on it.
 		const fixture = [
 			'# Fixture',
 			'',
@@ -849,7 +849,7 @@ describe('repository policy', () => {
 			)
 			expect(inspectPolicyWorkspace(scratch.path)).toEqual([])
 			// The control: the same workspace with one canonical skill planted and no
-			// bridge beside it reports the twin violation, so the empty result above is a
+			// bridge beside it reports the twin violation, so the preceding empty result is a
 			// sweep that ran rather than a sweep with nothing it could report.
 			scratch.write(`${SKILL_FAMILY_ROOT}/sample/SKILL.md`, SKILL_POLICY_TEXT)
 			scratch.write(`${SKILL_FAMILY_ROOT}/sample/agents/openai.yaml`, createSkillMetadata('sample'))

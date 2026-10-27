@@ -28,7 +28,7 @@ export interface PolicyExpression extends PolicyNode {
 	readonly declaration?: PolicyExpression
 	readonly declarations?: readonly PolicyExpression[]
 	readonly init?: PolicyExpression | null
-	readonly source?: PolicyExpression
+	readonly source?: PolicyExpression | null
 	readonly specifiers?: readonly PolicyExpression[]
 	readonly imported?: PolicyExpression
 	readonly exported?: PolicyExpression
@@ -116,6 +116,9 @@ export interface PolicyVisitor {
 	readonly FunctionExpression?: (node: PolicyNode) => void
 	readonly ArrowFunctionExpression?: (node: PolicyNode) => void
 	readonly ImportDeclaration?: (node: PolicyNode) => void
+	readonly ImportExpression?: (node: PolicyNode) => void
+	readonly ExportNamedDeclaration?: (node: PolicyNode) => void
+	readonly ExportAllDeclaration?: (node: PolicyNode) => void
 	readonly MemberExpression?: (node: PolicyNode) => void
 	readonly MethodDefinition?: (node: PolicyNode) => void
 	readonly PropertyDefinition?: (node: PolicyNode) => void
@@ -205,7 +208,23 @@ export const DATA_EXEMPT_FILES: readonly string[] = Object.freeze(['helpers.ts']
 /** Lists the fleet-registered folders whose direct modules each contain one named function. */
 export const FUNCTION_DOMAIN_FOLDERS: readonly string[] = Object.freeze([
 	'app/browser/composables',
+	'app/vue/composables',
 	'src/server/execution',
+])
+
+/** Lists the published destinations a Vue relative import may reach before independent restrictions. */
+export const VUE_SOURCE_ROOTS: readonly string[] = Object.freeze([
+	'src/core',
+	'src/browser',
+	'src/vue',
+])
+
+/** Lists the additional private destinations an application Vue relative import may reach. */
+export const VUE_APPLICATION_ROOTS: readonly string[] = Object.freeze([
+	...VUE_SOURCE_ROOTS,
+	'app/core',
+	'app/browser',
+	'app/vue',
 ])
 
 /** Lists the registered function-domain names no source file may take as its stem. */
@@ -437,6 +456,69 @@ export function pathToPolicyRelative(filename: string, cwd: string): string {
 	const normalizedCwd = cwd.replaceAll('\\', '/').replace(/\/+$/u, '')
 	const prefix = `${normalizedCwd}/`
 	return normalizedFile.startsWith(prefix) ? normalizedFile.slice(prefix.length) : normalizedFile
+}
+
+/**
+ * Computes a lexical workspace-relative destination from an absolute Vue importer and its cwd.
+ * Refuses unclassifiable locations, noncanonical relative segments, and traversal above the
+ * workspace. Query and fragment text is excluded from the path without decoding it; callers retain
+ * the original specifier for independent restrictions. No filesystem or module resolution occurs.
+ */
+export function computePolicyTarget(
+	filename: string,
+	cwd: string,
+	specifier: string,
+): string | undefined {
+	const relative = pathToPolicyRelative(filename, cwd)
+	const location = relative.split('/')
+	if (
+		!/^(?:\/|[A-Za-z]:\/)/u.test(cwd.replaceAll('\\', '/')) ||
+		/(?:^|\/)\.{1,2}(?:\/|$)/u.test(cwd.replaceAll('\\', '/')) ||
+		relative === filename.replaceAll('\\', '/') ||
+		location.length < 3 ||
+		(location[0] !== 'src' && location[0] !== 'app') ||
+		location[1] !== 'vue' ||
+		location.some((part) => part === '' || part === '.' || part === '..')
+	) {
+		return undefined
+	}
+	const path = specifier.split(/[?#]/u)[0] ?? ''
+	if (!/^\.{1,2}(?:\/|$)/u.test(path) || path.includes('\\') || path.includes('//')) {
+		return undefined
+	}
+	const parts = path.replace(/\/$/u, '').split('/')
+	const first = parts.findIndex((part) => part !== '.' && part !== '..')
+	const boundary = first === -1 ? parts.length : first
+	const leading = parts.slice(0, boundary)
+	const parents = leading.filter((part) => part === '..').length
+	const remaining = parts.slice(boundary)
+	const directory = pathToPolicyFolder(relative).split('/')
+	if (
+		(parents === 0 && leading.length !== 1) ||
+		(parents !== 0 && parents !== leading.length) ||
+		parents > directory.length ||
+		remaining.some((part) => part === '' || part === '.' || part === '..')
+	) {
+		return undefined
+	}
+	return [...directory.slice(0, directory.length - parents), ...remaining].join('/')
+}
+
+/** Reports a literal relative import or re-export whose actual destination leaves its Vue boundary. */
+export function reportVueImport(context: PolicyContext, node: PolicyExpression): void {
+	const source = node.source
+	if (source?.type !== 'Literal' || typeof source.value !== 'string') return
+	if (!/^\.{1,2}(?:[/?#]|$)/u.test(source.value)) return
+	const target = computePolicyTarget(context.filename, context.cwd, source.value)
+	const roots = pathToPolicyRelative(context.filename, context.cwd).startsWith('app/vue/')
+		? VUE_APPLICATION_ROOTS
+		: VUE_SOURCE_ROOTS
+	if (
+		target !== undefined &&
+		roots.some((root) => target === root || target.startsWith(root + '/'))
+	)
+		return
+	context.report({ node, messageId: 'vue' })
 }
 
 /** Returns the extensionless stem of one policy file name. */
@@ -1399,6 +1481,28 @@ export const DOMAIN_RULE: PolicyRuleInterface = {
 	},
 }
 
+/** Bans literal relative imports and re-exports outside the importing Vue face's permitted roots. */
+export const VUE_IMPORT_RULE: PolicyRuleInterface = {
+	meta: {
+		type: 'problem',
+		docs: {
+			description:
+				'Disallow Vue relative imports outside the faces their importing file may reach.',
+		},
+		messages: {
+			vue: 'Keep this Vue relative import within the permitted source and application faces.',
+		},
+	},
+	create(context) {
+		return {
+			ImportDeclaration: (node) => reportVueImport(context, node),
+			ImportExpression: (node) => reportVueImport(context, node),
+			ExportNamedDeclaration: (node) => reportVueImport(context, node),
+			ExportAllDeclaration: (node) => reportVueImport(context, node),
+		}
+	},
+}
+
 /** Bans host-specific line-ending handling. */
 export const ENDING_RULE: PolicyRuleInterface = {
 	meta: {
@@ -1478,6 +1582,7 @@ export default {
 		'no-misnamed-factory': FACTORY_RULE,
 		'no-misnamed-plugin': PLUGIN_RULE,
 		'no-malformed-domain': DOMAIN_RULE,
+		'no-cross-vue-face': VUE_IMPORT_RULE,
 		'no-host-line-endings': ENDING_RULE,
 		'no-malformed-summary': VOICE_RULE,
 		'no-banned-term': TERM_RULE,

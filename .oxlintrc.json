@@ -401,12 +401,13 @@
 		{
 			"files": ["src/vue/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx,vue}"],
 			"rules": {
+				"policy/no-cross-vue-face": "error",
 				"no-restricted-imports": [
 					"error",
 					{
 						"patterns": [
 							{
-								"regex": "^(?:@src/(?:|[^/?#cbv][^/?#]*|c|c[^/?#o][^/?#]*|co|co[^/?#r][^/?#]*|cor|cor[^/?#e][^/?#]*|core[^/?#][^/?#]*|b|b[^/?#r][^/?#]*|br|br[^/?#o][^/?#]*|bro|bro[^/?#w][^/?#]*|brow|brow[^/?#s][^/?#]*|brows|brows[^/?#e][^/?#]*|browse|browse[^/?#r][^/?#]*|browser[^/?#][^/?#]*|v|v[^/?#u][^/?#]*|vu|vu[^/?#e][^/?#]*|vue[^/?#][^/?#]*)(?:[/?#]|$)|(?:\\.\\./)+(?:src/)?(?:[^/.scbv][^/.]*|s|s[^/.r][^/.]*|sr|sr[^/.c][^/.]*|src[^/.][^/.]*|c|c[^/.o][^/.]*|co|co[^/.r][^/.]*|cor|cor[^/.e][^/.]*|core[^/.][^/.]*|b|b[^/.r][^/.]*|br|br[^/.o][^/.]*|bro|bro[^/.w][^/.]*|brow|brow[^/.s][^/.]*|brows|brows[^/.e][^/.]*|browse|browse[^/.r][^/.]*|browser[^/.][^/.]*|v|v[^/.u][^/.]*|vu|vu[^/.e][^/.]*|vue[^/.][^/.]*)(?:/|$))",
+								"regex": "^(?:@src/(?:|[^/?#cbv][^/?#]*|c|c[^/?#o][^/?#]*|co|co[^/?#r][^/?#]*|cor|cor[^/?#e][^/?#]*|core[^/?#][^/?#]*|b|b[^/?#r][^/?#]*|br|br[^/?#o][^/?#]*|bro|bro[^/?#w][^/?#]*|brow|brow[^/?#s][^/?#]*|brows|brows[^/?#e][^/?#]*|browse|browse[^/?#r][^/?#]*|browser[^/?#][^/?#]*|v|v[^/?#u][^/?#]*|vu|vu[^/?#e][^/?#]*|vue[^/?#][^/?#]*)(?:[/?#]|$))",
 								"message": "Vue faces must not depend on sibling sheet faces"
 							},
 							{
@@ -605,12 +606,13 @@
 		{
 			"files": ["app/vue/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx,vue}"],
 			"rules": {
+				"policy/no-cross-vue-face": "error",
 				"no-restricted-imports": [
 					"error",
 					{
 						"patterns": [
 							{
-								"regex": "^(?:@(?:src|app)/(?:|[^/?#cbv][^/?#]*|c|c[^/?#o][^/?#]*|co|co[^/?#r][^/?#]*|cor|cor[^/?#e][^/?#]*|core[^/?#][^/?#]*|b|b[^/?#r][^/?#]*|br|br[^/?#o][^/?#]*|bro|bro[^/?#w][^/?#]*|brow|brow[^/?#s][^/?#]*|brows|brows[^/?#e][^/?#]*|browse|browse[^/?#r][^/?#]*|browser[^/?#][^/?#]*|v|v[^/?#u][^/?#]*|vu|vu[^/?#e][^/?#]*|vue[^/?#][^/?#]*)(?:[/?#]|$)|(?:\\.\\./)+(?:src/|app/)?(?:[^/.sacbv][^/.]*|s|s[^/.r][^/.]*|sr|sr[^/.c][^/.]*|src[^/.][^/.]*|a|a[^/.p][^/.]*|ap|ap[^/.p][^/.]*|app[^/.][^/.]*|c|c[^/.o][^/.]*|co|co[^/.r][^/.]*|cor|cor[^/.e][^/.]*|core[^/.][^/.]*|b|b[^/.r][^/.]*|br|br[^/.o][^/.]*|bro|bro[^/.w][^/.]*|brow|brow[^/.s][^/.]*|brows|brows[^/.e][^/.]*|browse|browse[^/.r][^/.]*|browser[^/.][^/.]*|v|v[^/.u][^/.]*|vu|vu[^/.e][^/.]*|vue[^/.][^/.]*)(?:/|$))",
+								"regex": "^(?:@(?:src|app)/(?:|[^/?#cbv][^/?#]*|c|c[^/?#o][^/?#]*|co|co[^/?#r][^/?#]*|cor|cor[^/?#e][^/?#]*|core[^/?#][^/?#]*|b|b[^/?#r][^/?#]*|br|br[^/?#o][^/?#]*|bro|bro[^/?#w][^/?#]*|brow|brow[^/?#s][^/?#]*|brows|brows[^/?#e][^/?#]*|browse|browse[^/?#r][^/?#]*|browser[^/?#][^/?#]*|v|v[^/?#u][^/?#]*|vu|vu[^/?#e][^/?#]*|vue[^/?#][^/?#]*)(?:[/?#]|$))",
 								"message": "Vue faces must not depend on sibling sheet faces"
 							},
 							{

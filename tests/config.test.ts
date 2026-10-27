@@ -55,8 +55,10 @@ import policyPlugin, {
 	TERM_RULE,
 	TYPE_RULE,
 	VOICE_RULE,
+	VUE_IMPORT_RULE,
 	blankPolicyText,
 	commentToPolicyParagraph,
+	computePolicyTarget,
 	isPolicyVoiced,
 	nodeToPolicyOuter,
 	paragraphToPolicyOpener,
@@ -82,6 +84,7 @@ import {
 	SHEET_POLICY_BARREL_PATTERN,
 	SHEET_POLICY_ORDER_PATTERN,
 	readImportDiagnostics,
+	readNativeDiagnostics,
 	createPolicyLazyCases,
 	createPolicyScratch,
 	createPolicySparse,
@@ -92,6 +95,22 @@ import {
 	POLICY_LAZY_SHAPES,
 	POLICY_PUBLISHES,
 	POLICY_ROOT,
+	POLICY_VUE_COMPOSABLE_SOURCE,
+	POLICY_VUE_RELATIVE_SOURCES,
+	POLICY_VUE_TARGET_CASES,
+	POLICY_VUE_FACES,
+	POLICY_VUE_UNCLASSIFIED_FILES,
+	POLICY_VUE_IMPORT_FORMS,
+	POLICY_VUE_POPULATIONS,
+	POLICY_VUE_IMPORT_CASES,
+	POLICY_VUE_BOUNDARY_CASES,
+	POLICY_VUE_COMPUTED_CASES,
+	POLICY_VUE_COMPUTED_FORMS,
+	POLICY_VUE_PARSER_ROWS,
+	POLICY_VUE_PARSER_CASES,
+	POLICY_VUE_PARSED_CASES,
+	POLICY_VUE_ORIGINAL_RELATIVES,
+	POLICY_VUE_DOMAIN_CASES,
 } from './setupPolicy.js'
 import { describe, expect, it } from 'vitest'
 
@@ -1282,6 +1301,85 @@ describe('root configuration', () => {
 		).toThrow(/expected/u)
 	})
 
+	// A target with a server application builds it to one `main.cjs`, so a
+	// single-executable embed has one file to take. The real wrapper's configuration
+	// builds a scratch entry that dynamically imports a scratch module, once as the
+	// wrapper declares it and once with splitting forced on. The second build is the
+	// control: it shows the single chunk comes from the wrapper's `codeSplitting` option
+	// and not from the entry's shape. Evaluation order of the inlined module is proved
+	// once, by executing the emitted file, in the template proof that stages a server
+	// root. A workspace without an `app/server` has no wrapper to build, so this case
+	// reports nothing about the server application of a target that has one: the
+	// assertion below only classifies the absence, and each target with a server
+	// application establishes this proof when its own configuration test runs.
+	it('builds the application server wrapper to one entry and splits it under the control', async () => {
+		const wrapper = resolve(POLICY_ROOT, 'configs/app/vite.server.config.ts')
+		const present = existsSync(wrapper)
+		expect(present || !existsSync(resolve(POLICY_ROOT, 'app/server'))).toBe(true)
+		if (!present) return
+		const scratch = createPolicyScratch({
+			parent: resolve(POLICY_ROOT, 'app/server'),
+			prefix: 'config-server-entry-',
+		})
+		try {
+			scratch.write(
+				'index.ts',
+				"process.stdout.write('entry\\n')\nvoid import('./lazy.js').then(({ lazy }) => process.stdout.write(lazy()))\nprocess.stdout.write('after\\n')\n",
+			)
+			scratch.write(
+				'lazy.ts',
+				"process.stdout.write('lazy\\n')\nexport function lazy(): string {\n\treturn String(process.argv.length)\n}\n",
+			)
+			const rosters: Array<readonly string[]> = []
+			for (const splitting of [false, true]) {
+				const loaded = await loadConfigFromFile(
+					{ command: 'build', mode: 'production', isSsrBuild: false, isPreview: false },
+					wrapper,
+					POLICY_ROOT,
+					'silent',
+				)
+				if (loaded === null) throw new Error('The server wrapper did not load')
+				const rolldown = loaded.config.build?.rolldownOptions
+				const output: unknown = rolldown?.output
+				if (typeof output !== 'object' || output === null || Array.isArray(output)) {
+					throw new Error('The server wrapper declares no output options')
+				}
+				expect(Object.getOwnPropertyDescriptor(output, 'codeSplitting')?.value).toBe(false)
+				const built = await build({
+					...loaded.config,
+					root: POLICY_ROOT,
+					configFile: false,
+					logLevel: 'silent',
+					build: {
+						...loaded.config.build,
+						write: false,
+						lib: {
+							entry: resolve(scratch.path, 'index.ts'),
+							formats: ['cjs'],
+							fileName: () => 'main.cjs',
+						},
+						rolldownOptions: splitting
+							? { ...rolldown, output: { codeSplitting: true } }
+							: { ...rolldown },
+					},
+				})
+				// A library build returns one result per format, an array even for one format.
+				const results = Array.isArray(built) ? built : [built]
+				expect(results).toHaveLength(1)
+				for (const result of results) {
+					if (!('output' in result)) throw new Error('The server build returned no output')
+					rosters.push(result.output.map(({ fileName }) => fileName).toSorted())
+				}
+			}
+			const [single, split] = rosters
+			expect(single).toStrictEqual(['main.cjs'])
+			expect(split).toContain('main.cjs')
+			expect(split?.length).toBeGreaterThan(1)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
 	it('registers proof scripts in the correct gate', () => {
 		const manifest: unknown = JSON.parse(readFileSync(resolve(POLICY_ROOT, 'package.json'), 'utf8'))
 		if (typeof manifest !== 'object' || manifest === null) {
@@ -1562,6 +1660,35 @@ describe('policy plugin', () => {
 	RuleTester.it = it
 
 	const tester = new RuleTester({ languageOptions: { parserOptions: { lang: 'ts' } } })
+	tester.run('no-cross-vue-face', VUE_IMPORT_RULE, {
+		valid: [...POLICY_VUE_IMPORT_CASES, ...POLICY_VUE_BOUNDARY_CASES, ...POLICY_VUE_COMPUTED_CASES]
+			.filter((source) => source.path.endsWith('.ts') && !source.boundary)
+			.map((source) => ({
+				name: `accepts the native relative boundary in ${source.path}`,
+				filename: resolve(POLICY_ROOT, source.path),
+				cwd: POLICY_ROOT,
+				code: source.content,
+			})),
+		invalid: [
+			...POLICY_VUE_IMPORT_CASES,
+			...POLICY_VUE_BOUNDARY_CASES,
+			...POLICY_VUE_UNCLASSIFIED_FILES.map((path) => ({
+				path,
+				content: "import './entry.js'\ndebugger\n",
+				boundary: true,
+				restricted: false,
+			})),
+		]
+			.filter((source) => source.path.endsWith('.ts') && source.boundary)
+			.map((source) => ({
+				name: `rejects the native relative boundary in ${source.path} [membership: literal relative import or export outside permitted Vue destinations]`,
+				filename: resolve(POLICY_ROOT, source.path),
+				cwd: POLICY_ROOT,
+				code: source.content,
+				errors: [{ messageId: 'vue' }],
+			})),
+	})
+
 	tester.run('no-mocking', MOCKING_RULE, {
 		valid: [
 			{ name: 'accepts recorders', code: 'createRecorder()' },
@@ -1931,6 +2058,12 @@ createSomething({
 
 	tester.run('no-misplaced-function', FUNCTION_RULE, {
 		valid: [
+			...POLICY_VUE_DOMAIN_CASES.filter((source) => !source.misplaced).map((source) => ({
+				name: `accepts Vue function placement in ${source.path}`,
+				filename: resolve(POLICY_ROOT, source.path),
+				cwd: POLICY_ROOT,
+				code: source.content,
+			})),
 			{
 				name: 'accepts a function in a function-kind file',
 				filename: 'src/worker/helpers.ts',
@@ -1979,6 +2112,13 @@ createSomething({
 				code: 'export function runTask(): void {}',
 				errors: [{ messageId: 'function' }],
 			},
+			...POLICY_VUE_DOMAIN_CASES.filter((source) => source.misplaced).map((source) => ({
+				name: `rejects Vue function placement in ${source.path} [membership: modules outside the exact direct function register]`,
+				filename: resolve(POLICY_ROOT, source.path),
+				cwd: POLICY_ROOT,
+				code: source.content,
+				errors: [{ messageId: 'function' }],
+			})),
 			{
 				name: 'rejects a property-held arrow in a route table [membership: module function syntax whose file is absent from the function register]',
 				filename: 'src/worker/routes.ts',
@@ -2281,6 +2421,12 @@ createSomething({
 
 	tester.run('no-malformed-domain', DOMAIN_RULE, {
 		valid: [
+			...POLICY_VUE_DOMAIN_CASES.filter((source) => !source.malformed).map((source) => ({
+				name: `accepts Vue domain shape in ${source.path}`,
+				filename: resolve(POLICY_ROOT, source.path),
+				cwd: POLICY_ROOT,
+				code: source.content,
+			})),
 			{
 				name: 'accepts a registered function module carrying imports and one named export',
 				filename: 'app/browser/composables/useTheme.ts',
@@ -2306,6 +2452,13 @@ createSomething({
 				code: 'export function useMode(): void {}',
 				errors: [{ messageId: 'module' }],
 			},
+			...POLICY_VUE_DOMAIN_CASES.filter((source) => source.malformed).map((source) => ({
+				name: `rejects Vue domain shape in ${source.path} [membership: direct camelCase modules in the Vue function domain]`,
+				filename: resolve(POLICY_ROOT, source.path),
+				cwd: POLICY_ROOT,
+				code: source.content,
+				errors: [{ messageId: 'module' }],
+			})),
 			{
 				name: 'rejects a hidden domain function [membership: direct camelCase modules in a registered function-domain folder]',
 				filename: 'app/browser/composables/useTheme.ts',
@@ -2923,6 +3076,400 @@ createSomething({
 		}
 	})
 
+	it('computes Vue targets from lexical importer and workspace boundaries', () => {
+		expect(POLICY_VUE_TARGET_CASES.length).toBeGreaterThan(30)
+		for (const [filename, cwd, source, expected] of POLICY_VUE_TARGET_CASES) {
+			expect({ filename, cwd, source, target: computePolicyTarget(filename, cwd, source) }).toEqual(
+				{
+					filename,
+					cwd,
+					source,
+					target: expected,
+				},
+			)
+		}
+	})
+
+	it('partitions every Vue syntax input between parsed and native parser-refused coverage', () => {
+		const originals = [...POLICY_VUE_IMPORT_CASES, ...POLICY_VUE_COMPUTED_CASES]
+		const partition = [...POLICY_VUE_PARSED_CASES, ...POLICY_VUE_PARSER_CASES]
+		expect(originals).toHaveLength(312)
+		expect(new Set(originals.map(({ path }) => path)).size).toBe(originals.length)
+		expect(POLICY_VUE_PARSED_CASES).toHaveLength(298)
+		expect(POLICY_VUE_PARSER_CASES).toHaveLength(14)
+		expect(new Set(partition.map(({ path }) => path)).size).toBe(partition.length)
+		expect(partition.map(({ path }) => path).toSorted()).toEqual(
+			originals.map(({ path }) => path).toSorted(),
+		)
+		for (const original of originals) {
+			expect(partition.find((source) => source.path === original.path)).toMatchObject(original)
+		}
+		expect(POLICY_VUE_PARSER_CASES.map(({ path }) => path).toSorted()).toEqual(
+			POLICY_VUE_FACES.flatMap((face) =>
+				POLICY_VUE_PARSER_ROWS.map(([file]) => `${face}/${file}`),
+			).toSorted(),
+		)
+		expect(POLICY_VUE_PARSER_CASES.every(({ path }) => path.endsWith('.cjs'))).toBe(true)
+		expect([...new Set(POLICY_VUE_POPULATIONS.map(({ extension }) => extension))]).toEqual([
+			'cjs',
+			'cts',
+			'js',
+			'jsx',
+			'mjs',
+			'mts',
+			'ts',
+			'tsx',
+			'vue',
+		])
+		for (const face of POLICY_VUE_FACES) {
+			const sources = originals.filter((source) => source.path.startsWith(face + '/'))
+			expect(sources).toHaveLength(156)
+			for (const population of POLICY_VUE_POPULATIONS) {
+				for (const form of POLICY_VUE_IMPORT_FORMS.filter(
+					(item) => !item.typed || population.typed,
+				)) {
+					expect(sources).toContainEqual(
+						expect.objectContaining({
+							path: `${face}/${population.name}${form.name}.${population.extension}`,
+							boundary: true,
+						}),
+					)
+					expect(sources).toContainEqual(
+						expect.objectContaining({
+							path: `${face}/features/editor/${population.name}${form.name}.${population.extension}`,
+							boundary: false,
+						}),
+					)
+				}
+				for (const index of POLICY_VUE_COMPUTED_FORMS.keys()) {
+					expect(sources).toContainEqual(
+						expect.objectContaining({
+							path: `${face}/computed${population.name}${index}.${population.extension}`,
+							boundary: false,
+						}),
+					)
+				}
+			}
+		}
+	})
+
+	it('checks Vue import syntax and populations through the canonical policy', () => {
+		const fixture = createPolicyScratch({ prefix: 'policy-vue-syntax-' })
+		try {
+			fixture.write('.oxlintrc.json', readFileSync(resolve(POLICY_ROOT, '.oxlintrc.json'), 'utf8'))
+			fixture.write(
+				'configs/policy.ts',
+				readFileSync(resolve(POLICY_ROOT, 'configs/policy.ts'), 'utf8'),
+			)
+			for (const face of POLICY_VUE_FACES) {
+				const sources = POLICY_VUE_PARSED_CASES.filter((source) =>
+					source.path.startsWith(face + '/'),
+				)
+				expect(sources).toHaveLength(149)
+				expect(sources).toContainEqual(
+					expect.objectContaining({ path: `${face}/cjsdynamic.cjs`, boundary: true }),
+				)
+				expect(sources).toContainEqual(
+					expect.objectContaining({
+						path: `${face}/features/editor/cjsdynamic.cjs`,
+						boundary: false,
+					}),
+				)
+				for (const source of sources) fixture.write(source.path, source.content)
+				const codes = readImportDiagnostics(
+					fixture.path,
+					sources.map(({ path }) => path),
+				)
+				expect(
+					sources.map(({ path }) => ({
+						path,
+						boundary: codes.has('policy(no-cross-vue-face) ' + path),
+						restricted: codes.has('eslint(no-restricted-imports) ' + path),
+					})),
+				).toEqual(sources.map(({ path, boundary, restricted }) => ({ path, boundary, restricted })))
+			}
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('retains exact native parser refusals for CommonJS Vue inputs on both faces', () => {
+		const fixture = createPolicyScratch({ prefix: 'policy-vue-parser-' })
+		try {
+			fixture.write('.oxlintrc.json', readFileSync(resolve(POLICY_ROOT, '.oxlintrc.json'), 'utf8'))
+			fixture.write(
+				'configs/policy.ts',
+				readFileSync(resolve(POLICY_ROOT, 'configs/policy.ts'), 'utf8'),
+			)
+			const sources = POLICY_VUE_PARSER_CASES
+			const paths = sources.map(({ path }) => path)
+			expect(paths).toHaveLength(14)
+			for (const source of sources) fixture.write(source.path, source.content)
+			const diagnostics = readNativeDiagnostics(fixture.path, paths)
+			expect(diagnostics).toHaveLength(paths.length)
+			const comparisonRoot = realpathSync.native(fixture.path)
+			const observed = diagnostics.map((diagnostic) => {
+				if (typeof diagnostic.filename !== 'string')
+					throw new Error('Missing parser diagnostic filename: ' + JSON.stringify(diagnostic))
+				const path = normalizePolicyFilename(comparisonRoot, diagnostic.filename)
+				const source = sources.find((candidate) => candidate.path === path)
+				if (source === undefined)
+					throw new Error('Unexpected parser diagnostic: ' + JSON.stringify(diagnostic))
+				expect(diagnostic).toEqual({
+					message: source.message,
+					severity: 'error',
+					filename: diagnostic.filename,
+					labels: [{ span: source.span }],
+				})
+				expect(
+					source.content.slice(source.span.offset, source.span.offset + source.span.length),
+				).toBe(source.keyword)
+				return path
+			})
+			expect(observed.toSorted()).toEqual(paths.toSorted())
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('retains Vue independent restrictions beside exact relative diagnostics', () => {
+		const fixture = createPolicyScratch({ prefix: 'policy-vue-boundaries-' })
+		try {
+			fixture.write('.oxlintrc.json', readFileSync(resolve(POLICY_ROOT, '.oxlintrc.json'), 'utf8'))
+			fixture.write(
+				'configs/policy.ts',
+				readFileSync(resolve(POLICY_ROOT, 'configs/policy.ts'), 'utf8'),
+			)
+			const sources = POLICY_VUE_BOUNDARY_CASES
+			expect(sources.length).toBeGreaterThan(100)
+			for (const source of sources) fixture.write(source.path, source.content)
+			const codes = readImportDiagnostics(
+				fixture.path,
+				sources.map(({ path }) => path),
+			)
+			expect(
+				sources.map(({ path }) => ({
+					path,
+					boundary: codes.has('policy(no-cross-vue-face) ' + path),
+					restricted: codes.has('eslint(no-restricted-imports) ' + path),
+				})),
+			).toEqual(sources.map(({ path, boundary, restricted }) => ({ path, boundary, restricted })))
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('detects suppressed Vue reporting in a scratch policy without weakening independent bans', () => {
+		const fixture = createPolicyScratch({ prefix: 'policy-vue-report-control-' })
+		try {
+			fixture.write('.oxlintrc.json', readFileSync(resolve(POLICY_ROOT, '.oxlintrc.json'), 'utf8'))
+			const plugin = readFileSync(resolve(POLICY_ROOT, 'configs/policy.ts'), 'utf8')
+			const marker = "context.report({ node, messageId: 'vue' })"
+			expect(plugin.split(marker)).toHaveLength(2)
+			fixture.write('configs/policy.ts', plugin)
+			const sources = POLICY_VUE_BOUNDARY_CASES
+			for (const source of sources) fixture.write(source.path, source.content)
+			const paths = sources.map(({ path }) => path)
+			const enabled = readImportDiagnostics(fixture.path, paths)
+			const expected = sources.filter(({ boundary }) => boundary).map(({ path }) => path)
+			expect(expected).toContain('src/vue/boundary0.ts')
+			expect(expected).toContain('app/vue/boundary0.ts')
+			expect(paths.filter((path) => enabled.has('policy(no-cross-vue-face) ' + path))).toEqual(
+				expected,
+			)
+			fixture.write('configs/policy.ts', plugin.replace(marker, 'void node'))
+			const suppressed = readImportDiagnostics(fixture.path, paths)
+			const actual = paths.filter((path) => suppressed.has('policy(no-cross-vue-face) ' + path))
+			expect(actual).toEqual([])
+			expect(() => expect(actual).toEqual(expected)).toThrow('deeply equal')
+			for (const { path, restricted } of sources) {
+				expect({ path, enabled: enabled.has('eslint(no-restricted-imports) ' + path) }).toEqual({
+					path,
+					enabled: restricted,
+				})
+				expect({
+					path,
+					suppressed: suppressed.has('eslint(no-restricted-imports) ' + path),
+				}).toEqual({ path, suppressed: restricted })
+			}
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('detects restored Vue relative regexes against nested canonical imports', () => {
+		const fixture = createPolicyScratch({ prefix: 'policy-vue-regex-control-' })
+		try {
+			const text = readFileSync(resolve(POLICY_ROOT, '.oxlintrc.json'), 'utf8')
+			fixture.write('.oxlintrc.json', text)
+			fixture.write(
+				'configs/policy.ts',
+				readFileSync(resolve(POLICY_ROOT, 'configs/policy.ts'), 'utf8'),
+			)
+			for (const source of POLICY_VUE_RELATIVE_SOURCES) fixture.write(source.path, source.content)
+			const paths = POLICY_VUE_RELATIVE_SOURCES.map(({ path }) => path)
+			const enabled = readImportDiagnostics(fixture.path, paths)
+			expect(paths.filter((path) => enabled.has('eslint(no-restricted-imports) ' + path))).toEqual(
+				[],
+			)
+			expect(paths.filter((path) => enabled.has('policy(no-cross-vue-face) ' + path))).toEqual([])
+			const restoredConfiguration = readConfigRecord(JSON.parse(text))
+			if (!Array.isArray(restoredConfiguration.overrides)) throw new Error('Missing lint overrides')
+			const restored = restoredConfiguration.overrides.map((value: unknown) => {
+				const block = readConfigRecord(value)
+				const files = block.files
+				const owner = POLICY_VUE_FACES.find(
+					(face) =>
+						Array.isArray(files) &&
+						files.some((file: unknown) => typeof file === 'string' && file.startsWith(face + '/')),
+				)
+				if (owner === undefined) return block
+				const original = POLICY_VUE_ORIGINAL_RELATIVES[owner]
+				if (original === undefined) throw new Error('Missing original Vue relative pattern')
+				const rules = readConfigRecord(block.rules)
+				const rule = rules['no-restricted-imports']
+				if (!Array.isArray(rule)) throw new Error('Missing Vue import restrictions')
+				const options = readConfigRecord(rule[1])
+				if (!Array.isArray(options.patterns)) throw new Error('Missing Vue import patterns')
+				const patterns = options.patterns.map((patternValue: unknown): Record<string, unknown> => {
+					const pattern = readConfigRecord(patternValue)
+					if (pattern.message !== 'Vue faces must not depend on sibling sheet faces') return pattern
+					if (typeof pattern.regex !== 'string' || !pattern.regex.endsWith(')'))
+						throw new Error('Missing Vue sibling alias pattern')
+					return { ...pattern, regex: pattern.regex.slice(0, -1) + '|' + original + ')' }
+				})
+				expect(
+					patterns.filter(
+						(pattern) => pattern.message === 'Vue faces must not depend on sibling sheet faces',
+					),
+				).toHaveLength(1)
+				return {
+					...block,
+					rules: { ...rules, 'no-restricted-imports': [rule[0], { ...options, patterns }] },
+				}
+			})
+			expect(
+				restored.filter(
+					(block) => readConfigRecord(block.rules)['policy/no-cross-vue-face'] === 'error',
+				),
+			).toHaveLength(2)
+			fixture.write(
+				'.oxlintrc.json',
+				JSON.stringify({ ...restoredConfiguration, overrides: restored }),
+			)
+			const control = readImportDiagnostics(fixture.path, paths)
+			const refused = paths.filter((path) => control.has('eslint(no-restricted-imports) ' + path))
+			expect(refused).toEqual(paths)
+			expect(() => expect(refused).toEqual([])).toThrow('deeply equal')
+			expect(paths.filter((path) => control.has('policy(no-cross-vue-face) ' + path))).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('checks exact Vue composable membership and malformed modules through the canonical policy', () => {
+		const fixture = createPolicyScratch({ prefix: 'policy-vue-domain-' })
+		try {
+			fixture.write('.oxlintrc.json', readFileSync(resolve(POLICY_ROOT, '.oxlintrc.json'), 'utf8'))
+			fixture.write(
+				'configs/policy.ts',
+				readFileSync(resolve(POLICY_ROOT, 'configs/policy.ts'), 'utf8'),
+			)
+			const sources = POLICY_VUE_DOMAIN_CASES
+			expect(sources).toContainEqual({
+				...POLICY_VUE_COMPOSABLE_SOURCE,
+				misplaced: false,
+				malformed: false,
+			})
+			for (const source of sources) fixture.write(source.path, source.content)
+			const codes = readImportDiagnostics(
+				fixture.path,
+				sources.map(({ path }) => path),
+			)
+			expect(
+				sources.map(({ path }) => ({
+					path,
+					misplaced: codes.has('policy(no-misplaced-function) ' + path),
+					malformed: codes.has('policy(no-malformed-domain) ' + path),
+				})),
+			).toEqual(sources.map(({ path, misplaced, malformed }) => ({ path, misplaced, malformed })))
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('detects a removed Vue composable registration in a scratch policy', () => {
+		const fixture = createPolicyScratch({ prefix: 'policy-vue-domain-control-' })
+		try {
+			fixture.write('.oxlintrc.json', readFileSync(resolve(POLICY_ROOT, '.oxlintrc.json'), 'utf8'))
+			const plugin = readFileSync(resolve(POLICY_ROOT, 'configs/policy.ts'), 'utf8')
+			const registration = /^\t'app\/vue\/composables',\r?\n/gmu
+			expect(plugin.match(registration)).toHaveLength(1)
+			fixture.write('configs/policy.ts', plugin)
+			const source = POLICY_VUE_COMPOSABLE_SOURCE
+			fixture.write(source.path, source.content)
+			const enabled = readImportDiagnostics(fixture.path, [source.path])
+			expect(enabled.has('policy(no-misplaced-function) ' + source.path)).toBe(false)
+			expect(enabled.has('policy(no-malformed-domain) ' + source.path)).toBe(false)
+			fixture.write('configs/policy.ts', plugin.replace(registration, ''))
+			const control = readImportDiagnostics(fixture.path, [source.path])
+			expect(control.has('policy(no-misplaced-function) ' + source.path)).toBe(true)
+			expect(control.has('policy(no-malformed-domain) ' + source.path)).toBe(false)
+			expect(() =>
+				expect(control.has('policy(no-misplaced-function) ' + source.path)).toBe(false),
+			).toThrow('expected')
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('admits nested same-face Vue relative imports through the canonical policy', () => {
+		const fixture = createPolicyScratch({ prefix: 'policy-vue-relative-' })
+		try {
+			fixture.write('.oxlintrc.json', readFileSync(resolve(POLICY_ROOT, '.oxlintrc.json'), 'utf8'))
+			fixture.write(
+				'configs/policy.ts',
+				readFileSync(resolve(POLICY_ROOT, 'configs/policy.ts'), 'utf8'),
+			)
+			for (const source of POLICY_VUE_RELATIVE_SOURCES) {
+				fixture.write(source.path, source.content)
+			}
+			const paths = POLICY_VUE_RELATIVE_SOURCES.map(({ path }) => path)
+			expect(paths).toContain('app/vue/components/Panel.vue')
+			expect(paths).toContain('src/vue/features/helpers.ts')
+			const codes = readImportDiagnostics(fixture.path, paths)
+			const refused = paths.filter(
+				(path) =>
+					codes.has('eslint(no-restricted-imports) ' + path) ||
+					codes.has('policy(no-cross-vue-face) ' + path),
+			)
+			expect(refused).toEqual([])
+		} finally {
+			fixture.destroy()
+		}
+	})
+
+	it('admits a valid direct application Vue composable through the canonical policy', () => {
+		const fixture = createPolicyScratch({ prefix: 'policy-vue-composable-' })
+		try {
+			fixture.write('.oxlintrc.json', readFileSync(resolve(POLICY_ROOT, '.oxlintrc.json'), 'utf8'))
+			fixture.write(
+				'configs/policy.ts',
+				readFileSync(resolve(POLICY_ROOT, 'configs/policy.ts'), 'utf8'),
+			)
+			const source = POLICY_VUE_COMPOSABLE_SOURCE
+			expect(source.path).toBe('app/vue/composables/useTheme.ts')
+			fixture.write(source.path, source.content)
+			const codes = readImportDiagnostics(fixture.path, [source.path])
+			expect({
+				misplaced: codes.has('policy(no-misplaced-function) ' + source.path),
+				malformed: codes.has('policy(no-malformed-domain) ' + source.path),
+			}).toEqual({ misplaced: false, malformed: false })
+		} finally {
+			fixture.destroy()
+		}
+	})
+
 	it('matches every isolated import pattern with refused and admitted fixtures', () => {
 		const fixture = createPolicyScratch({ prefix: 'propagation-patterns-' })
 		const scratch = fixture.path
@@ -2982,7 +3529,7 @@ createSomething({
 									: message.includes('sibling sheet')
 										? [
 												['@src/print', true],
-												['../print/index.js', true],
+												// Relative refusals now belong to the canonical filename-based matrix.
 												['@src/core', false],
 												['@src/browser', false],
 												['@src/vue', false],
@@ -2990,8 +3537,8 @@ createSomething({
 												['@app/browser', false],
 												['@src/corex', true],
 												['@src/', true],
-												['../src/print/index.js', true],
-												['../browser?x', true],
+												// The app browser query is admitted there; src retains its alias refusal.
+												['../browser?x', false],
 												['../print.ext/index.js', false],
 												...(Array.isArray(block.files) &&
 												block.files.some(
@@ -3302,13 +3849,17 @@ createSomething({
 			const readings = [...expected].map(([path, refusal]) => ({
 				path,
 				expected: refusal,
-				actual: enabled.has('eslint(no-restricted-imports) ' + path),
+				actual:
+					enabled.has('eslint(no-restricted-imports) ' + path) ||
+					enabled.has('policy(no-cross-vue-face) ' + path),
 			}))
 			expect(readings.filter((reading) => reading.actual !== reading.expected)).toEqual([])
 			const control = [...expected].map(([path, refusal]) => ({
 				path,
 				expected: refusal,
-				actual: disabled.has('eslint(no-restricted-imports) ' + path),
+				actual:
+					disabled.has('eslint(no-restricted-imports) ' + path) ||
+					disabled.has('policy(no-cross-vue-face) ' + path),
 			}))
 			expect(() =>
 				expect(control.filter((reading) => reading.actual !== reading.expected)).toEqual([]),
@@ -3329,6 +3880,7 @@ createSomething({
 		const declared = Object.getOwnPropertyNames(rules)
 		expect(declared).toContain('no-misplaced-function')
 		expect(declared).toContain('no-host-line-endings')
+		expect(declared).toContain('no-cross-vue-face')
 		expect(
 			inspectPolicyWiring(
 				parsed,
@@ -3380,6 +3932,7 @@ createSomething({
 			scratch.write('src/violations/constants.ts', 'export const values = []\n')
 			scratch.write('src/violations/composables.ts', "export const READY = 'yes'\n")
 			scratch.write('app/browser/composables/useTheme.ts', 'export function useMode(): void {}\n')
+			scratch.write('app/vue/helpers.ts', "export * from '../print/index.js'\ndebugger\n")
 			// The line-ending population reaches src, app, and configs alone, so this module
 			// outside them carries the same defect and must draw no diagnostic. The `debugger`
 			// statement is the arrival control the root `no-debugger` rule reports, which proves
@@ -3482,6 +4035,8 @@ createSomething({
 				{ code: 'policy(no-misnamed-plugin)', filename: 'src/violations/plugins.ts' },
 				{ code: 'policy(no-malformed-constant)', filename: 'src/violations/constants.ts' },
 				{ code: 'policy(no-malformed-domain)', filename: 'src/violations/composables.ts' },
+				{ code: 'policy(no-cross-vue-face)', filename: 'app/vue/helpers.ts' },
+				{ code: 'eslint(no-debugger)', filename: 'app/vue/helpers.ts' },
 				{
 					code: 'policy(no-malformed-domain)',
 					filename: 'app/browser/composables/useTheme.ts',

@@ -2,13 +2,7 @@
 // P2: Required items are checked strictly; extra items are ignored before their shape is read.
 
 import type { InlineConfig, UserConfig } from 'vite'
-import type {
-	PolicyComment,
-	PolicyContext,
-	PolicyDiagnostic,
-	PolicyExpression,
-	PolicySourceCode,
-} from '../configs/policy.js'
+import type { PolicyComment, PolicyDiagnostic, PolicyExpression } from '../configs/policy.js'
 import type { PolicyProject } from './setupPolicy.js'
 import { spawnSync } from 'node:child_process'
 import {
@@ -42,16 +36,21 @@ import policyPlugin, {
 	FUNCTION_RULE,
 	FUNCTION_SOURCE_FILES,
 	HIDDEN_RULE,
+	LET_RULE,
 	MOCKING_RULE,
+	MUTABLE_RULE,
 	NESTED_RULE,
 	PARSER_RULE,
 	PLUGIN_RULE,
 	POLICY_BANNED_TERMS,
 	POLICY_ENDING_GLOBS,
 	POLICY_JUDGED_TERMS,
+	POLICY_NESTED_GLOBS,
 	POLICY_PLACEMENT_GLOBS,
+	POLICY_SCRIPT_GLOBS,
 	POLICY_VOICE_STOPWORDS,
 	PRIVACY_RULE,
+	SCRIPT_RULE,
 	TERM_RULE,
 	TYPE_RULE,
 	VOICE_RULE,
@@ -85,16 +84,25 @@ import {
 	SHEET_POLICY_ORDER_PATTERN,
 	readImportDiagnostics,
 	readNativeDiagnostics,
+	createPolicyComment,
+	createPolicyContext,
+	createPolicyDeclarator,
+	createPolicyExport,
 	createPolicyLazyCases,
+	createPolicyRefused,
 	createPolicyScratch,
+	createPolicySource,
 	createPolicySparse,
 	inspectPolicyConfiguration,
 	inspectPolicyWiring,
 	normalizePolicyFilename,
 	POLICY_EXTRACTOR,
+	POLICY_IMPORT_CASES,
 	POLICY_LAZY_SHAPES,
+	POLICY_NAME_CASES,
 	POLICY_PUBLISHES,
 	POLICY_ROOT,
+	POLICY_WIRING_SETTINGS,
 	POLICY_VUE_COMPOSABLE_SOURCE,
 	POLICY_VUE_RELATIVE_SOURCES,
 	POLICY_VUE_TARGET_CASES,
@@ -244,7 +252,7 @@ describe('selected faces', () => {
 		const sheets = collectSheets(POLICY_ROOT)
 		const frameworks = collectFrameworks(POLICY_ROOT)
 		const wrappers = collectFaceWrappers(POLICY_ROOT)
-		const readings: Array<{
+		const configurations: Array<{
 			readonly axis: string
 			readonly face: string
 			readonly wrapper: string
@@ -279,10 +287,10 @@ describe('selected faces', () => {
 			expect(
 				Object.getOwnPropertyDescriptor(tsconfig.compilerOptions.paths, `@${axis}/${face}`)?.value,
 			).toEqual([`./${axis}/${face}/index.ts`])
-			readings.push({ axis, face, wrapper, project })
+			configurations.push({ axis, face, wrapper, project })
 		}
-		for (const { face, wrapper, project } of readings.filter((reading) =>
-			sheets.includes(reading.face),
+		for (const { face, wrapper, project } of configurations.filter((faceConfiguration) =>
+			sheets.includes(faceConfiguration.face),
 		)) {
 			expect(readFileSync(resolve(POLICY_ROOT, wrapper), 'utf8')).toContain('sheetProject(')
 			expect(inspectSheetConfiguration(project)).toEqual([])
@@ -296,16 +304,18 @@ describe('selected faces', () => {
 			)
 			expect(readConfigScript(scripts, 'build:src')).toContain(`npm run build:src:${face}`)
 		}
-		for (const { project } of readings.filter((reading) =>
-			frameworks.includes(`${reading.axis}/${reading.face}`),
+		for (const { project } of configurations.filter((faceConfiguration) =>
+			frameworks.includes(`${faceConfiguration.axis}/${faceConfiguration.face}`),
 		)) {
 			expect(project.optimizeDeps?.include).toContain('vue')
 			expect(project.test?.setupFiles).toEqual(
 				expect.arrayContaining(['./tests/setup.ts', './tests/setupBrowser.ts']),
 			)
 		}
-		for (const { wrapper } of readings.filter(
-			(reading) => reading.axis === 'src' && frameworks.includes(`${reading.axis}/${reading.face}`),
+		for (const { wrapper } of configurations.filter(
+			(faceConfiguration) =>
+				faceConfiguration.axis === 'src' &&
+				frameworks.includes(`${faceConfiguration.axis}/${faceConfiguration.face}`),
 		)) {
 			const text = readFileSync(resolve(POLICY_ROOT, wrapper), 'utf8')
 			expect(text).toContain('rewriteCoreSpecifier')
@@ -494,8 +504,9 @@ describe('selected faces', () => {
 		for (const wrapper of wrappers) {
 			if (typeof wrapper !== 'function') throw new Error('Missing journey wrapper factory')
 			for (const application of applications) {
+				// Vite accepts an async config factory, so the wrapper's result is awaited like each project's.
 				const composed = readConfigRecord(
-					Reflect.apply(wrapper, undefined, [{ command: 'serve', mode: application }]),
+					await Reflect.apply(wrapper, undefined, [{ command: 'serve', mode: application }]),
 				)
 				const projects = readConfigRecord(composed.test).projects
 				if (!Array.isArray(projects) || projects.length === 0)
@@ -804,7 +815,7 @@ describe('root configuration', () => {
 			[
 				'probe',
 				{
-					benchmark: ['tmp/probes/**/*.test.ts', 'tests/**/*.test.ts'],
+					benchmark: ['tmp/probes/**/*.bench.ts', 'tests/**/*.bench.ts'],
 					include: 'tmp/probes/**/*.test.ts',
 					parallel: false,
 					pool: 'threads',
@@ -994,8 +1005,8 @@ describe('root configuration', () => {
 			sentinel: true,
 		}
 		const test = { name: { label: 'control' }, include: ['tests/control.test.ts'] }
-		const ignoring = Object.defineProperty(() => ({ test }), 'name', { value: 'ignoring' })
-		const spreading = Object.defineProperty((record: object) => ({ ...record, test }), 'name', {
+		const ignoreInput = Object.defineProperty(() => ({ test }), 'name', { value: 'ignoring' })
+		const spreadInput = Object.defineProperty((record: object) => ({ ...record, test }), 'name', {
 			value: 'spreading',
 		})
 		const wrappers = projects.filter((entry) => typeof entry === 'string')
@@ -1027,8 +1038,8 @@ describe('root configuration', () => {
 			).toThrow('expected')
 		}
 		const factories = projects.filter((entry) => typeof entry !== 'string')
-		const entries: readonly unknown[] = [...factories, ignoring, spreading, { test }]
-		const readings = entries.map((entry) => {
+		const entries: readonly unknown[] = [...factories, ignoreInput, spreadInput, { test }]
+		const outcomes = entries.map((entry) => {
 			if (typeof entry !== 'function') {
 				return { name: undefined, callable: false, mode: undefined, leaked: [] }
 			}
@@ -1046,13 +1057,13 @@ describe('root configuration', () => {
 			}
 		})
 		const forwarded = { callable: true, mode: 'sentinel-mode', leaked: [] }
-		expect(readings.slice(0, factories.length)).toStrictEqual(
+		expect(outcomes.slice(0, factories.length)).toStrictEqual(
 			factories.map((entry) => ({
 				name: typeof entry === 'function' ? entry.name : undefined,
 				...forwarded,
 			})),
 		)
-		expect(readings.slice(factories.length)).toStrictEqual([
+		expect(outcomes.slice(factories.length)).toStrictEqual([
 			{ name: 'ignoring', callable: true, mode: undefined, leaked: [] },
 			{
 				name: 'spreading',
@@ -1062,8 +1073,8 @@ describe('root configuration', () => {
 			},
 			{ name: undefined, callable: false, mode: undefined, leaked: [] },
 		])
-		for (const reading of readings.slice(factories.length)) {
-			expect({ ...reading, name: undefined }).not.toStrictEqual({ name: undefined, ...forwarded })
+		for (const outcome of outcomes.slice(factories.length)) {
+			expect({ ...outcome, name: undefined }).not.toStrictEqual({ name: undefined, ...forwarded })
 		}
 
 		// A record that carries no string `mode` is refused rather than forwarded as a project
@@ -1331,7 +1342,7 @@ describe('root configuration', () => {
 				"process.stdout.write('lazy\\n')\nexport function lazy(): string {\n\treturn String(process.argv.length)\n}\n",
 			)
 			const rosters: Array<readonly string[]> = []
-			for (const splitting of [false, true]) {
+			for (const chunked of [false, true]) {
 				const loaded = await loadConfigFromFile(
 					{ command: 'build', mode: 'production', isSsrBuild: false, isPreview: false },
 					wrapper,
@@ -1358,7 +1369,7 @@ describe('root configuration', () => {
 							formats: ['cjs'],
 							fileName: () => 'main.cjs',
 						},
-						rolldownOptions: splitting
+						rolldownOptions: chunked
 							? { ...rolldown, output: { codeSplitting: true } }
 							: { ...rolldown },
 					},
@@ -1647,6 +1658,49 @@ describe('root configuration', () => {
 		expect(inspectPolicyConfiguration(controlled)).toEqual([
 			'overrides must not configure policy/no-mocking',
 		])
+		// The skill scripts sit under .agents, so an ignore pattern that reaches the folder defeats the
+		// script rules as an ignore of a source root defeats the placement rules.
+		const ignored = structuredClone(parsed)
+		Object.defineProperty(ignored, 'ignorePatterns', {
+			value: ['.orkestrel/', '.agents/skills/'],
+			enumerable: true,
+			configurable: true,
+			writable: true,
+		})
+		expect(inspectPolicyConfiguration(ignored)).toEqual([
+			'ignorePatterns must not reach .agents/skills/',
+		])
+		// An entry without an inner slash matches at any depth, so a glob or a directory name the
+		// overrides route through silences guarded files while its first segment names no root.
+		for (const pattern of ['*.ts', 'scripts', 'scripts/', 'policy.ts']) {
+			expect(
+				inspectPolicyConfiguration({ ...readConfigRecord(parsed), ignorePatterns: [pattern] }),
+			).toEqual([`ignorePatterns must not reach ${pattern}`])
+		}
+		for (const patterns of [['.orkestrel/'], ['.orkestrel/', '!src/keep.ts'], ['./scripts']]) {
+			expect(
+				inspectPolicyConfiguration({ ...readConfigRecord(parsed), ignorePatterns: patterns }),
+			).toEqual([])
+		}
+	})
+
+	it('refuses a wiring rule whose options weaken it beneath an error severity', () => {
+		const parsed: unknown = JSON.parse(readFileSync(resolve(POLICY_ROOT, '.oxlintrc.json'), 'utf8'))
+		const rules = readConfigRecord(readConfigRecord(parsed).rules)
+		for (const [rule, setting] of [
+			['typescript/explicit-member-accessibility', ['error', { accessibility: 'off' }]],
+			['typescript/parameter-properties', ['error', { allow: ['private readonly'] }]],
+			['no-var', ['error', { ignore: true }]],
+		] as const) {
+			expect(
+				inspectPolicyConfiguration({
+					...readConfigRecord(parsed),
+					rules: { ...rules, [rule]: setting },
+				}),
+			).toEqual([
+				`${rule} must have the top-level setting ${JSON.stringify(POLICY_WIRING_SETTINGS[rule])}`,
+			])
+		}
 	})
 
 	it('omits the audit-confirmed dead policy type exports', () => {
@@ -1758,6 +1812,80 @@ describe('policy plugin', () => {
 				code: 'class Example { protected read() { return 1 } }',
 				errors: [{ messageId: 'keyword' }],
 			},
+		],
+	})
+
+	tester.run('no-let', LET_RULE, {
+		valid: [
+			{ name: 'leaves an unwritten let to prefer-const', code: 'let value = 1\nread(value)' },
+			{
+				name: 'leaves an unwritten for-of head to prefer-const',
+				code: 'for (let entry of entries) read(entry)',
+			},
+			{
+				name: 'leaves an unwritten for-in head to prefer-const',
+				code: 'for (let key in record) read(key)',
+			},
+			{ name: 'accepts const', code: 'const value = 1\nread(value)' },
+			{ name: 'leaves var to no-var', code: 'var value\nvalue = 1' },
+			{ name: 'accepts an ambient let', code: 'declare let value: number' },
+			{
+				name: 'accepts a let in a global augmentation',
+				code: 'declare global { let ambient: number }',
+			},
+			{
+				name: 'accepts an exported let in a declared module',
+				code: "declare module 'm' { export let ambient: string }",
+			},
+			{
+				name: 'accepts a let in a declared namespace',
+				code: 'declare namespace Ambient { let value: number }',
+			},
+			{
+				name: 'accepts a let in a namespace nested in a declared module',
+				code: "declare module 'm' { namespace Inner { let value: number } }",
+			},
+		],
+		invalid: [
+			...[
+				{ form: 'assignment', code: 'let count = 0\ncount = 1' },
+				{ form: 'compound assignment', code: 'let count = 0\ncount += 1' },
+				{ form: 'logical assignment', code: 'let count: number | undefined = 0\ncount ??= 1' },
+				{ form: 'update', code: 'let count = 0\ncount++' },
+				{ form: 'counter loop', code: 'for (let index = 0; index < 3; index++) read(index)' },
+				{ form: 'array destructuring target', code: 'let [first] = [1]\n;[first] = [2]' },
+				{ form: 'object destructuring target', code: 'let { a } = record\n;({ a } = other)' },
+				{
+					form: 'for-of head written in the body',
+					code: 'for (let entry of entries) { entry = 1 }',
+				},
+				{ form: 'closure write', code: 'let ready = false\nlisten(() => { ready = true })' },
+				{ form: 'later declarator', code: 'let a = 1, b = 2\nb = 3\nread(a, b)' },
+				{ form: 'declaration without a value', code: 'let value\nread(value)' },
+				{ form: 'value assigned later', code: 'let value: number\nvalue = 1\nread(value)' },
+			].map(({ form, code }) => ({
+				name: `rejects a let by ${form} [membership: let that prefer-const leaves]`,
+				code,
+				errors: [{ messageId: 'let' }],
+			})),
+			...[
+				{
+					form: 'a bare let beside a global augmentation',
+					code: 'declare global { let ambient: number }\nlet value\nread(value)',
+				},
+				{
+					form: 'a reassigned let beside a declared module',
+					code: "declare module 'm' { export let ambient: string }\nlet count = 0\ncount++",
+				},
+				{
+					form: 'a bare let in a namespace that is not declared',
+					code: 'namespace Local { let value: number }',
+				},
+			].map(({ form, code }) => ({
+				name: `rejects ${form} [membership: let outside an ambient block]`,
+				code,
+				errors: [{ messageId: 'let' }],
+			})),
 		],
 	})
 
@@ -2520,6 +2648,253 @@ createSomething({
 		],
 	})
 
+	const SCRIPT_GUARD = [
+		'if (process.argv[1] !== undefined && realpathSync(process.argv[1]) === import.meta.filename) {',
+		'\tprocess.exitCode = main()',
+		'}',
+	].join('\n')
+
+	tester.run('no-malformed-script', SCRIPT_RULE, {
+		valid: [
+			{
+				name: 'accepts imports, documented exports, and the one guarded entry',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: [
+					"import { realpathSync } from 'node:fs'",
+					'',
+					'/** Reads the one value. */',
+					'export function read(): number {',
+					'\treturn 1',
+					'}',
+					'',
+					'/** Runs the script. */',
+					'export function main(): number {',
+					'\treturn read()',
+					'}',
+					'',
+					SCRIPT_GUARD,
+				].join('\n'),
+			},
+			{
+				name: 'accepts a documented exported type, interface, and constant',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: [
+					'/** Names the one value. */',
+					'export type Value = number',
+					'',
+					'/** Describes the one record. */',
+					'export interface Entry {',
+					'\treadonly value: Value',
+					'}',
+					'',
+					'/** Holds the one constant. */',
+					'export const VALUE = 1',
+				].join('\n'),
+			},
+			{
+				name: 'accepts a guard the formatter wrapped over lines',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: [
+					'if (',
+					'\tprocess.argv[1] !== undefined &&',
+					'\trealpathSync(process.argv[1]) === import.meta.filename',
+					') {',
+					'\tmain()',
+					'}',
+				].join('\n'),
+			},
+			{
+				name: 'accepts a doc block separated from its export by a blank line',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: ['/** Holds the one constant. */', '', 'export const VALUE = 1'].join('\n'),
+			},
+			{
+				name: 'accepts a module outside the skill scripts',
+				filename: 'src/worker/helpers.ts',
+				code: 'function hidden(): void {}\nhidden()',
+			},
+			{
+				name: 'accepts a file beside the skill scripts',
+				filename: '.agents/skills/sample/references/tool.ts',
+				code: 'function hidden(): void {}\nhidden()',
+			},
+		],
+		invalid: [
+			{
+				name: 'rejects an unexported function [membership: top-level declarations of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: 'function read(): number { return 1 }',
+				errors: [{ messageId: 'hidden' }],
+			},
+			{
+				name: 'rejects an unexported constant [membership: top-level declarations of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: 'const VALUE = 1',
+				errors: [{ messageId: 'hidden' }],
+			},
+			{
+				name: 'rejects an unexported interface even with a doc block [membership: top-level declarations of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: [
+					'/** Describes the one record. */',
+					'interface Value { readonly value: number }',
+				].join('\n'),
+				errors: [{ messageId: 'hidden' }],
+			},
+			{
+				name: 'rejects an export with no comment above it [membership: exported declarations of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: 'export function read(): number { return 1 }',
+				errors: [{ messageId: 'doc' }],
+			},
+			{
+				name: 'rejects an export under a line comment [membership: exported declarations of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: ['// Reads the one value.', 'export function read(): number { return 1 }'].join('\n'),
+				errors: [{ messageId: 'doc' }],
+			},
+			{
+				name: 'rejects an export under a plain block comment [membership: exported declarations of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: ['/* Reads the one value. */', 'export const VALUE = 1'].join('\n'),
+				errors: [{ messageId: 'doc' }],
+			},
+			{
+				name: 'rejects a doc block separated from its export by code [membership: exported declarations of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: ['/** Holds the one constant. */', 'const FIRST = 1', 'export const SECOND = 2'].join(
+					'\n',
+				),
+				errors: [{ messageId: 'hidden' }, { messageId: 'doc' }],
+			},
+			{
+				name: 'rejects a bare call [membership: top-level statements of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: 'main()',
+				errors: [{ messageId: 'entry' }],
+			},
+			{
+				name: 'rejects an entry under another condition [membership: top-level statements of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: ['if (process.argv[1] !== undefined) {', '\tmain()', '}'].join('\n'),
+				errors: [{ messageId: 'entry' }],
+			},
+			{
+				name: 'rejects the guard when it carries an else branch [membership: top-level statements of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: [SCRIPT_GUARD.replace(/\}$/u, '} else {'), '\tmain()', '}'].join('\n'),
+				errors: [{ messageId: 'entry' }],
+			},
+			{
+				name: 'rejects a second guard [membership: top-level statements of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: [SCRIPT_GUARD, SCRIPT_GUARD].join('\n'),
+				errors: [{ messageId: 'entry' }],
+			},
+			{
+				name: 'rejects an export list [membership: top-level statements of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: ['/** Holds the one constant. */', 'const VALUE = 1', 'export { VALUE }'].join('\n'),
+				errors: [{ messageId: 'hidden' }, { messageId: 'entry' }],
+			},
+			{
+				name: 'rejects a default export [membership: top-level statements of a skill script]',
+				filename: '.agents/skills/sample/scripts/tool.ts',
+				code: 'export default {}',
+				errors: [{ messageId: 'entry' }],
+			},
+		],
+	})
+
+	tester.run('no-mutable-property', MUTABLE_RULE, {
+		valid: [
+			{
+				name: 'accepts a readonly interface property',
+				filename: 'src/core/types.ts',
+				code: 'export interface Value { readonly id: string }',
+			},
+			{
+				name: 'accepts a readonly property of a type alias object',
+				filename: 'src/core/types.ts',
+				code: 'export type Value = { readonly id: string; readonly name?: string }',
+			},
+			{
+				name: 'accepts a method signature',
+				filename: 'src/core/types.ts',
+				code: 'export interface Value { read(): string }',
+			},
+			{
+				name: 'accepts an inline parameter type',
+				filename: 'src/core/helpers.ts',
+				code: 'export function read(options: { id: string }): string { return options.id }',
+			},
+			{
+				name: 'accepts an inline parameter type of an interface method',
+				filename: 'src/core/types.ts',
+				code: 'export interface Value { read(options: { id: string }): string }',
+			},
+			{
+				name: 'accepts an inline parameter type of a function typed property',
+				filename: 'src/core/types.ts',
+				code: 'export interface Value { readonly read: (options: { id: string }) => string }',
+			},
+			{
+				name: 'accepts an object type annotating a binding',
+				filename: 'src/core/constants.ts',
+				code: "export const VALUE: { id: string } = { id: 'a' }",
+			},
+			{
+				name: 'accepts a mutable property of an ambient declaration file',
+				filename: 'src/core/types.d.ts',
+				code: 'export interface Value { id: string }',
+			},
+		],
+		invalid: [
+			{
+				name: 'rejects a mutable interface property [membership: property signatures of an interface]',
+				filename: 'src/core/types.ts',
+				code: 'export interface Value { id: string }',
+				errors: [{ messageId: 'mutable' }],
+			},
+			{
+				name: 'rejects a mutable optional interface property [membership: property signatures of an interface]',
+				filename: 'src/core/types.ts',
+				code: 'export interface Value { readonly id: string; name?: string }',
+				errors: [{ messageId: 'mutable' }],
+			},
+			{
+				name: 'rejects a mutable property of a type alias object [membership: property signatures of a type alias object type]',
+				filename: 'src/core/types.ts',
+				code: 'export type Value = { id: string }',
+				errors: [{ messageId: 'mutable' }],
+			},
+			{
+				name: 'rejects a mutable property of a union member [membership: property signatures of a type alias object type]',
+				filename: 'src/core/types.ts',
+				code: 'export type Value = { readonly id: string } | { name: string }',
+				errors: [{ messageId: 'mutable' }],
+			},
+			{
+				name: 'rejects a mutable property of a nested object type [membership: property signatures of a type alias object type]',
+				filename: 'src/core/types.ts',
+				code: 'export interface Value { readonly inner: { id: string } }',
+				errors: [{ messageId: 'mutable' }],
+			},
+			{
+				name: 'rejects a mutable property of a generic argument [membership: property signatures of a type alias object type]',
+				filename: 'src/core/types.ts',
+				code: 'export type Value = ReadonlyArray<{ id: string }>',
+				errors: [{ messageId: 'mutable' }],
+			},
+			{
+				name: 'rejects a mutable function typed property [membership: property signatures of an interface]',
+				filename: 'src/core/types.ts',
+				code: 'export interface Value { read: () => string }',
+				errors: [{ messageId: 'mutable' }],
+			},
+		],
+	})
+
 	tester.run('no-malformed-summary', VOICE_RULE, {
 		valid: [
 			{
@@ -2887,7 +3262,7 @@ createSomething({
 			range: [47, 63],
 			declaration: { type: 'FunctionDeclaration', range: [0, 0], id: name },
 		}
-		const source: PolicySourceCode = { text: '', getAllComments: () => [] }
+		const source = createPolicySource('')
 
 		it('refuses a hole in the declarators of a statement as the declarator it reads as', () => {
 			const declarator: PolicyExpression = {
@@ -2935,14 +3310,7 @@ createSomething({
 
 		it('refuses a hole in the body of a function-domain module as the statement it reads as', () => {
 			const reports: PolicyDiagnostic[] = []
-			const context: PolicyContext = {
-				filename: '/ws/src/server/execution/run.ts',
-				cwd: '/ws',
-				sourceCode: source,
-				report: (diagnostic) => {
-					reports.push(diagnostic)
-				},
-			}
+			const context = createPolicyContext('/ws/src/server/execution/run.ts', '/ws', reports)
 			const dense: PolicyExpression = { type: 'Program', range: [0, 0], body: [exported] }
 			const sparse: PolicyExpression = {
 				type: 'Program',
@@ -3008,12 +3376,12 @@ createSomething({
 			{ esmodule: false },
 		])
 		if (!Array.isArray(configured.overrides)) throw new Error('Missing lint overrides')
-		const touching = configured.overrides
+		const overrides = configured.overrides
 			.map(readConfigRecord)
 			.filter(
 				(override) => readConfigRecord(override.rules)['import/no-dynamic-require'] !== undefined,
 			)
-		expect(touching).toEqual([])
+		expect(overrides).toEqual([])
 	})
 
 	it('permits a computed import() and refuses a computed require at every module path', () => {
@@ -3484,12 +3852,13 @@ createSomething({
 				if (!Array.isArray(rule)) return []
 				const patterns = readConfigRecord(rule[1]).patterns
 				if (!Array.isArray(patterns)) throw new Error('Missing restriction patterns')
-				return patterns.map((patternValue: unknown, patternIndex: number) => {
+				const fromPatterns = patterns.map((patternValue: unknown, patternIndex: number) => {
 					const pattern = readConfigRecord(patternValue)
 					const message = pattern.message
 					if (typeof message !== 'string') throw new Error('Missing pattern message')
 					const alias = /@src\/(core|browser|server) alias/u.exec(message)?.[1]
-					const listed: ReadonlyArray<readonly [string, boolean]> =
+					const fence = POLICY_IMPORT_CASES.find(({ marker }) => message.includes(marker))
+					const chained: ReadonlyArray<readonly [string, boolean]> =
 						alias !== undefined
 							? [
 									[`../${alias}/index.js`, true],
@@ -3504,73 +3873,90 @@ createSomething({
 									[`../${alias}x/index.js`, false],
 									[`../${alias}.ext/index.js`, false],
 								]
-							: message.includes('URL schemes')
+							: message.includes('self-contained')
 								? [
-										['https://host/x', true],
-										['data:text/plain,x', true],
+										['./helpers.ts', true],
+										['../../orkestrel-dispatch/scripts/helpers.ts', true],
+										['@orkestrel/test', true],
+										['fs', true],
+										['', true],
+										['n', true],
+										['no', true],
+										['nod', true],
+										['node', true],
+										['nodes:fs', true],
 										['node:fs', false],
-										['n:entry', true],
-										['no:entry', true],
-										['nod:entry', true],
-										['nodea:entry', true],
-										['1bad:entry', false],
-										['./data:entry', false],
+										['node:child_process', false],
 									]
-								: message.includes('noncanonical dot')
+								: message.includes('URL schemes')
 									? [
-											['../core/../server/index.js', true],
-											['../core/./index.js', true],
-											['../core/index.js', false],
-											['./index.js', false],
-											['../../core/index.js', false],
-											['.../../index.js', true],
-											['.name/../index.js', true],
+											['https://host/x', true],
+											['data:text/plain,x', true],
+											['node:fs', false],
+											['n:entry', true],
+											['no:entry', true],
+											['nod:entry', true],
+											['nodea:entry', true],
+											['1bad:entry', false],
+											['./data:entry', false],
 										]
-									: message.includes('sibling sheet')
+									: message.includes('noncanonical dot')
 										? [
-												['@src/print', true],
-												// Relative refusals now belong to the canonical filename-based matrix.
-												['@src/core', false],
-												['@src/browser', false],
-												['@src/vue', false],
-												['@app/core', false],
-												['@app/browser', false],
-												['@src/corex', true],
-												['@src/', true],
-												// The app browser query is admitted there; src retains its alias refusal.
-												['../browser?x', false],
-												['../print.ext/index.js', false],
-												...(Array.isArray(block.files) &&
-												block.files.some(
-													(file: unknown) =>
-														typeof file === 'string' && file.startsWith('app/vue/'),
-												)
-													? [['@app/print', true] as const]
-													: []),
+												['../core/../server/index.js', true],
+												['../core/./index.js', true],
+												['../core/index.js', false],
+												['./index.js', false],
+												['../../core/index.js', false],
+												['.../../index.js', true],
+												['.name/../index.js', true],
 											]
-										: [
-												[
-													message.includes('absolute paths')
-														? '/machine/module.js'
-														: message.includes('normalized traversal')
-															? './../core/index.js'
-															: message.includes('forward slashes')
-																? '..\\core\\index.js'
-																: message.includes('compiler API')
-																	? 'typescript'
-																	: message.includes('private app')
-																		? '@app/core'
-																		: message.includes('stylesheets')
-																			? './index.css'
-																			: message.includes('host-independent') ||
-																				  message.includes('Node or server')
-																				? 'node:fs'
-																				: message.includes('Vue extension')
-																					? '@src/vue'
-																					: '@src/browser',
-													true,
-												],
-											]
+										: message.includes('sibling sheet')
+											? [
+													['@src/print', true],
+													// Relative refusals now belong to the canonical filename-based matrix.
+													['@src/core', false],
+													['@src/browser', false],
+													['@src/vue', false],
+													['@app/core', false],
+													['@app/browser', false],
+													['@src/corex', true],
+													['@src/', true],
+													// The app browser query is admitted there; src retains its alias refusal.
+													['../browser?x', false],
+													['../print.ext/index.js', false],
+													...(Array.isArray(block.files) &&
+													block.files.some(
+														(file: unknown) =>
+															typeof file === 'string' && file.startsWith('app/vue/'),
+													)
+														? [['@app/print', true] as const]
+														: []),
+												]
+											: [
+													[
+														message.includes('absolute paths')
+															? '/machine/module.js'
+															: message.includes('normalized traversal')
+																? './../core/index.js'
+																: message.includes('forward slashes')
+																	? '..\\core\\index.js'
+																	: message.includes('compiler API')
+																		? 'typescript'
+																		: message.includes('private app')
+																			? '@app/core'
+																			: message.includes('stylesheets')
+																				? './index.css'
+																				: message.includes('host-independent') ||
+																					  message.includes('Node or server')
+																					? 'node:fs'
+																					: message.includes('Vue extension')
+																						? '@src/vue'
+																						: '@src/browser',
+														true,
+													],
+												]
+					// A setup-module fence lists its own refused and admitted specifiers in the setup module.
+					const listed = fence?.cases ?? chained
 					const face =
 						message.includes('another styles face') && typeof pattern.regex === 'string'
 							? /@src\/(bootstrap|tailwindcss|styles)\(/u.exec(pattern.regex)?.[1]
@@ -3591,24 +3977,31 @@ createSomething({
 									[`@src/${face}x`, false],
 									[`../${face}.ext/index.js`, false],
 								]
+					// A per-file glob such as `.agents/skills/*/scripts/*.ts` or `tests/setup.ts` names a
+					// directory once its file part is dropped and each wildcard segment takes a sample name.
 					const owner =
 						Array.isArray(block.files) && typeof block.files[0] === 'string'
-							? block.files[0].split('/**')[0]
+							? block.files[0]
+									.split('/**')[0]
+									?.replace(/\/[^/]*\.[a-z]+$/u, '')
+									.replaceAll('*', 'sample')
 							: undefined
 					if (owner === undefined) throw new Error('Missing pattern owner')
-					const cases = [...sources, ['./index.js', false] as const].map(
-						([source, refusal], index) => {
-							const path = `${owner}/pattern${blockIndex}_${patternIndex}_${index}.ts`
-							mkdirSync(dirname(resolve(scratch, path)), { recursive: true })
-							writeFileSync(
-								resolve(scratch, path),
-								'import * as boundary from ' +
-									JSON.stringify(source) +
-									'\nvoid boundary\ndebugger\n',
-							)
-							return { path, refusal }
-						},
-					)
+					// Every relative specifier is refused in a self-contained script and in the policy
+					// plugin, which imports nothing, so their admitted controls are the rows above.
+					const controls =
+						message.includes('self-contained') || fence?.controlled === false
+							? []
+							: [['./index.js', false] as const]
+					const cases = [...sources, ...controls].map(([source, refusal], index) => {
+						const path = `${owner}/pattern${blockIndex}_${patternIndex}_${index}.ts`
+						mkdirSync(dirname(resolve(scratch, path)), { recursive: true })
+						writeFileSync(
+							resolve(scratch, path),
+							'import * as boundary from ' + JSON.stringify(source) + '\nvoid boundary\ndebugger\n',
+						)
+						return { path, refusal }
+					})
 					return {
 						cases,
 						override: {
@@ -3617,7 +4010,60 @@ createSomething({
 						},
 					}
 				})
+				// A path entry restricts named imports of one module, so each case imports one clause.
+				const entries = readConfigRecord(rule[1]).paths
+				const fromPaths = (Array.isArray(entries) ? entries : []).map(
+					(entryValue: unknown, entryIndex: number) => {
+						const entry = readConfigRecord(entryValue)
+						const message = entry.message
+						if (typeof message !== 'string' || typeof entry.name !== 'string') {
+							throw new Error('Missing path entry message or module')
+						}
+						const named = POLICY_NAME_CASES.find(({ marker }) => message.includes(marker))
+						if (named === undefined) throw new Error('Missing named import cases for a path entry')
+						const owner =
+							Array.isArray(block.files) && typeof block.files[0] === 'string'
+								? block.files[0].replace(/\/[^/]*\.[a-z]+$/u, '').replaceAll('*', 'sample')
+								: undefined
+						if (owner === undefined) throw new Error('Missing path owner')
+						const cases = [
+							...named.refused.map((clause): [string, boolean] => [clause, true]),
+							...named.admitted.map((clause): [string, boolean] => [clause, false]),
+						].map(([clause, refusal], index) => {
+							const path = `${owner}/path${blockIndex}_${entryIndex}_${index}.ts`
+							mkdirSync(dirname(resolve(scratch, path)), { recursive: true })
+							writeFileSync(
+								resolve(scratch, path),
+								`import { ${clause} } from ${JSON.stringify(entry.name)}\ndebugger\n`,
+							)
+							return { path, refusal }
+						})
+						return {
+							cases,
+							override: {
+								files: cases.map(({ path }) => path),
+								rules: { 'no-restricted-imports': ['error', { paths: [entry] }] },
+							},
+						}
+					},
+				)
+				return [...fromPatterns, ...fromPaths]
 			})
+			// Each fence keeps a pattern or path entry in the configuration, so deleting one fails here
+			// rather than leaving the loop above with nothing to read.
+			const messages = configured.overrides.flatMap((value: unknown) => {
+				const rule = readConfigRecord(readConfigRecord(value).rules)['no-restricted-imports']
+				if (!Array.isArray(rule)) return []
+				const options = readConfigRecord(rule[1])
+				return [options.patterns, options.paths]
+					.flatMap((list: unknown) => (Array.isArray(list) ? list : []))
+					.map((entry: unknown) => String(readConfigRecord(entry).message))
+			})
+			expect(
+				[...POLICY_IMPORT_CASES, ...POLICY_NAME_CASES]
+					.map(({ marker }) => marker)
+					.filter((marker) => !messages.some((message) => message.includes(marker))),
+			).toEqual([])
 			const overrides = built.map(({ override }) => override)
 			const expected = new Map(
 				built.flatMap(({ cases }) =>
@@ -3629,12 +4075,12 @@ createSomething({
 				JSON.stringify({ rules: { 'no-debugger': 'error' }, overrides }),
 			)
 			const codes = readImportDiagnostics(scratch, [...expected.keys()])
-			const readings = [...expected].map(([path, refusal]) => ({
+			const verdicts = [...expected].map(([path, refusal]) => ({
 				path,
 				expected: refusal,
 				actual: codes.has('eslint(no-restricted-imports) ' + path),
 			}))
-			expect(readings.filter((reading) => reading.expected !== reading.actual)).toEqual([])
+			expect(verdicts.filter((verdict) => verdict.expected !== verdict.actual)).toEqual([])
 			writeFileSync(
 				resolve(scratch, '.oxlintrc.json'),
 				JSON.stringify({ rules: { 'no-debugger': 'error', 'no-restricted-imports': 'off' } }),
@@ -3846,14 +4292,14 @@ createSomething({
 			const [enabled, disabled] = reports
 			if (enabled === undefined || disabled === undefined)
 				throw new Error('Missing boundary readings')
-			const readings = [...expected].map(([path, refusal]) => ({
+			const verdicts = [...expected].map(([path, refusal]) => ({
 				path,
 				expected: refusal,
 				actual:
 					enabled.has('eslint(no-restricted-imports) ' + path) ||
 					enabled.has('policy(no-cross-vue-face) ' + path),
 			}))
-			expect(readings.filter((reading) => reading.actual !== reading.expected)).toEqual([])
+			expect(verdicts.filter((verdict) => verdict.actual !== verdict.expected)).toEqual([])
 			const control = [...expected].map(([path, refusal]) => ({
 				path,
 				expected: refusal,
@@ -3862,7 +4308,7 @@ createSomething({
 					disabled.has('policy(no-cross-vue-face) ' + path),
 			}))
 			expect(() =>
-				expect(control.filter((reading) => reading.actual !== reading.expected)).toEqual([]),
+				expect(control.filter((verdict) => verdict.actual !== verdict.expected)).toEqual([]),
 			).toThrow('deeply equal')
 			expect(control).toContainEqual({ path: 'src/vue/refused3.ts', expected: true, actual: false })
 			expect(control).toContainEqual({ path: 'src/vue/refused8.ts', expected: true, actual: false })
@@ -3881,13 +4327,52 @@ createSomething({
 		expect(declared).toContain('no-misplaced-function')
 		expect(declared).toContain('no-host-line-endings')
 		expect(declared).toContain('no-cross-vue-face')
+		expect(declared).toContain('no-malformed-script')
+		expect(declared).toContain('no-mutable-property')
 		expect(
 			inspectPolicyWiring(
 				parsed,
 				declared.map((name) => `policy/${name}`),
-				[POLICY_PLACEMENT_GLOBS, POLICY_ENDING_GLOBS],
+				[POLICY_PLACEMENT_GLOBS, POLICY_ENDING_GLOBS, POLICY_SCRIPT_GLOBS, POLICY_NESTED_GLOBS],
 			),
 		).toEqual([])
+		// The controls: a configuration with the skill-script override or the nested-function
+		// override removed reports the population it no longer declares.
+		const overrides: unknown = Object.getOwnPropertyDescriptor(parsed, 'overrides')?.value
+		if (!Array.isArray(overrides)) throw new Error('The Oxlint configuration has no overrides')
+		for (const population of [POLICY_SCRIPT_GLOBS, POLICY_NESTED_GLOBS]) {
+			const trimmed = {
+				...readConfigRecord(parsed),
+				overrides: overrides.filter((override: unknown) => {
+					const files = readConfigRecord(override).files
+					return !Array.isArray(files) || files.join(' ') !== population.join(' ')
+				}),
+			}
+			expect(
+				inspectPolicyWiring(
+					trimmed,
+					[],
+					[POLICY_PLACEMENT_GLOBS, POLICY_ENDING_GLOBS, POLICY_SCRIPT_GLOBS, POLICY_NESTED_GLOBS],
+				),
+			).toEqual([`no override files list declares the population exactly: ${population.join(' ')}`])
+		}
+		// The control: the script override keeps its exact population while the rule it enables is
+		// set to off, which names the rule as enabled by no record.
+		const disabled = {
+			...readConfigRecord(parsed),
+			overrides: overrides.map((override: unknown) => {
+				const record = readConfigRecord(override)
+				return Object.hasOwn(readConfigRecord(record.rules ?? {}), 'policy/no-malformed-script')
+					? {
+							...record,
+							rules: { ...readConfigRecord(record.rules), 'policy/no-malformed-script': 'off' },
+						}
+					: record
+			}),
+		}
+		expect(
+			inspectPolicyWiring(disabled, ['policy/no-malformed-script'], [POLICY_SCRIPT_GLOBS]),
+		).toEqual(['policy/no-malformed-script is enabled by no top-level or override rules record'])
 	})
 
 	it('loads every configured policy rule through the real binary', () => {
@@ -3916,6 +4401,15 @@ createSomething({
 					"export const STATUS = 'ready'",
 					"export const lines = text.trim().split('\\n')",
 					'export const ending = os.EOL + EOL',
+					'let counter = 0',
+					'counter++',
+					'let unchanged = 1',
+					'var legacy = 1',
+					'function shiftValue(value: number) { value += 1; return value }',
+					'try { void counter } catch (error) { error = undefined; void error }',
+					'void unchanged',
+					'void legacy',
+					'void shiftValue',
 					'void PrivateMember',
 					'void ParameterMember',
 					'void PublicMember',
@@ -3933,6 +4427,184 @@ createSomething({
 			scratch.write('src/violations/composables.ts', "export const READY = 'yes'\n")
 			scratch.write('app/browser/composables/useTheme.ts', 'export function useMode(): void {}\n')
 			scratch.write('app/vue/helpers.ts', "export * from '../print/index.js'\ndebugger\n")
+			scratch.write(
+				'.agents/skills/sample/scripts/shared.ts',
+				["import { readOption } from './helpers.ts'", 'void readOption'].join('\n'),
+			)
+			// The fence reads a dynamic specifier as it reads a static one, and the empty specifier opens
+			// with no `node:` as every other refused specifier does.
+			scratch.write(
+				'.agents/skills/sample/scripts/dynamic.ts',
+				[
+					'/** Loads a sibling. */',
+					"export function load(): Promise<unknown> { return import('./other.ts') }",
+				].join('\n'),
+			)
+			scratch.write(
+				'.agents/skills/sample/scripts/empty.ts',
+				[
+					'/** Loads nothing. */',
+					"export function load(): Promise<unknown> { return import('') }",
+				].join('\n'),
+			)
+			scratch.write(
+				'.agents/skills/sample/scripts/alone.ts',
+				["import { readFileSync } from 'node:fs'", 'void readFileSync'].join('\n'),
+			)
+			// A script that hides a declaration, exports one with no doc block, and runs at import draws
+			// every message; the conforming script beside it draws none, and its `debugger` statement
+			// sits inside a function, outside the top-level statements the script rule reads, so the
+			// root `no-debugger` rule proves the file entered the run.
+			scratch.write(
+				'.agents/skills/sample/scripts/malformed.ts',
+				[
+					'function hidden(): void {}',
+					'export function bare(): void {}',
+					'hidden()',
+					'bare()',
+				].join('\n'),
+			)
+			scratch.write(
+				'.agents/skills/sample/scripts/conforming.ts',
+				[
+					"import { realpathSync } from 'node:fs'",
+					'',
+					'/** Reads the one value. */',
+					'export function read(): number {',
+					'\tdebugger',
+					'\treturn 1',
+					'}',
+					'',
+					'/** Runs the script. */',
+					'export function main(): number {',
+					'\treturn read()',
+					'}',
+					'',
+					'if (process.argv[1] !== undefined && realpathSync(process.argv[1]) === import.meta.filename) {',
+					'\tprocess.exitCode = main()',
+					'}',
+				].join('\n'),
+			)
+			// Every form of write to a parameter or a catch binding draws the built-in rule, one file per
+			// form so that a form the binary misses names itself.
+			const reassignments = [
+				{
+					file: 'param-update',
+					code: 'no-param-reassign',
+					source: 'export function f(a: number) { a++; return a }',
+				},
+				{
+					file: 'param-array-target',
+					code: 'no-param-reassign',
+					source: 'export function f(b: number[]) { ;[b] = [[1]]; return b }',
+				},
+				{
+					file: 'param-object-target',
+					code: 'no-param-reassign',
+					source: 'export function f(c: object) { ;({ c } = { c: {} }); return c }',
+				},
+				{
+					file: 'param-for-in-head',
+					code: 'no-param-reassign',
+					source: 'export function f(e: string, c: object) { for (e in c) void e; return e }',
+				},
+				{
+					file: 'param-for-of-head',
+					code: 'no-param-reassign',
+					source: "export function f(e: string) { for (e of ['x']) void e; return e }",
+				},
+				{
+					file: 'catch-update',
+					code: 'no-ex-assign',
+					source: 'try { void 0 } catch (err) { err++ }',
+				},
+				{
+					file: 'catch-destructured',
+					code: 'no-ex-assign',
+					source: "try { void 0 } catch ({ message }) { message = 'x' }",
+				},
+				{
+					file: 'catch-for-of-head',
+					code: 'no-ex-assign',
+					source: 'try { void 0 } catch (err) { for (err of [1]) void err }',
+				},
+			].map(({ file, code, source }) => ({
+				code: `eslint(${code})`,
+				filename: `src/violations/reassign/${file}.ts`,
+				source,
+			}))
+			for (const { filename, source } of reassignments) scratch.write(filename, source)
+			// An ambient block holds a `let` with no value and no `declare` flag of its own, and the
+			// `debugger` statement proves the file entered the run the absence assertion reads.
+			scratch.write(
+				'src/violations/ambient.ts',
+				[
+					'declare global { let ambientGlobal: number }',
+					"declare module 'ambient-module' { export let ambientExport: string }",
+					'debugger',
+					'export {}',
+				].join('\n'),
+			)
+			scratch.write(
+				'src/violations/types.ts',
+				[
+					'/** Describes a mutable record. */',
+					'export interface MutableRecord { id: string }',
+					'/** Describes a frozen record. */',
+					'export interface FrozenRecord { readonly id: string }',
+					'/** Aliases an object type. */',
+					'export type MutableAlias = { value: number }',
+					'/** Reads one field through an inline parameter type. */',
+					'export type Reader = (options: { id: string }) => string',
+				].join('\n'),
+			)
+			// The setup-module fences replace the generic tests restriction for the files they name,
+			// and the proofs beside them keep the generic one. The `debugger` statement proves each file
+			// entered the run.
+			scratch.write(
+				'tests/setup.ts',
+				["import { readFileSync } from 'node:fs'", "import { ref } from 'vue'", 'debugger'].join(
+					'\n',
+				),
+			)
+			scratch.write(
+				'tests/setupBrowser.ts',
+				[
+					"import { describe, it } from 'vitest'",
+					"import { readFileSync } from 'node:fs'",
+					'debugger',
+				].join('\n'),
+			)
+			scratch.write(
+				'tests/setupServer.ts',
+				["import { expect } from 'vitest'", 'debugger'].join('\n'),
+			)
+			scratch.write(
+				'tests/setupPolicy.ts',
+				["import { readFileSync } from 'node:fs'", "import { vi } from 'vitest'", 'debugger'].join(
+					'\n',
+				),
+			)
+			scratch.write(
+				'tests/setupStyles.ts',
+				["import { TestRunner } from 'vitest'", 'debugger'].join('\n'),
+			)
+			scratch.write(
+				'tests/setup.test.ts',
+				["import { describe, expect, it } from 'vitest'", 'debugger'].join('\n'),
+			)
+			scratch.write(
+				'tests/setupServer.bench.ts',
+				["import { describe, expect, it } from 'vitest'", 'debugger'].join('\n'),
+			)
+			scratch.write(
+				'tests/titles.test.ts',
+				[
+					"import { expect, it } from 'vitest'",
+					"it('reads one value', () => expect(1).toBe(1))",
+					"it('reads one value', () => expect(2).toBe(2))",
+				].join('\n'),
+			)
 			// The line-ending population reaches src, app, and configs alone, so this module
 			// outside them carries the same defect and must draw no diagnostic. The `debugger`
 			// statement is the arrival control the root `no-debugger` rule reports, which proves
@@ -3985,7 +4657,18 @@ createSomething({
 			const config = resolve(scratch.path, '.oxlintrc.json')
 			const violations = spawnSync(
 				process.execPath,
-				[binary, '--config', config, '--format', 'json', 'src/violations', 'app', 'scripts'],
+				[
+					binary,
+					'--config',
+					config,
+					'--format',
+					'json',
+					'src/violations',
+					'app',
+					'scripts',
+					'tests',
+					'.agents',
+				],
 				{ cwd: scratch.path, encoding: 'utf8', timeout: 15_000 },
 			)
 			const clean = spawnSync(
@@ -4023,7 +4706,33 @@ createSomething({
 			for (const { code, filename } of [
 				{ code: 'policy(no-mocking)', filename: 'src/violations/fixture.ts' },
 				{ code: 'policy(no-keyword-privacy)', filename: 'src/violations/fixture.ts' },
+				{ code: 'policy(no-let)', filename: 'src/violations/fixture.ts' },
+				{ code: 'eslint(prefer-const)', filename: 'src/violations/fixture.ts' },
+				{ code: 'eslint(no-var)', filename: 'src/violations/fixture.ts' },
+				{ code: 'eslint(no-param-reassign)', filename: 'src/violations/fixture.ts' },
+				{ code: 'eslint(no-ex-assign)', filename: 'src/violations/fixture.ts' },
+				{ code: 'vitest(no-identical-title)', filename: 'tests/titles.test.ts' },
+				{
+					code: 'eslint(no-restricted-imports)',
+					filename: '.agents/skills/sample/scripts/shared.ts',
+				},
+				{
+					code: 'eslint(no-restricted-imports)',
+					filename: '.agents/skills/sample/scripts/dynamic.ts',
+				},
+				{
+					code: 'eslint(no-restricted-imports)',
+					filename: '.agents/skills/sample/scripts/empty.ts',
+				},
 				{ code: 'policy(no-nested-functions)', filename: 'src/violations/fixture.ts' },
+				{
+					code: 'policy(no-malformed-script)',
+					filename: '.agents/skills/sample/scripts/malformed.ts',
+				},
+				{ code: 'policy(no-mutable-property)', filename: 'src/violations/types.ts' },
+				{ code: 'eslint(no-restricted-imports)', filename: 'tests/setup.ts' },
+				{ code: 'eslint(no-restricted-imports)', filename: 'tests/setupBrowser.ts' },
+				{ code: 'eslint(no-restricted-imports)', filename: 'tests/setupServer.ts' },
 				{ code: 'policy(no-misplaced-type)', filename: 'src/violations/fixture.ts' },
 				{ code: 'policy(no-misplaced-data)', filename: 'src/violations/fixture.ts' },
 				{ code: 'policy(no-misplaced-function)', filename: 'src/violations/fixture.ts' },
@@ -4053,12 +4762,57 @@ createSomething({
 					`${code} ${normalizePolicyFilename(comparisonRoot, filename)}`,
 				)
 			}
+			for (const { code, filename } of reassignments) {
+				expect(violationCodes).toContain(
+					`${code} ${normalizePolicyFilename(comparisonRoot, filename)}`,
+				)
+			}
+			expect(violationCodes).toContain(
+				`eslint(no-debugger) ${normalizePolicyFilename(comparisonRoot, 'src/violations/ambient.ts')}`,
+			)
+			expect(violationCodes).not.toContain(
+				`policy(no-let) ${normalizePolicyFilename(comparisonRoot, 'src/violations/ambient.ts')}`,
+			)
 			expect(violationCodes).toContain(
 				`eslint(no-debugger) ${normalizePolicyFilename(comparisonRoot, 'scripts/read.ts')}`,
 			)
 			expect(violationCodes).not.toContain(
 				`policy(no-host-line-endings) ${normalizePolicyFilename(comparisonRoot, 'scripts/read.ts')}`,
 			)
+			expect(violationCodes).not.toContain(
+				`eslint(no-restricted-imports) ${normalizePolicyFilename(comparisonRoot, '.agents/skills/sample/scripts/alone.ts')}`,
+			)
+			// The conforming script arrives, through the `debugger` statement inside its function, and
+			// draws no script diagnostic; the inline parameter type beside the two mutable properties
+			// draws none either, so the types file draws exactly two.
+			expect(violationCodes).toContain(
+				`eslint(no-debugger) ${normalizePolicyFilename(comparisonRoot, '.agents/skills/sample/scripts/conforming.ts')}`,
+			)
+			expect(violationCodes).not.toContain(
+				`policy(no-malformed-script) ${normalizePolicyFilename(comparisonRoot, '.agents/skills/sample/scripts/conforming.ts')}`,
+			)
+			expect(
+				violationCodes.filter(
+					(code) =>
+						code ===
+						`policy(no-mutable-property) ${normalizePolicyFilename(comparisonRoot, 'src/violations/types.ts')}`,
+				),
+			).toHaveLength(2)
+			// The fences replace only the restriction of the files they name: a setup module that
+			// imports a Node module or a vitest helper the law admits, a browser-enabled helper module
+			// the law admits, and a setup proof that registers tests all draw the root arrival
+			// diagnostic and no import restriction. A benchmark beside a setup module registers and
+			// asserts as a proof does, so it is admitted the same way.
+			for (const filename of [
+				'tests/setupPolicy.ts',
+				'tests/setupStyles.ts',
+				'tests/setup.test.ts',
+				'tests/setupServer.bench.ts',
+			]) {
+				const normalized = normalizePolicyFilename(comparisonRoot, filename)
+				expect(violationCodes).toContain(`eslint(no-debugger) ${normalized}`)
+				expect(violationCodes).not.toContain(`eslint(no-restricted-imports) ${normalized}`)
+			}
 			expect(clean.status).toBe(0)
 			expect(cleanCodes).toHaveLength(0)
 		} finally {
@@ -4228,6 +4982,7 @@ describe('configuration helpers', () => {
 			'readBoundedFile',
 			'readHandleBytes',
 			'readCompilerOutput',
+			'resolveCompiler',
 			'rewriteCoreSpecifier',
 			'sourceFallback',
 			'workspacePath',
@@ -4335,7 +5090,7 @@ describe('configuration helpers', () => {
 		const scratch = createPolicyScratch({ prefix: 'orkestrel-config-handle-' })
 		try {
 			// Each case is a file's text, the offset already read into the buffer, and the largest total allowed.
-			const readings = [
+			const results = [
 				{ text: 'abc', offset: 0, limit: 4 },
 				{ text: 'abcd', offset: 0, limit: 4 },
 				{ text: 'abcde', offset: 0, limit: 4 },
@@ -4355,8 +5110,8 @@ describe('configuration helpers', () => {
 			})
 			// A file at or under the limit answers its length; the shifted read adds the offset to the
 			// length and fills the buffer past it; a file over the limit answers nothing.
-			expect(readings.map(({ count }) => count)).toStrictEqual([3, 4, undefined, 0, 5, undefined])
-			expect(readings.map(({ filled }) => filled)).toStrictEqual(['abc', 'abcd', '', '', 'abc', ''])
+			expect(results.map(({ count }) => count)).toStrictEqual([3, 4, undefined, 0, 5, undefined])
+			expect(results.map(({ filled }) => filled)).toStrictEqual(['abc', 'abcd', '', '', 'abc', ''])
 		} finally {
 			scratch.destroy()
 		}
@@ -4409,18 +5164,18 @@ describe('configuration helpers', () => {
 				logLevel: 'silent',
 				build: { outDir: 'out', lib: { entry, formats: ['es'] } },
 			}
-			const building = new configHelpers.BuildState()
-			building.resolve(await resolveConfig(inline, 'build'))
-			expect(building.building).toBe(true)
-			expect(building.output).toBe(resolve(scratch.path, 'out'))
-			expect(building.root).toBe(realpathSync.native(scratch.path))
-			expect(building.source).toBe(entry)
+			const buildState = new configHelpers.BuildState()
+			buildState.resolve(await resolveConfig(inline, 'build'))
+			expect(buildState.building).toBe(true)
+			expect(buildState.output).toBe(resolve(scratch.path, 'out'))
+			expect(buildState.root).toBe(realpathSync.native(scratch.path))
+			expect(buildState.source).toBe(entry)
 
 			// The control: a serve command is not a build, and a config with no library entry has no source.
-			const serving = new configHelpers.BuildState()
-			serving.resolve(await resolveConfig({ ...inline, build: { outDir: 'out' } }, 'serve'))
-			expect(serving.building).toBe(false)
-			expect(serving.source).toBe('')
+			const serveState = new configHelpers.BuildState()
+			serveState.resolve(await resolveConfig({ ...inline, build: { outDir: 'out' } }, 'serve'))
+			expect(serveState.building).toBe(false)
+			expect(serveState.source).toBe('')
 		} finally {
 			scratch.destroy()
 		}
@@ -4615,6 +5370,65 @@ describe('configuration helpers', () => {
 		}
 	})
 
+	it('resolves the installed compiler through bin.tsc when private package paths are unexported', () => {
+		const compiler = configHelpers.resolveCompiler(import.meta.url)
+		expect(configHelpers.readCompilerOutput(compiler, ['--version'])).toMatch(/^Version \d+\./u)
+		const scratch = createPolicyScratch({ prefix: 'orkestrel-compiler-exports-' })
+		try {
+			const root = join(scratch.path, 'node_modules/typescript')
+			scratch.write('package.json', '{"type":"module"}')
+			scratch.write(
+				'node_modules/typescript/package.json',
+				JSON.stringify({
+					name: 'typescript',
+					exports: { './package.json': './package.json' },
+					bin: { tsc: relative(root, compiler) },
+				}),
+			)
+			const path = join(scratch.path, 'package.json')
+			expect(() => createRequire(path).resolve('typescript/bin/tsc')).toThrow(
+				'not defined by "exports"',
+			)
+			expect(configHelpers.resolveCompiler(path)).toBe(compiler)
+			expect(
+				configHelpers.readCompilerOutput(configHelpers.resolveCompiler(path), ['--version']),
+			).toMatch(/^Version \d+\./u)
+			scratch.write('consumer.ts', 'const value: string = 1\nconsole.log(value)\n')
+			const refused = spawnSync(
+				process.execPath,
+				[compiler, '--noEmit', '--pretty', 'false', '--skipLibCheck', 'consumer.ts'],
+				{ cwd: scratch.path, encoding: 'utf8', windowsHide: true },
+			)
+			expect(refused.status).toBeGreaterThan(0)
+			expect(refused.stdout).toContain('error TS2322')
+			scratch.write('consumer.ts', "const value: string = 'accepted'\nconsole.log(value)\n")
+			const accepted = spawnSync(
+				process.execPath,
+				[compiler, '--noEmit', '--pretty', 'false', '--skipLibCheck', 'consumer.ts'],
+				{ cwd: scratch.path, encoding: 'utf8', windowsHide: true },
+			)
+			expect(accepted.status, `${accepted.stdout}${accepted.stderr}`).toBe(0)
+		} finally {
+			scratch.destroy()
+		}
+	})
+
+	it.each([{}, { bin: null }, { bin: { tsc: 7 } }])(
+		'refuses a compiler manifest without a bin.tsc command: %s',
+		(declared) => {
+			const scratch = createPolicyScratch({ prefix: 'orkestrel-compiler-manifest-' })
+			try {
+				scratch.write('package.json', '{"type":"module"}')
+				scratch.write('node_modules/typescript/package.json', JSON.stringify(declared))
+				expect(() => configHelpers.resolveCompiler(join(scratch.path, 'package.json'))).toThrow(
+					'The TypeScript package declares no bin.tsc command',
+				)
+			} finally {
+				scratch.destroy()
+			}
+		},
+	)
+
 	// The scope reading applies only where the workspace publishes source from `src`, which is what
 	// `publishes` reads, and the name ends at that mechanism. An absent face project is the defect
 	// this case exists to report rather than a second reason to excuse it, so a workspace holding
@@ -4626,7 +5440,7 @@ describe('configuration helpers', () => {
 	it.skipIf(!POLICY_PUBLISHES)(
 		'reads the compiler scope a declaration roll-up requires [inapplicable where src holds no recognized environment directory]',
 		() => {
-			const compiler = createRequire(import.meta.url).resolve('typescript/bin/tsc')
+			const compiler = configHelpers.resolveCompiler(import.meta.url)
 			// The order mirrors ENVIRONMENTS in src/core/constants.ts; a server-only workspace vendors
 			// no core project, so this walks to the first face the workspace actually carries.
 			const faces = ['core', 'browser', 'server']
@@ -4686,7 +5500,7 @@ describe('configuration helpers', () => {
 	// reading a face project must not excuse it from the helpers behind the roll-up, which it
 	// vendors whether or not it publishes.
 	it('reads the refusals, guards, overrides, and rewrites a declaration roll-up requires from every workspace', () => {
-		const compiler = createRequire(import.meta.url).resolve('typescript/bin/tsc')
+		const compiler = configHelpers.resolveCompiler(import.meta.url)
 		// Any project path resolves these, because each reading is refused by the text before the
 		// path is read. The root project is the one file every workspace carries.
 		const project = resolve(POLICY_ROOT, 'tsconfig.json')
@@ -4850,8 +5664,15 @@ describe('configuration helpers', () => {
 				const rewritten = join(workspace, 'rewritten')
 				const kept = join(workspace, 'kept')
 				const builds = [
-					{ output: rewritten, rewrite: true },
-					{ output: kept, rewrite: false },
+					{
+						output: rewritten,
+						plugin: configHelpers.declarationRollup({
+							project,
+							rewrite: (text) =>
+								configHelpers.rewriteBrowserSpecifier(configHelpers.rewriteCoreSpecifier(text)),
+						}),
+					},
+					{ output: kept, plugin: configHelpers.declarationRollup({ project }) },
 				]
 				for (const face of builds) {
 					await build({
@@ -4859,19 +5680,7 @@ describe('configuration helpers', () => {
 						configFile: false,
 						logLevel: 'silent',
 						publicDir: false,
-						plugins: [
-							configHelpers.declarationRollup(
-								face.rewrite
-									? {
-											project,
-											rewrite: (text) =>
-												configHelpers.rewriteBrowserSpecifier(
-													configHelpers.rewriteCoreSpecifier(text),
-												),
-										}
-									: { project },
-							),
-						],
+						plugins: [face.plugin],
 						build: {
 							write: true,
 							outDir: face.output,
@@ -4886,12 +5695,12 @@ describe('configuration helpers', () => {
 				}
 
 				const idle = join(workspace, 'idle')
-				const serving = configHelpers.declarationRollup({
+				const plugins = configHelpers.declarationRollup({
 					project,
 					rewrite: configHelpers.rewriteCoreSpecifier,
 				})
-				const configure = serving.configResolved
-				const close = serving.closeBundle
+				const configure = plugins.configResolved
+				const close = plugins.closeBundle
 				if (typeof configure !== 'function' || typeof close !== 'function') {
 					throw new Error('The declaration roll-up exposes no build hooks')
 				}
@@ -4938,28 +5747,7 @@ describe('configuration helpers', () => {
 // list reads every entry first. Each case runs a policy reader over a recorded list and pins the
 // outcome and the entries it read, as the loop the reader replaced gave them.
 describe('policy readers consume a caller-supplied list one entry at a time', () => {
-	const name: PolicyExpression = { type: 'Identifier', range: [0, 0], name: 'run' }
-	const declarator = (): PolicyExpression => ({
-		type: 'VariableDeclarator',
-		range: [0, 0],
-		id: name,
-		init: { type: 'ArrowFunctionExpression', range: [0, 0] },
-	})
-	const exported = (): PolicyExpression => ({
-		type: 'ExportNamedDeclaration',
-		range: [47, 63],
-		declaration: { type: 'FunctionDeclaration', range: [0, 0], id: name },
-	})
-	const comment = (): PolicyComment => ({ type: 'Block', value: '* One.', range: [0, 11] })
-	// A revoked proxy refuses every read, which fails the reader once it holds the entry.
-	const refused =
-		<T extends object>(entry: () => T) =>
-		(): T => {
-			const { proxy, revoke } = Proxy.revocable(entry(), {})
-			revoke()
-			return proxy
-		}
-	const throwing = [
+	const failureCases = [
 		[POLICY_LAZY_SHAPES.hole, 'throw TypeError', []],
 		[POLICY_LAZY_SHAPES.holeFailure, 'throw TypeError', []],
 		[POLICY_LAZY_SHAPES.failureFirst, 'throw RangeError', [0]],
@@ -4975,11 +5763,11 @@ describe('policy readers consume a caller-supplied list one entry at a time', ()
 				statementToPolicyBindings({ type: 'VariableDeclaration', range: [0, 0], declarations }).map(
 					(binding) => binding.name,
 				),
-			{ valid: declarator, refusal: refused(declarator) },
+			{ valid: createPolicyDeclarator, refusal: createPolicyRefused(createPolicyDeclarator) },
 			[
 				[POLICY_LAZY_SHAPES.empty, 'return []', []],
 				[POLICY_LAZY_SHAPES.dense, 'return ["run"]', [0]],
-				...throwing,
+				...failureCases,
 			],
 		),
 		...createPolicyLazyCases(
@@ -4990,7 +5778,7 @@ describe('policy readers consume a caller-supplied list one entry at a time', ()
 					{
 						filename: '/ws/src/server/execution/run.ts',
 						cwd: '/ws',
-						sourceCode: { text: '', getAllComments: () => [] },
+						sourceCode: { text: '', getAllComments: () => [], getDeclaredVariables: () => [] },
 						report: (diagnostic) => {
 							reports.push(diagnostic.messageId)
 						},
@@ -4999,11 +5787,11 @@ describe('policy readers consume a caller-supplied list one entry at a time', ()
 				)
 				return reports
 			},
-			{ valid: exported, refusal: refused(exported) },
+			{ valid: createPolicyExport, refusal: createPolicyRefused(createPolicyExport) },
 			[
 				[POLICY_LAZY_SHAPES.empty, 'return ["module"]', []],
 				[POLICY_LAZY_SHAPES.dense, 'return []', [0]],
-				...throwing,
+				...failureCases,
 			],
 		),
 		...createPolicyLazyCases(
@@ -5011,27 +5799,30 @@ describe('policy readers consume a caller-supplied list one entry at a time', ()
 			(body: PolicyExpression[]) =>
 				programToPolicyDocs(
 					{ type: 'Program', range: [0, 0], body },
-					{ text: '/** One. */\nexport function run() {}', getAllComments: () => [comment()] },
+					{
+						text: '/** One. */\nexport function run() {}',
+						getAllComments: () => [createPolicyComment()],
+					},
 				).map((doc) => doc.name),
-			{ valid: exported, refusal: refused(exported) },
+			{ valid: createPolicyExport, refusal: createPolicyRefused(createPolicyExport) },
 			[
 				[POLICY_LAZY_SHAPES.empty, 'return []', []],
 				[POLICY_LAZY_SHAPES.dense, 'return []', [0]],
-				...throwing,
+				...failureCases,
 			],
 		),
 		...createPolicyLazyCases(
 			'programToPolicyDocs comments',
 			(comments: PolicyComment[]) =>
 				programToPolicyDocs(
-					{ type: 'Program', range: [0, 0], body: [exported()] },
+					{ type: 'Program', range: [0, 0], body: [createPolicyExport()] },
 					{ text: '/** One. */\n', getAllComments: () => comments },
 				).map((doc) => doc.name),
-			{ valid: comment, refusal: refused(comment) },
+			{ valid: createPolicyComment, refusal: createPolicyRefused(createPolicyComment) },
 			[
 				[POLICY_LAZY_SHAPES.empty, 'return []', []],
 				[POLICY_LAZY_SHAPES.dense, 'return ["run"]', [0]],
-				...throwing,
+				...failureCases,
 			],
 		),
 		...createPolicyLazyCases(
@@ -5041,7 +5832,7 @@ describe('policy readers consume a caller-supplied list one entry at a time', ()
 					{ type: 'Program', range: [0, 0], body: [{ type: 'ImportDeclaration', range: [0, 0] }] },
 					{ text: 'import x', getAllComments: () => comments },
 				).map((doc) => doc.name),
-			{ valid: comment, refusal: refused(comment) },
+			{ valid: createPolicyComment, refusal: createPolicyRefused(createPolicyComment) },
 			[
 				[POLICY_LAZY_SHAPES.empty, 'return []', []],
 				[POLICY_LAZY_SHAPES.dense, 'return []', []],

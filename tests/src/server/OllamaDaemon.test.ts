@@ -8,6 +8,7 @@ import { createSession } from '@orkestrel/process/server'
 import { OllamaDaemon } from '@src/server'
 import {
 	buildDaemonMode,
+	rejectReplacedOllamaFetch,
 	createRechunkingTransport,
 	DAEMON_ENDINGS,
 	DAEMON_LIFECYCLE_BUDGET,
@@ -37,7 +38,7 @@ describe('OllamaDaemon lifecycle', () => {
 				...(sender === 'collaborator' ? { fetch: transport } : {}),
 			}
 			const daemon = new OllamaDaemon(options)
-			options.fetch = () => Promise.reject(new Error('caller replaced its fetch'))
+			options.fetch = rejectReplacedOllamaFetch
 			try {
 				await runWithFetch(
 					(input, init) => {

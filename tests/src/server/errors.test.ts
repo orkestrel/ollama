@@ -170,7 +170,7 @@ describe('isOllamaError', () => {
 		Object.defineProperty(error, 'stack', { value: undefined })
 		expect(isOllamaError(error)).toBe(true)
 		Object.defineProperty(error, 'name', { value: 42 })
-		expect(isOllamaError(error)).toBe(false)
+		expect(isOllamaError(error)).toBe(true)
 	})
 
 	it('refuses a non-object context', () => {

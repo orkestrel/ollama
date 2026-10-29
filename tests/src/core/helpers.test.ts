@@ -332,50 +332,52 @@ describe('Mica label readout', () => {
 			JudgeError,
 		)
 	})
-	it('reads the top list in order, so a duplicate ahead of a hole refuses as a protocol error', () => {
-		const duplicate = Object.assign([], {
-			0: { token: 'No', logprob: 0 },
-			1: { token: 'No', logprob: 0 },
-			3: { token: 'Yes', logprob: 0 },
+	describe('iterator refusal boundaries', () => {
+		it('reads the top list in order, so a duplicate ahead of a hole refuses as a protocol error', () => {
+			const duplicate = Object.assign([], {
+				0: { token: 'No', logprob: 0 },
+				1: { token: 'No', logprob: 0 },
+				3: { token: 'Yes', logprob: 0 },
+			})
+			expect(() => computeAnswer({ form: 'noul' }, duplicate)).toThrow(JudgeError)
+			const holed = Object.assign([], {
+				0: { token: 'No', logprob: 0 },
+				2: { token: 'Yes', logprob: 0 },
+			})
+			expect(() => computeAnswer({ form: 'noul' }, holed)).toThrow(TypeError)
 		})
-		expect(() => computeAnswer({ form: 'noul' }, duplicate)).toThrow(JudgeError)
-		const holed = Object.assign([], {
-			0: { token: 'No', logprob: 0 },
-			2: { token: 'Yes', logprob: 0 },
-		})
-		expect(() => computeAnswer({ form: 'noul' }, holed)).toThrow(TypeError)
-	})
-	it('refuses the first duplicate token before it reads the entries after it', () => {
-		const reads = createRecorder<[index: number]>()
-		const top = Object.defineProperty(
-			[
-				{ token: 'No', logprob: 0 },
-				{ token: 'No', logprob: -1 },
-			],
-			2,
-			{
-				enumerable: true,
-				get: () => {
-					reads.handler(2)
-					return { token: 'Yes', logprob: 0 }
+		it('refuses the first duplicate token before it reads the entries after it', () => {
+			const reads = createRecorder<[index: number]>()
+			const top = Object.defineProperty(
+				[
+					{ token: 'No', logprob: 0 },
+					{ token: 'No', logprob: -1 },
+				],
+				2,
+				{
+					enumerable: true,
+					get: () => {
+						reads.handler(2)
+						return { token: 'Yes', logprob: 0 }
+					},
 				},
-			},
-		)
-		expect(() => computeAnswer({ form: 'noul' }, top)).toThrow(JudgeError)
-		expect(reads.calls).toEqual([])
-	})
-	it('refuses a token repeated after another token as it refuses an adjacent repeat', () => {
-		expect(() => computeAnswer({ form: 'noul' }, NON_ADJACENT_DUPLICATE_TOP)).toThrow(JudgeError)
-	})
-	it('matches a repeated token as a map key does: NaN and signed zero repeat, equal objects do not', () => {
-		for (const top of buildRepeatedTokenCases())
+			)
 			expect(() => computeAnswer({ form: 'noul' }, top)).toThrow(JudgeError)
-		expect(
-			computeAnswer({ form: 'noul' }, [
-				Object.assign({ token: 'x', logprob: 0 }, { token: {} }),
-				Object.assign({ token: 'x', logprob: 0 }, { token: {} }),
-			]),
-		).toEqual({ missing: ['false', 'true'] })
+			expect(reads.calls).toEqual([])
+		})
+		it('refuses a token repeated after another token as it refuses an adjacent repeat', () => {
+			expect(() => computeAnswer({ form: 'noul' }, NON_ADJACENT_DUPLICATE_TOP)).toThrow(JudgeError)
+		})
+		it('matches a repeated token as a map key does: NaN and signed zero repeat, equal objects do not', () => {
+			for (const top of buildRepeatedTokenCases())
+				expect(() => computeAnswer({ form: 'noul' }, top)).toThrow(JudgeError)
+			expect(
+				computeAnswer({ form: 'noul' }, [
+					Object.assign({ token: 'x', logprob: 0 }, { token: {} }),
+					Object.assign({ token: 'x', logprob: 0 }, { token: {} }),
+				]),
+			).toEqual({ missing: ['false', 'true'] })
+		})
 	})
 })
 

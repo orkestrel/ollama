@@ -8,7 +8,7 @@ import {
 	STORE_JOURNEY_BOUNDS,
 	STORE_PREDICATES,
 	STORE_TASKS,
-} from '../setupStore.js'
+} from '../setupServer.js'
 import { createLiveOllama, isOllamaReady } from '../setupService.js'
 
 const connection = Promise.withResolvers<BrowserInterface>()

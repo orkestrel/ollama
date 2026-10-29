@@ -2,7 +2,7 @@
 // repository's own `guides/README.md` manifest. The constants that follow are this
 // package's own, as is the executed section that closes the file.
 
-import type { ContextSectionFormat, InstructionInterface, JudgeQuestion } from '@orkestrel/agent'
+import type { JudgeQuestion } from '@orkestrel/agent'
 import { GuideCommand } from '@orkestrel/guide/server'
 import { readInventory } from '@orkestrel/test/server'
 import { createVitest } from 'vitest/node'
@@ -45,6 +45,8 @@ await new GuideCommand({
 }).execute(async ({ files, report, rows }) => {
 	const { isRecord, parseJSON } = await import('@orkestrel/contract')
 	const { computeSymbolKey, findMissingSymbols } = await import('@orkestrel/guide')
+	// The setup module resolves only under the runner, so it loads inside this callback.
+	const { createOllamaInstructionFormat } = await import('./setupServer.js')
 	const {
 		computeReading,
 		createAgent,
@@ -790,11 +792,7 @@ await new GuideCommand({
 		})
 
 		it('frames instructions through the manager when the real agent builds context', () => {
-			const format: ContextSectionFormat<InstructionInterface> = {
-				open: '<instructions>',
-				render: (instruction) => `<instruction>${instruction.content}</instruction>`,
-				close: '</instructions>',
-			}
+			const format = createOllamaInstructionFormat()
 			const instructions = createInstructionManager({ format })
 			instructions.add({ name: 'concise', content: 'Answer briefly.' })
 			const provider = createOllama({ model: 'qwen3.5:2b-q4_K_M' })

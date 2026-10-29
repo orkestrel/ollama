@@ -1,8 +1,9 @@
+import { createOllamaInstructionFormat } from '../../setupServer.js'
 // Hermetic core compositions drive the published provider through the real agent and
 // relay consumers. Local recording servers capture the requests; canned or unreachable
 // daemon transports keep these proofs independent of a running Ollama service.
 
-import type { ContextSectionFormat, InstructionInterface, Message } from '@orkestrel/agent'
+import type { Message } from '@orkestrel/agent'
 import {
 	CONVERSATION_RECAP_PREFIX,
 	createAgent,
@@ -417,11 +418,7 @@ describe('AgentContext (provider-behavior) — a CUSTOM format still reaches the
 	it(
 		'an instruction-manager XML override frames the instruction into the request body with its open/render/close shape',
 		async () => {
-			const format: ContextSectionFormat<InstructionInterface> = {
-				open: '<instructions>',
-				render: (one) => `<instruction>${one.content}</instruction>`,
-				close: '</instructions>',
-			}
+			const format = createOllamaInstructionFormat()
 			const request = await captureSettledRequest(
 				SCENARIO_PROVIDER,
 				(provider) => {

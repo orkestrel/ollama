@@ -276,7 +276,7 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 			session.pid === undefined ||
 			session.code !== null ||
 			session.signal !== null ||
-			session.stopping ||
+			session.terminated ||
 			session.settled
 		)
 			throw new OllamaError('Owned daemon is not live', {
@@ -302,7 +302,7 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 					code: 'spawn',
 					context: { evidence: session.evidence },
 				})
-			void session.ending.then(() =>
+			void session.ended.then(() =>
 				this.#lifetime.abort(
 					new OllamaError('Owned daemon exited', {
 						code: 'owner',

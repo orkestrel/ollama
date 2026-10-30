@@ -33,6 +33,7 @@ import {
 	createRecorder,
 	createTeardown,
 	requireValue,
+	TIMER_LEAD,
 	waitForAbort,
 	waitForCondition,
 	waitForDelay,
@@ -57,7 +58,6 @@ import {
 	readStackDepth,
 	SHORT_OPTIONS,
 	STREAM_FENCE_CASES,
-	TIMER_LEAD,
 } from './setup.js'
 import {
 	ABSENT_SUBPATH,
@@ -82,7 +82,6 @@ import {
 	SERVICE_IMPORTER_CASES,
 	TARGET_DECLARATION_CASES,
 	acceptPageAttempt,
-	alignLoopClock,
 	boundPageAttempt,
 	BROWSER_DRIVER,
 	buildImportMap,
@@ -248,7 +247,6 @@ import {
 	readChatMessages,
 	readFirstRequest,
 	readLatestChat,
-	readLoopClock,
 	readModuleEntry,
 	readModuleReferences,
 	readOutcome,
@@ -303,7 +301,7 @@ import { createChannel, DEFAULT_PROVIDER_TIMEOUT, ProviderError } from '@orkestr
 import {
 	BROWSER_TOOL_COPY,
 	BROWSER_TOOL_LIMIT,
-	createBrowserReading,
+	createBrowserContent,
 	createBrowserToolset,
 	scanBrowserLines,
 	renderBrowserJourney,
@@ -1525,34 +1523,6 @@ describe('readOutcome', () => {
 		// A guard that accepts it narrows to that guard's type rather than to `unknown`.
 		const text = createStaticOutcomePage('"receipt-1"')
 		expect((await readOutcome(text, 'text', isString, call)).startsWith('receipt-')).toBe(true)
-	})
-})
-
-describe('readLoopClock', () => {
-	it('advances in whole milliseconds by the time performance.now() measures between readings', () => {
-		const opened = performance.now()
-		const before = readLoopClock()
-		const inner = performance.now()
-		alignLoopClock(5)
-		const outer = performance.now()
-		const after = readLoopClock()
-		const closed = performance.now()
-		expect(Number.isInteger(before)).toBe(true)
-		expect(Number.isInteger(after)).toBe(true)
-		// Each reading truncates by under 1 ms and a coarse clock trails by under 1 ms more.
-		expect(after - before).toBeGreaterThan(outer - inner - 2)
-		expect(after - before).toBeLessThan(closed - opened + 2)
-	})
-})
-
-describe('alignLoopClock', () => {
-	it('returns after the loop clock ticks and the offset elapses on performance.now()', () => {
-		const before = readLoopClock()
-		const opened = performance.now()
-		alignLoopClock(0.5)
-		const closed = performance.now()
-		expect(readLoopClock()).toBeGreaterThan(before)
-		expect(closed - opened).toBeGreaterThanOrEqual(0.5)
 	})
 })
 
@@ -4869,7 +4839,7 @@ describe('store fixtures', () => {
 	// The attempt-isolation proof drives a real browser without a daemon. The other proofs cover
 	// every page's shape read with a plain `fetch`, the per-instance state the pages change,
 	// the whole-page reading `read` slices
-	// (the browser package's own `createBrowserReading` over the served HTML), and every pure
+	// (the browser package's own `createBrowserContent` over the served HTML), and every pure
 	// reader the live proof asserts through.
 
 	const staging = Promise.withResolvers<StoreServerInterface>()
@@ -5416,7 +5386,7 @@ describe('store fixtures', () => {
 			const html = await (await fetch(`${store.url}/`)).text()
 			expect(html.split(STORE_FACT)).toHaveLength(2)
 			expect(html.indexOf(STORE_FACT)).toBeGreaterThan(html.indexOf('</aside>'))
-			const markdown = createBrowserReading({ url: `${store.url}/`, title: '', html }).markdown()
+			const markdown = createBrowserContent({ url: `${store.url}/`, title: '', html }).markdown()
 				.text
 			expect(markdown).toContain('What customers say')
 			expect(markdown.split(STORE_FACT)).toHaveLength(2)
@@ -5527,7 +5497,7 @@ describe('store fixtures', () => {
 			const response = await fetch(`${store.url}/policy`)
 			const html = await response.text()
 			expect(response.status).toBe(200)
-			const markdown = createBrowserReading({
+			const markdown = createBrowserContent({
 				url: `${store.url}/policy`,
 				title: '',
 				html,

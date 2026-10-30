@@ -65,14 +65,12 @@ import {
 	RECLASSIFIED_TURN,
 	RECORDING_SUMMARIZER_DIGEST,
 	recordRecursion,
-	sampleTimerSpans,
 	SETTLE_MS,
 	SHORT_ANSWER_PROMPT,
 	SHORT_OPTIONS,
 	STREAM_FENCE_ANCHOR,
 	STREAM_FENCE_CASES,
 	THROWING_SUMMARIZER_MESSAGE,
-	TIMER_LEAD,
 	TINY_PNG_BASE64,
 	TOOL_CONTEXT,
 	TRUNCATED_INVALID_REASONS,
@@ -80,7 +78,6 @@ import {
 	USAGE_FENCE_ANCHOR,
 } from './setup.js'
 import {
-	alignLoopClock,
 	buildRecordedRequest,
 	createInsatiableTool,
 	createScriptedAgentStream,
@@ -1034,31 +1031,6 @@ describe('TINY_PNG_BASE64', () => {
 		expect(new TextDecoder().decode(bytes.slice(12, 16))).toBe('IHDR')
 		const header = new DataView(bytes.buffer, bytes.byteOffset + 16, 8)
 		expect([header.getUint32(0), header.getUint32(4)]).toEqual([1, 1])
-	})
-})
-
-// The sample opens at collection, before any case runs, so the timers it arms never overlap
-// another case of this file.
-const spans = await sampleTimerSpans(alignLoopClock)
-
-describe('TIMER_LEAD', () => {
-	it('sampleTimerSpans records every late-armed timer and the lead covers every span', () => {
-		expect(spans).toHaveLength(50)
-		for (const span of spans) expect(span).toBeGreaterThanOrEqual(10 - TIMER_LEAD)
-	})
-
-	it('rejects the full duration as a lower bound when the host exhibits a short timer', (context) => {
-		expect(spans).toHaveLength(50)
-		const minimum = Math.min(...spans)
-		if (minimum >= 10) {
-			context.skip(
-				`No timer ended short in ${spans.length} late-armed 10 ms samples; minimum ${minimum} ms, maximum ${Math.max(...spans)} ms.`,
-			)
-		}
-		expect(minimum).toBeLessThan(10)
-		expect(() => {
-			for (const span of spans) expect(span).toBeGreaterThanOrEqual(10)
-		}).toThrow(/greater than or equal to 10/)
 	})
 })
 

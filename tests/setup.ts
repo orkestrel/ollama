@@ -4,7 +4,6 @@ import type { ToolContext, ToolDefinition, ToolInterface } from '@orkestrel/tool
 import type { WorkspaceInterface } from '@orkestrel/workspace'
 import type { Logprob, OllamaTiming } from '@src/core'
 import { estimateMessages } from '@orkestrel/agent'
-import { waitForDelay } from '@orkestrel/test'
 import { isString } from '@orkestrel/contract'
 import { createTool } from '@orkestrel/tool'
 
@@ -326,60 +325,6 @@ export const TIMING_HOSTILE: readonly unknown[] = Object.freeze<unknown[]>([
 	[],
 	[5],
 ])
-
-// ── Timer lead ────────────────────────────────────────────────────────────────
-//
-// The allowance an elapsed lower bound over a real host timer subtracts, declared in
-// the host-independent setup file so every project can import it.
-
-/**
- * Bounds, in whole milliseconds, how far a real host timer can end short of its duration on a
- * `performance.now()` span that opens before the timer is armed.
- *
- * @remarks
- * Node refreshes libuv's loop clock when it arms a timer, and stamps the timer with that clock
- * truncated to a whole millisecond. libuv reads `CLOCK_MONOTONIC_COARSE` when that clock ticks
- * every millisecond, so the stamp can trail the arming by under 1 ms of truncation plus under 1 ms
- * of coarse tick. The timer fires when the loop clock reaches the stamp plus the duration, so the
- * span can close up to this lead early. Synchronous work earlier in the arming macrotask does not
- * widen the shortfall, because the arming refreshes the clock. A timer armed when an earlier one
- * fires is stamped no earlier than that one's deadline, so a chain of deadlines falls short by at
- * most this lead in total. Assert a span that waits out `D` milliseconds of deadlines as at least
- * `D` minus this lead.
- */
-export const TIMER_LEAD = 2
-
-/**
- * Samples elapsed spans of 50 real 10 ms timers armed late in a loop-clock millisecond.
- *
- * @remarks
- * The fixed sample covers repeated loop-clock ticks for 500 ms of requested timer time,
- * retaining every span even after a short timer appears. Absence of a span below 10 ms means
- * only that this run did not observe early delivery, not that the host can never deliver early.
- * The caller supplies clock alignment so this module stays host-independent.
- *
- * @param align - Aligns the host loop clock, then spins for the supplied millisecond offset.
- * @returns Every elapsed span in milliseconds, measured with `performance.now()`.
- * @example
- * ```ts
- * const spans = await sampleTimerSpans(alignLoopClock)
- * const short = spans.some((span) => span < 10)
- * ```
- */
-export async function sampleTimerSpans(
-	align: (offset: number) => void,
-): Promise<readonly number[]> {
-	const spans: number[] = []
-	for (const _ of Array.from({ length: 50 })) {
-		align(0.9)
-		const started = performance.now()
-		const delayed = waitForDelay(10)
-		align(0)
-		await delayed
-		spans.push(performance.now() - started)
-	}
-	return spans
-}
 
 /** Holds the unchanged default encoded chat prefix for context-control proofs. */
 export const OLLAMA_CONTEXT_PREFIX =

@@ -72,8 +72,6 @@ Pass `tools` (a non-empty `ToolDefinition[]` from `@orkestrel/tool`) to advertis
 
 ### Surface
 
-A `Shape` cell holds an interface's data members as bare names in braces, `?` marking an optional member and `plus` introducing its call-signature members, and a type alias's own type literal with a union's arms escaped as `\|`. An extended interface's name comes before `plus`, with the members it adds after. A function row's `Shape` cell holds its signature, and a guard row's the type it narrows to. A class row's `Shape` cell holds the interface it implements, or its constructor signature where it implements none. A `Shape` cell holds the constant's declared type.
-
 | Name                 | Kind      | Signature                                                                                      | Summary                                                                                                                                                                     |
 | -------------------- | --------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `createOllama`       | function  | `(options: OllamaOptions) => ProviderInterface`                                                | Creates a local Ollama inference provider — a `ProviderInterface` over the daemon's `POST /api/chat`, assembling `generate` from the same NDJSON engine as `stream`.        |

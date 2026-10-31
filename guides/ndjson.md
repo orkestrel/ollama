@@ -41,9 +41,9 @@ A `Shape` cell holds an interface's data members as bare names in braces, `?`
 marking an optional member and `plus` introducing its call-signature members,
 and a type alias's own type literal with a union's arms escaped as `\|`.
 
-| Type                    | Kind      | Shape                  | Summary                                                                                                                                                                                                                                |
+| Name                    | Kind      | Signature              | Summary                                                                                                                                                                                                                                |
 | ----------------------- | --------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NDJSONParserInterface` | interface | `{} plus parse, clear` | Represents the stateful NDJSON (newline-delimited JSON) stream-parser contract a consumer holds — a `parse` that turns each string chunk into the complete records decoded so far, and a `clear` that drops the buffered partial line. |
+| `NDJSONParserInterface` | interface | `{ parse(), clear() }` | Represents the stateful NDJSON (newline-delimited JSON) stream-parser contract a consumer holds — a `parse` that turns each string chunk into the complete records decoded so far, and a `clear` that drops the buffered partial line. |
 
 Types a helper's parameter as `NDJSONParserInterface` and returns the records
 its `parse` call completes:
@@ -58,9 +58,9 @@ function feed(parser: NDJSONParserInterface, chunk: string): readonly Record<str
 
 ### Factories
 
-| API                  | Kind     | Summary                                                                                                                                                                                                            |
-| -------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `createNDJSONParser` | function | Creates an NDJSON (newline-delimited JSON) stream parser and returns it as an `NDJSONParserInterface` — a fresh `NDJSONParser` holding the buffer, so a caller holds the published contract rather than the class. |
+| Name                 | Kind     | Signature                     | Summary                                                                                                                                                                                                            |
+| -------------------- | -------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `createNDJSONParser` | function | `() => NDJSONParserInterface` | Creates an NDJSON (newline-delimited JSON) stream parser and returns it as an `NDJSONParserInterface` — a fresh `NDJSONParser` holding the buffer, so a caller holds the published contract rather than the class. |
 
 #### Create a parser
 
@@ -78,9 +78,9 @@ parser.parse('\n') // [{ c: 3 }]
 
 ### Classes
 
-| API            | Kind  | Summary                                                                                                                                                                                                                                                     |
-| -------------- | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `NDJSONParser` | class | Decodes an NDJSON (newline-delimited JSON) stream statefully, implementing `NDJSONParserInterface` over a private buffer the instance owns — each `parse` call returns the records completed so far and reassembles a record split across chunk boundaries. |
+| Name           | Kind  | Signature                         | Summary                                                                                                                                                                                                                                                     |
+| -------------- | ----- | --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NDJSONParser` | class | `new () => NDJSONParserInterface` | Decodes an NDJSON (newline-delimited JSON) stream statefully, implementing `NDJSONParserInterface` over a private buffer the instance owns — each `parse` call returns the records completed so far and reassembles a record split across chunk boundaries. |
 
 ## Methods
 

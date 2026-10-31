@@ -37,10 +37,6 @@ parser.clear() // drop any buffered partial - ready for a fresh stream
 
 ### Types
 
-A `Shape` cell holds an interface's data members as bare names in braces, `?`
-marking an optional member and `plus` introducing its call-signature members,
-and a type alias's own type literal with a union's arms escaped as `\|`.
-
 | Name                    | Kind      | Signature              | Summary                                                                                                                                                                                                                                |
 | ----------------------- | --------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `NDJSONParserInterface` | interface | `{ parse(), clear() }` | Represents the stateful NDJSON (newline-delimited JSON) stream-parser contract a consumer holds — a `parse` that turns each string chunk into the complete records decoded so far, and a `clear` that drops the buffered partial line. |

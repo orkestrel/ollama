@@ -33,8 +33,6 @@ documented under [`## Methods`](#methods), and its readonly data members stay he
 `emitter`, and `count` on `WorkspaceInterface`, `count` and `active` on
 `WorkspaceManagerInterface`, and none on `WorkspaceStoreInterface`.
 
-A `Shape` cell holds an interface's data members as bare names in braces, `?` marking an optional member and `plus` introducing its call-signature members, and a type alias's own type literal with a union's arms escaped as `\|`.
-
 | Name                        | Kind      | Signature                                                                                                                                                                        | Summary                                                                                                                                                                         |
 | --------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `BinaryMIME`                | type      | `'image/png' \| 'image/jpeg' \| 'image/gif' \| 'image/webp'`                                                                                                                     | Names the MIME labels a binary `FileContent` arm supports.                                                                                                                      |
@@ -44,7 +42,7 @@ A `Shape` cell holds an interface's data members as bare names in braces, `?` ma
 | `FileState`                 | type      | `'created' \| 'modified'`                                                                                                                                                        | Names the edit state of an immutable file value: `created` for the first write to a path and `modified` for every later edit of that path.                                      |
 | `FileInput`                 | interface | `{ path, content, state? }`                                                                                                                                                      | Carries the caller-supplied values used to create an immutable file. The byte size and the line count are derived rather than supplied.                                         |
 | `FileInterface`             | interface | `{ path, content, state, size, lines }`                                                                                                                                          | Represents an immutable path-addressed file with derived byte and line counts.                                                                                                  |
-| `Position`                  | interface | `{ line, column }`                                                                                                                                                               | Locates a 1-based caret inside text.                                                                                                                                            |
+| `Caret`                     | interface | `{ line, column }`                                                                                                                                                               | Locates a 1-based caret inside text.                                                                                                                                            |
 | `Range`                     | interface | `{ start, end }`                                                                                                                                                                 | Represents a half-open text span whose start is inclusive and end is exclusive.                                                                                                 |
 | `ReadResult`                | interface | `{ content, range }`                                                                                                                                                             | Carries the content and clamped span returned by a ranged read.                                                                                                                 |
 | `SearchOptions`             | interface | `{ regex?, sensitive?, limit? }`                                                                                                                                                 | Configures search and replacement behavior.                                                                                                                                     |
@@ -61,8 +59,6 @@ A `Shape` cell holds an interface's data members as bare names in braces, `?` ma
 | `WorkspaceManagerInterface` | interface | `{ count, active, workspace(), workspaces(), add(), switch(), open(), save(), remove(), clear() }`                                                                               | Represents an insertion-ordered workspace registry with an active selection and optional durability.                                                                            |
 
 ### Constants
-
-A `Shape` cell holds the constant's declared type.
 
 | Name                  | Kind  | Signature                          | Summary                                                                                                                                                 |
 | --------------------- | ----- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -86,26 +82,23 @@ on its own, and the classes compose them rather than hiding them.
 | Name                 | Kind     | Signature                                                                           | Summary                                                                                         |
 | -------------------- | -------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `inferLanguage`      | function | `(path: string) => string`                                                          | Infers a language tag from the final file extension.                                            |
-| `isText`             | function | `(content: FileContent) => content is TextContent`                                  | Determines whether content is the text arm.                                                     |
+| `isTextContent`      | function | `(content: FileContent) => content is TextContent`                                  | Determines whether content is the text arm.                                                     |
 | `isBinary`           | function | `(content: FileContent) => content is BinaryContent`                                | Determines whether content is the binary arm.                                                   |
 | `computeSize`        | function | `(content: FileContent) => number`                                                  | Computes the byte size of file content.                                                         |
 | `countLines`         | function | `(content: FileContent) => number`                                                  | Counts the lines in file content.                                                               |
 | `computeDecodedSize` | function | `(base64: string) => number`                                                        | Computes the decoded byte length of a base64 string, arithmetically rather than by decoding it. |
 | `isValidRange`       | function | `(range: Range) => boolean`                                                         | Determines whether a 1-based range is structurally valid.                                       |
-| `clampPosition`      | function | `(text: string, position: Position) => Position`                                    | Clamps a position to text bounds.                                                               |
-| `clampRange`         | function | `(text: string, range: Range) => Range`                                             | Clamps both positions in a range to text bounds.                                                |
-| `offsetAt`           | function | `(text: string, position: Position) => number`                                      | Converts a 1-based position to a zero-based string offset.                                      |
+| `clampCaret`         | function | `(text: string, caret: Caret) => Caret`                                             | Clamps a caret to text bounds.                                                                  |
+| `clampRange`         | function | `(text: string, range: Range) => Range`                                             | Clamps both carets in a range to text bounds.                                                   |
+| `offsetAt`           | function | `(text: string, caret: Caret) => number`                                            | Converts a 1-based caret to a zero-based string offset.                                         |
 | `sliceRange`         | function | `(text: string, range: Range) => string`                                            | Slices a clamped half-open text range.                                                          |
 | `spliceRange`        | function | `(text: string, range: Range, replacement: string) => string`                       | Replaces a clamped half-open text range.                                                        |
 | `rangeOf`            | function | `(fromLine: number, fromColumn: number, toLine: number, toColumn: number) => Range` | Assembles a nested range from four 1-based coordinates.                                         |
-| `escapeRegExp`       | function | `(value: string) => string`                                                         | Escapes regular-expression metacharacters for literal matching.                                 |
 
 ### Validators
 
 The total guards, from [`validators.ts`](../src/core/validators.ts). Each narrows an `unknown`
 value arriving from outside the process without throwing on a hostile property access.
-
-In a guard table a `Shape` cell holds the type the guard narrows to.
 
 | Name                  | Kind     | Signature                                        | Summary                                               |
 | --------------------- | -------- | ------------------------------------------------ | ----------------------------------------------------- |
@@ -244,7 +237,7 @@ import {
 	createTextContent,
 	inferLanguage,
 	isBinary,
-	isText,
+	isTextContent,
 } from '@orkestrel/workspace'
 
 const note = createFile({
@@ -255,7 +248,7 @@ const note = createFile({
 note.size // 12 — UTF-8 bytes, through computeSize
 note.lines // 2 — through countLines
 note.state // 'created'
-isText(note.content) // true
+isTextContent(note.content) // true
 
 const icon = createFile({ path: 'icon.png', content: createBinaryContent('AAAA', 'image/png') })
 isBinary(icon.content) // true
@@ -305,11 +298,11 @@ path with `Cannot splice a range of a binary file: <path>` under `MODALITY`. A s
 impossible range — inverted, or with a coordinate below one — throws `RANGE`. A range that is merely too
 large is not an error: both endpoints clamp to the text's bounds, so `rangeOf(1, 2, 9, 9)` over
 `'abc'` addresses everything from the second column onward. The pure functions behind that
-behavior are exported and usable on their own: `isValidRange`, `clampPosition`, `clampRange`,
+behavior are exported and usable on their own: `isValidRange`, `clampCaret`, `clampRange`,
 `offsetAt`, `sliceRange`, and `spliceRange`.
 
 Ranges are half-open and 1-based. `rangeOf(1, 1, 1, 6)` covers the first five columns of line one,
-which is the convention every editor position in this package follows.
+which is the convention every caret in this package follows.
 
 ## Reading and searching
 
@@ -317,7 +310,7 @@ Reads are shaped by what the caller asked for, and binary content is quietly abs
 that promise text:
 
 ```ts
-import { createWorkspace, escapeRegExp, rangeOf } from '@orkestrel/workspace'
+import { createWorkspace, rangeOf } from '@orkestrel/workspace'
 
 const workspace = createWorkspace()
 workspace.write({ 'a.ts': 'const x = 1\nconst y = 2', 'b.ts': 'const z = 3' })
@@ -335,9 +328,9 @@ workspace.has(['missing.ts', 'b.ts']) // false — a batch answers true only whe
 
 workspace.search('const') // three matches, a.ts before b.ts, line order within each
 workspace.search('[a-z]\\d', { regex: true }) // pattern source instead of literal text
+workspace.search('const.') // [] — a literal query reads '.' as a dot, not as any character
 workspace.search('CONST', { sensitive: false, limit: 2 })
 workspace.replace('const', 'let') // { occurrences: 3, files: 2 }
-escapeRegExp('a.b') // 'a\\.b' — what a literal search does for you
 ```
 
 A plain read of a binary path returns `undefined`, exactly as an absent path does; a batch read
@@ -345,9 +338,10 @@ omits both. A ranged read of binary content is the one that throws `MODALITY`, b
 named coordinates that cannot exist. Search and replace skip binary content entirely, so base64
 that happens to spell a query is never a hit.
 
-A query is literal by default — `escapeRegExp` neutralizes its metacharacters — and `regex: true`
-passes it through as pattern source instead. `limit` caps hits for `search` and replacements for
-`replace`, counted across files in insertion order. A pattern that will not compile throws
+A query is literal by default — the `escapeRegExp` function from `@orkestrel/contract` neutralizes
+its metacharacters — and `regex: true` passes it through as pattern source instead. `limit` caps
+hits for `search` and replacements for `replace`, counted across files in insertion order. A
+pattern that will not compile throws
 `PATTERN` rather than silently matching nothing. A zero-width pattern such as `a*` terminates: the
 scan advances past an empty match instead of re-matching the same column.
 

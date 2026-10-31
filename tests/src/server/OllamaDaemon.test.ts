@@ -4,7 +4,7 @@ import { createServer } from 'node:net'
 import { createHash } from 'node:crypto'
 import { createLoopback, createScratch, isRunning } from '@orkestrel/test/server'
 import { createRecorder, waitForCondition } from '@orkestrel/test'
-import { createSession } from '@orkestrel/process/server'
+import { createDuplex } from '@orkestrel/process/server'
 import { OllamaDaemon } from '@src/server'
 import {
 	buildDaemonMode,
@@ -356,7 +356,7 @@ describe('OllamaDaemon lifecycle', () => {
 				signal: controller.signal,
 				environment: { FIXTURE_RUNNER: runner },
 			})
-			const sentinel = createSession({
+			const sentinel = createDuplex({
 				command: {
 					file: process.execPath,
 					arguments: [

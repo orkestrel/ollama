@@ -2989,7 +2989,7 @@ export function scanTreeReferences(node: unknown): readonly ModuleReference[] {
 	const nodes: unknown[] = [node]
 	const seen = new Set<unknown>(nodes)
 	for (const current of nodes) {
-		for (const child of listChildren(current)) {
+		for (const child of collectTreeChildren(current)) {
 			if (seen.has(child)) continue
 			seen.add(child)
 			nodes.push(child)
@@ -3008,7 +3008,7 @@ export const NOT_TREES: readonly unknown[] = Object.freeze([undefined, null, 'im
  * @returns The elements of an array and the property values of a record that are themselves
  * arrays or records; empty for any other value
  */
-export function listChildren(value: unknown): readonly unknown[] {
+export function collectTreeChildren(value: unknown): readonly unknown[] {
 	const members: readonly unknown[] = isArray(value)
 		? value
 		: isRecord(value)

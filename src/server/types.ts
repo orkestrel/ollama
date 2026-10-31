@@ -1,6 +1,6 @@
 import type { ProviderOptions } from '@orkestrel/agent'
 import type { EmitterErrorHandler, EmitterHooks, EmitterInterface } from '@orkestrel/emitter'
-import type { SessionOptions } from '@orkestrel/process'
+import type { DuplexOptions } from '@orkestrel/process'
 import type { OllamaTiming } from '@src/core'
 import type { OLLAMA_ERROR_CODES } from './constants.js'
 
@@ -88,7 +88,7 @@ export interface OllamaDaemonOptions extends Pick<ProviderOptions, 'fetch'> {
 	readonly store?: string
 	readonly readiness?: number
 	readonly metadata?: OllamaMetadataOptions
-	readonly termination?: Pick<SessionOptions, 'grace' | 'drain'>
+	readonly termination?: Pick<DuplexOptions, 'grace' | 'drain'>
 	readonly signal?: AbortSignal
 }
 

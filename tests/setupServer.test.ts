@@ -213,7 +213,7 @@ import {
 	isPositiveInteger,
 	isServiceImporter,
 	isToolOutcome,
-	listChildren,
+	collectTreeChildren,
 	listProjects,
 	listProjectSources,
 	leaveCall,
@@ -3312,7 +3312,7 @@ describe('isIdentifierNamed and isImportMetaMember', () => {
 	})
 })
 
-describe('buildReferences and listChildren', () => {
+describe('buildReferences and collectTreeChildren', () => {
 	it('builds one reference per present node, in order, with no specifier for a node that spells no text, and lists only nested containers', () => {
 		expect(
 			buildReferences('glob', [
@@ -3329,9 +3329,12 @@ describe('buildReferences and listChildren', () => {
 		])
 		expect(buildReferences('import', [])).toEqual([])
 		const inner = { value: 1 }
-		expect(listChildren({ a: inner, b: 'text', c: [1, 2], d: null })).toEqual([inner, [1, 2]])
-		expect(listChildren([inner, 'text', 3])).toEqual([inner])
-		expect(listChildren('text')).toEqual([])
+		expect(collectTreeChildren({ a: inner, b: 'text', c: [1, 2], d: null })).toEqual([
+			inner,
+			[1, 2],
+		])
+		expect(collectTreeChildren([inner, 'text', 3])).toEqual([inner])
+		expect(collectTreeChildren('text')).toEqual([])
 	})
 })
 

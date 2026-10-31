@@ -5,10 +5,10 @@ import type {
 	OllamaDaemonOptions,
 	OllamaMaintenance,
 } from './types.js'
-import type { SessionInterface } from '@orkestrel/process'
+import type { DuplexInterface } from '@orkestrel/process'
 import type { EmitterInterface } from '@orkestrel/emitter'
 import { Emitter } from '@orkestrel/emitter'
-import { createSession } from '@orkestrel/process/server'
+import { createDuplex } from '@orkestrel/process/server'
 import { addAbortListener, once } from 'node:events'
 import { createServer } from 'node:net'
 import { access, readFile, stat } from 'node:fs/promises'
@@ -50,7 +50,7 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 	readonly #unloads = new Set<Promise<readonly OllamaMaintenance[]>>()
 	readonly #maintenance: OllamaMaintenance[] = []
 	#listener: ReturnType<typeof addAbortListener> | undefined
-	#launching: Promise<SessionInterface> | undefined
+	#launching: Promise<DuplexInterface> | undefined
 	#starting: Promise<OllamaDaemonIdentity> | undefined
 	#stopping: Promise<boolean> | undefined
 	#destruction: Promise<void> | undefined
@@ -157,7 +157,7 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 		return this.#destruction
 	}
 
-	async #launch(): Promise<SessionInterface> {
+	async #launch(): Promise<DuplexInterface> {
 		try {
 			await this.#requireDirectory(this.#options.workspace)
 			if (this.#options.store !== undefined) await this.#requireDirectory(this.#options.store)
@@ -181,7 +181,7 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 			this.#lifetime.signal.throwIfAborted()
 			if (this.#stopping !== undefined || this.#options.signal?.aborted)
 				throw new OllamaError('Daemon stopped before spawn', { code: 'aborted' })
-			return createSession({
+			return createDuplex({
 				command: {
 					file: executable,
 					arguments: this.#options.executable.arguments ?? ['serve'],
@@ -270,7 +270,7 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 		}
 	}
 
-	#requireLive(session: SessionInterface): void {
+	#requireLive(session: DuplexInterface): void {
 		this.#lifetime.signal.throwIfAborted()
 		if (
 			session.pid === undefined ||

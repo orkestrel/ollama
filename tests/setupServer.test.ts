@@ -12,8 +12,14 @@ import type {
 	BrowserRequest,
 } from '@orkestrel/browser'
 import type { OllamaOptions } from '@src/core'
-import type { DistributionEntry, PageAttempt, PageTool, RecordedRequest } from './setupServer.js'
-import type { AgentChunk, Message } from '@orkestrel/agent'
+import type {
+	DistributionEntry,
+	PageAskAttempt,
+	PageAttempt,
+	PageTool,
+	RecordedRequest,
+} from './setupServer.js'
+import type { AgentChunk, AgentFrame, Message } from '@orkestrel/agent'
 import type { ToolCall, ToolResult } from '@orkestrel/tool'
 import type {
 	StoreCall,
@@ -81,8 +87,17 @@ import {
 	RESOLVER_FILES,
 	SERVICE_IMPORTER_CASES,
 	TARGET_DECLARATION_CASES,
+	acceptPageAsk,
 	acceptPageAttempt,
 	boundPageAttempt,
+	buildDigits,
+	buildFrameRoutes,
+	createPageFrames,
+	isPageAskOutcome,
+	PAGE_ANSWER_PATH,
+	PAGE_ASK,
+	PAGE_THREAD_PATH,
+	PageFrames,
 	BROWSER_DRIVER,
 	buildImportMap,
 	buildDaemonMode,
@@ -1365,6 +1380,17 @@ describe('PAGE_DOCUMENT', () => {
 		expect(PAGE_DOCUMENT).toContain(JSON.stringify(PAGE_TOOL))
 		expect(PAGE_DOCUMENT).toContain('globalThis.ready = true')
 	})
+
+	it('reads frames through the strict parser and the contract and writes each ask as text', () => {
+		// Text guards, because every frame the routes serve is well formed, so no run can tell a
+		// lenient parser or a skipped check from these. `tests/service/page.test.ts` proves the
+		// write in a real browser with markup in the argument.
+		expect(PAGE_DOCUMENT).toContain('const parser = createNDJSONParser({ strict: true })')
+		expect(PAGE_DOCUMENT).toContain("parser.parse(chunk.done ? '\\n' : chunk.value)")
+		expect(PAGE_DOCUMENT).toContain('if (!agentFrameContract.is(record)) throw')
+		expect(PAGE_DOCUMENT).toContain('item.textContent = text')
+		expect(PAGE_DOCUMENT).not.toContain('innerHTML')
+	})
 })
 
 describe('PAGE_OPERATIONS', () => {
@@ -1986,6 +2012,282 @@ describe('createPageFixture', () => {
 		} finally {
 			await fixture.stop()
 		}
+	})
+
+	it('serves the frame and answer routes over a scripted daemon stream', async () => {
+		// Two scripted turns so the run ends: the first calls the tool, the second answers, and a
+		// third request would overrun the script rather than raise an ask no answer meets.
+		const daemon = createRecordingTransport(
+			createScriptedTransport([STORE_LOOKUP_TURN, { content: 'done' }]),
+		)
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+		const frames = createPageFrames(
+			createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
+			recorder,
+		)
+		const fixture = await createPageFixture({ document: PAGE_DOCUMENT, frames })
+		try {
+			const route = `${fixture.url}/threads/${PAGE_ASK.thread}`
+			const body = JSON.stringify({ content: PAGE_ASK.prompt })
+
+			const wrong = await fetch(route, {
+				method: 'POST',
+				headers: { authorization: `${OBFUSCATED}-wrong`, origin: fixture.url },
+				body,
+			})
+			expect(wrong.status).toBe(401)
+			const crossed = await fetch(route, {
+				method: 'POST',
+				headers: { authorization: OBFUSCATED, origin: 'http://127.0.0.1:1' },
+				body,
+			})
+			expect(crossed.status).toBe(403)
+			// Neither refusal reached the agent, so the daemon saw nothing.
+			expect(daemon.requests).toEqual([])
+
+			const headers = { authorization: OBFUSCATED, origin: fixture.url }
+			const response = await fetch(route, { method: 'POST', headers, body })
+			expect(response.status).toBe(200)
+			const stream = requireValue(response.body, 'the frame route answered with no body')
+			const parser = createNDJSONParser({ strict: true })
+			const seen: Array<Readonly<Record<string, unknown>>> = []
+			const statuses: number[] = []
+			for await (const chunk of stream.pipeThrough(new TextDecoderStream())) {
+				for (const frame of parser.parse(chunk)) {
+					seen.push(frame)
+					if (frame.category === 'ask') {
+						const answer = JSON.stringify({ id: frame.id, approved: true })
+						const settled = await fetch(`${fixture.url}${PAGE_ANSWER_PATH}`, {
+							method: 'POST',
+							headers,
+							body: answer,
+						})
+						statuses.push(settled.status)
+						const repeated = await fetch(`${fixture.url}${PAGE_ANSWER_PATH}`, {
+							method: 'POST',
+							headers,
+							body: answer,
+						})
+						statuses.push(repeated.status)
+					}
+				}
+			}
+
+			expect(seen.map((frame) => frame.category)).toEqual([
+				'usage',
+				'ask',
+				'tool',
+				'token',
+				'usage',
+				'finish',
+			])
+			expect(seen.at(-1)).toMatchObject({ category: 'finish', content: 'done', partial: false })
+			expect(seen[1]).toMatchObject({
+				name: 'lookup',
+				zone: 'restricted',
+				arguments: '{"query":"kettle"}',
+			})
+			expect(seen[2]).toEqual({ category: 'tool', success: true, name: 'lookup' })
+			expect(statuses).toEqual([204, 404])
+			// The answer route read the tool's count before it settled the ask, so the tool had
+			// not run at the approval, and it ran once after.
+			expect(frames.answers).toEqual([
+				{ status: 204, executed: 0 },
+				{ status: 404, executed: 1 },
+			])
+			expect(recorder.calls).toEqual([[{ query: 'kettle' }]])
+			expect(daemon.requests).toHaveLength(2)
+			// The JSON text of the directive, so the same pattern that finds it in the daemon request
+			// can fail to find it in the page's requests.
+			const directive = JSON.stringify(PAGE_ASK.system).slice(1, -1)
+			expect(daemon.requests[0]?.text).toContain(directive)
+			const posted = fixture.requests.filter((request) => request.method === 'POST')
+			expect(posted.some((request) => request.text.includes(directive))).toBe(false)
+			expect(frames.threads.conversation(PAGE_ASK.thread)?.messages()[0]).toMatchObject({
+				role: 'user',
+				content: PAGE_ASK.prompt,
+			})
+		} finally {
+			await fixture.stop()
+		}
+	})
+})
+
+describe('buildDigits', () => {
+	it('builds decimal digits of exactly the length asked', () => {
+		expect(buildDigits(16)).toMatch(/^\d{16}$/u)
+		expect(buildDigits(1)).toMatch(/^\d$/u)
+		expect(buildDigits(0)).toBe('')
+	})
+})
+
+describe('PAGE_THREAD_PATH, PAGE_ANSWER_PATH, and PAGE_ASK', () => {
+	it('steer a run to the lookup tool on the paths the frame routes mount, carrying no tool value', () => {
+		const frames = createPageFrames(
+			createOllama({ model: 'fixture-model' }),
+			createRecorder<[Readonly<Record<string, unknown>>]>(),
+		)
+		const [frame, answer] = buildFrameRoutes(frames, new RequestLog())
+		const directive = 'lookup tool with query "datum"'
+
+		expect(PAGE_THREAD_PATH).toBe(frame.path)
+		expect(PAGE_ANSWER_PATH).toBe(answer.path)
+		expect(Object.isFrozen(PAGE_ASK)).toBe(true)
+		expect(Object.keys(PAGE_ASK)).toEqual(['system', 'prompt', 'thread', 'timeout', 'limit'])
+		expect(PAGE_ASK.system).toContain(directive)
+		expect(PAGE_ASK.prompt).toContain(directive)
+		expect(`${PAGE_ASK.system}${PAGE_ASK.prompt}`).not.toContain(LOOKUP_DATUM)
+		expect(PAGE_ASK.timeout).toBe(PAGE_BOUNDS.run)
+		expect(Number.isInteger(PAGE_ASK.limit) && PAGE_ASK.limit > 0).toBe(true)
+	})
+})
+
+describe('PageFrames', () => {
+	it('appends receipts in order and reads executed from the recorder', () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+		const session = createPageFrames(createOllama({ model: 'fixture-model' }), recorder)
+		const frames = new PageFrames(session.agent, session.threads, session.approver, recorder)
+		const earlier = frames.answers
+
+		expect(frames.executed).toBe(0)
+		recorder.handler({ query: 'datum' })
+		expect(frames.executed).toBe(1)
+
+		frames.add({ status: 204, executed: 0 })
+		frames.add({ status: 404, executed: 1 })
+		expect(earlier).toEqual([
+			{ status: 204, executed: 0 },
+			{ status: 404, executed: 1 },
+		])
+		expect(frames.agent).toBe(session.agent)
+		expect(frames.threads).toBe(session.threads)
+		expect(frames.approver).toBe(session.approver)
+	})
+})
+
+describe('createPageFrames', () => {
+	it('builds one session with no receipts, no asked thread, and no waiting ask', () => {
+		const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+		const frames = createPageFrames(createOllama({ model: 'fixture-model' }), recorder)
+
+		expect(frames.answers).toEqual([])
+		expect(frames.executed).toBe(0)
+		// The agent's context activates one conversation of its own when the manager has none, so
+		// the frame route's thread is the one thing that has not been added yet.
+		expect(frames.threads.count).toBe(1)
+		expect(frames.threads.conversation(PAGE_ASK.thread)).toBeUndefined()
+		// An answer naming no waiting ask settles nothing.
+		expect(frames.approver.answer({ id: 'absent', approved: true })).toBe(false)
+	})
+})
+
+describe('buildFrameRoutes', () => {
+	it('builds the frame route, then the answer route, each a POST', () => {
+		const frames = createPageFrames(
+			createOllama({ model: 'fixture-model' }),
+			createRecorder<[Readonly<Record<string, unknown>>]>(),
+		)
+		const routes = buildFrameRoutes(frames, new RequestLog())
+
+		expect(routes.map((route) => [route.method, route.path])).toEqual([
+			['POST', PAGE_THREAD_PATH],
+			['POST', PAGE_ANSWER_PATH],
+		])
+	})
+})
+
+describe('isPageAskOutcome', () => {
+	it('narrows the outcome the page reports and refuses a frame that fails the contract', () => {
+		const finish = { category: 'finish', content: 'done', partial: false }
+
+		expect(isPageAskOutcome({ frames: [finish], answers: [204, 404], rendered: ['text'] })).toBe(
+			true,
+		)
+		expect(
+			isPageAskOutcome({ frames: [], answers: [], rendered: [], failure: 'boom', status: 409 }),
+		).toBe(true)
+
+		expect(isPageAskOutcome({ frames: [{ category: 'other' }], answers: [], rendered: [] })).toBe(
+			false,
+		)
+		expect(isPageAskOutcome({ frames: [], answers: ['204'], rendered: [] })).toBe(false)
+		expect(isPageAskOutcome({ frames: [], answers: [], rendered: [1] })).toBe(false)
+		expect(isPageAskOutcome({ frames: [], answers: [], rendered: [], failure: 7 })).toBe(false)
+		expect(isPageAskOutcome({ frames: [], answers: [], rendered: [], status: null })).toBe(false)
+		expect(isPageAskOutcome({ answers: [], rendered: [] })).toBe(false)
+		expect(isPageAskOutcome(undefined)).toBe(false)
+	})
+})
+
+describe('acceptPageAsk', () => {
+	it('retries only a sampling miss and escapes every failure another launch cannot clear', () => {
+		// Inert attempt records: the subject is the decision `retryUntil` asks of its predicate.
+		const observed: PageAskAttempt = {
+			page: [],
+			served: [],
+			daemon: [],
+			receipts: [],
+			calls: [],
+			messages: [],
+			errors: [],
+		}
+		const ask: AgentFrame = {
+			category: 'ask',
+			id: 'ask-1',
+			name: 'lookup',
+			zone: 'restricted',
+			arguments: '{"query":"datum"}',
+		}
+		const finish: AgentFrame = { category: 'finish', content: 'done', partial: false }
+
+		expect(
+			acceptPageAsk({ ...observed, outcome: { frames: [finish], answers: [], rendered: [] } }),
+		).toBe(false)
+		expect(
+			acceptPageAsk({
+				...observed,
+				outcome: { frames: [ask, finish], answers: [204, 404], rendered: ['text'] },
+			}),
+		).toBe(true)
+		// More than one ask is accepted, because a model can call the tool twice in a turn.
+		expect(
+			acceptPageAsk({
+				...observed,
+				outcome: { frames: [ask, ask, finish], answers: [204, 404, 204, 404], rendered: [] },
+			}),
+		).toBe(true)
+
+		expect(captureError(() => acceptPageAsk({ ...observed, fault: 'no browser' }))).toEqual(
+			new Error('the page attempt could not be observed: no browser'),
+		)
+		expect(captureError(() => acceptPageAsk(observed))).toEqual(
+			new Error('the page attempt retained no outcome and no fault'),
+		)
+		expect(
+			captureError(() =>
+				acceptPageAsk({
+					...observed,
+					outcome: { frames: [], answers: [], rendered: [], failure: 'refused', status: 401 },
+				}),
+			),
+		).toEqual(new Error('the page ask failed: refused'))
+		expect(
+			captureError(() =>
+				acceptPageAsk({ ...observed, outcome: { frames: [ask], answers: [], rendered: [] } }),
+			),
+		).toEqual(new Error('the page attempt reports neither finish nor failure'))
+		expect(
+			captureError(() =>
+				acceptPageAsk({
+					...observed,
+					outcome: {
+						frames: [ask, { category: 'finish', content: 'cut', partial: true }],
+						answers: [],
+						rendered: [],
+					},
+				}),
+			),
+		).toEqual(new Error('the page ask was interrupted before it settled: cut'))
 	})
 })
 
@@ -2839,13 +3141,13 @@ describe('SCHEDULE_SLACK', () => {
 describe('PAGE_NOTE, PAGE_INFERENCE_PATH, and PAGE_RUN', () => {
 	it('steer a run to the page tool with the note, on the path the relay route mounts, under the run deadline', () => {
 		const route = buildRelayRoute(createOllama({ model: 'fixture-model' }), new RequestLog())
-		const steering = `${PAGE_TOOL.name} tool with note "${PAGE_NOTE}"`
+		const directive = `${PAGE_TOOL.name} tool with note "${PAGE_NOTE}"`
 
 		expect(PAGE_INFERENCE_PATH).toBe(route.path)
 		expect(Object.isFrozen(PAGE_RUN)).toBe(true)
 		expect(Object.keys(PAGE_RUN)).toEqual(['system', 'prompt', 'timeout', 'limit'])
-		expect(PAGE_RUN.system).toContain(steering)
-		expect(PAGE_RUN.prompt).toContain(steering)
+		expect(PAGE_RUN.system).toContain(directive)
+		expect(PAGE_RUN.prompt).toContain(directive)
 		expect(PAGE_RUN.timeout).toBe(PAGE_BOUNDS.run)
 		expect(Number.isInteger(PAGE_RUN.limit) && PAGE_RUN.limit > 0).toBe(true)
 	})

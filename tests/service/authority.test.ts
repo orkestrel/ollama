@@ -21,7 +21,7 @@ describe('Agent tool loop (live) — an allow rule lets the tool execute', () =>
 					{
 						match: (context) => context.call.name === 'lookup',
 						zone: 'default',
-						allowed: true,
+						verdict: 'allow',
 					},
 				],
 			})
@@ -85,7 +85,7 @@ describe('Agent tool loop (live) — a rule that throws during evaluation fails 
 							throw new Error('evaluation exploded')
 						},
 						zone: 'restricted',
-						allowed: false,
+						verdict: 'deny',
 					},
 				],
 			})
@@ -146,7 +146,7 @@ describe('Agent tool loop (live) — no matching rule falls back to default allo
 					{
 						match: (context) => context.call.name === 'unrelated',
 						zone: 'restricted',
-						allowed: false,
+						verdict: 'deny',
 					},
 				],
 			})

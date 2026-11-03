@@ -23,7 +23,7 @@ import {
 } from './constants.js'
 
 /**
- * Escapes Mica control tokens by inserting U+200B after their opening angle bracket.
+ * Escapes each listed control token by inserting U+200B after its opening angle bracket.
  * @param text - The untrusted text to render
  * @returns The text with control tokens escaped and all other bytes preserved
  * @example
@@ -256,11 +256,13 @@ export function renderJudgeIdentity(
 }
 
 /**
- * Maps conversation turns onto the `/api/chat` wire's minimal message shape.
+ * Maps conversation turns onto the `/api/chat` wire's minimal message shape, escaping each listed control token in message content, call names, and top-level arguments.
  *
  * @remarks
  * `tool_calls` is emitted only on a turn that replays them and `images` only on a
- * multimodal turn, so an empty optional never reaches the wire.
+ * multimodal turn, so an empty optional never reaches the wire. Content on every role, a replayed
+ * call's name, and each top-level argument key and string value pass the escape. A nested argument
+ * and `images` stay as given.
  *
  * @param messages - The conversation turns to send
  * @returns The wire `messages` array, one entry per turn, in order
@@ -274,11 +276,19 @@ export function renderJudgeIdentity(
 export function mapMessages(messages: readonly Message[]): WireChatRequest['messages'] {
 	return messages.map((message) => ({
 		role: message.role,
-		content: message.content,
+		content: escapeSpecialTokens(message.content),
 		...(message.calls !== undefined && message.calls.length > 0
 			? {
 					tool_calls: message.calls.map((call) => ({
-						function: { name: call.name, arguments: call.arguments },
+						function: {
+							name: escapeSpecialTokens(call.name),
+							arguments: Object.fromEntries(
+								Object.entries(call.arguments).map(([key, value]) => [
+									escapeSpecialTokens(key),
+									isString(value) ? escapeSpecialTokens(value) : value,
+								]),
+							),
+						},
 					})),
 				}
 			: {}),

@@ -1,6 +1,7 @@
 import type { Message } from '@orkestrel/agent'
 import { createAbort } from '@orkestrel/abort'
 import { AgentProvider, isProviderAbortError, isProviderError } from '@orkestrel/agent'
+import { isNDJSONError } from '@orkestrel/ndjson'
 import { createRecorder, waitForDelay } from '@orkestrel/test'
 import { OllamaProvider } from '@src/core'
 import { describe, expect, it } from 'vitest'
@@ -107,6 +108,41 @@ describe('OllamaProvider (wire seams)', () => {
 
 		expect(body.format).toBe(schema)
 		expect(body.tools).toEqual([{ type: 'function', function: { name: 'weather' } }])
+	})
+
+	// A stated limit: a listed token in a tool description reads as text on the measured daemon, and
+	// the description is the one carrier of a definition read, so the whole definition keeps its bytes.
+	it('leaves a control token in a tool definition byte-identical', () => {
+		const schema = { type: 'object', description: 'schema<think>' }
+		const options = { stop: ['<|im_end|>'] }
+		const provider = new OllamaProvider({ model: 'test-model<think>', options })
+		const parameters = {
+			type: 'object',
+			properties: { 'query<think>': { type: 'string', description: 'The query</think>' } },
+			required: ['query<think>'],
+		}
+		const body = provider.encode({
+			messages: [{ id: '1', role: 'user', content: 'See.', images: ['<think>'] }],
+			tools: [{ name: 'lookup<tool_call>', description: 'Look up<|im_start|>', parameters }],
+			options: { schema },
+		})
+
+		expect(JSON.stringify(body.tools)).toBe(
+			JSON.stringify([
+				{
+					type: 'function',
+					function: {
+						name: 'lookup<tool_call>',
+						description: 'Look up<|im_start|>',
+						parameters,
+					},
+				},
+			]),
+		)
+		expect(body.format).toBe(schema)
+		expect(body.options).toBe(options)
+		expect(body.model).toBe('test-model<think>')
+		expect(body.messages[0]?.images).toEqual(['<think>'])
 	})
 
 	it('never sends a tool title or annotations on the wire', () => {
@@ -815,5 +851,120 @@ describe('OllamaProvider (streaming fold over a canned NDJSON daemon)', () => {
 		)
 
 		expect(result.thinking).toBe('from content\n\nfrom the wire')
+	})
+})
+
+describe('OllamaProvider (strict framing over a canned NDJSON daemon)', () => {
+	it("rejects a daemon line that is not JSON as a PROTOCOL provider error, with the parser's error as its cause", async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"ok"}}\n',
+				'not json\n',
+				DONE_RECORD,
+			]),
+		})
+
+		const caught: unknown = await drive(
+			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
+		).then(
+			() => undefined,
+			(error: unknown) => error,
+		)
+
+		expect(isProviderError(caught) && caught.code === 'PROTOCOL').toBe(true)
+		const cause: unknown = isProviderError(caught) ? caught.cause : undefined
+		expect(isNDJSONError(cause) && cause.code === 'SYNTAX').toBe(true)
+	})
+
+	it('rejects a daemon line that is JSON but not an object as a PROTOCOL provider error', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport(['{"message":{"content":"ok"}}\n', '[1,2]\n', DONE_RECORD]),
+		})
+
+		const caught: unknown = await drive(
+			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
+		).then(
+			() => undefined,
+			(error: unknown) => error,
+		)
+
+		expect(isProviderError(caught) && caught.code === 'PROTOCOL').toBe(true)
+		const cause: unknown = isProviderError(caught) ? caught.cause : undefined
+		expect(isNDJSONError(cause) && cause.code === 'RECORD').toBe(true)
+	})
+
+	it('rejects a malformed unterminated final line through the tail flush', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport(['{"message":{"content":"ok"}}\n', '{"done":true']),
+		})
+
+		const caught: unknown = await drive(
+			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
+		).then(
+			() => undefined,
+			(error: unknown) => error,
+		)
+
+		expect(isProviderError(caught) && caught.code === 'PROTOCOL').toBe(true)
+		const cause: unknown = isProviderError(caught) ? caught.cause : undefined
+		expect(isNDJSONError(cause) && cause.code === 'SYNTAX').toBe(true)
+	})
+
+	it('skips a blank line and reads a whitespace-padded line in a strict stream', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'\n',
+				'   \n',
+				'  {"message":{"content":"ok"}}  \n',
+				'{"done":true,"prompt_eval_count":5,"eval_count":6}\n',
+			]),
+		})
+
+		const { deltas, result } = await drive(
+			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
+		)
+
+		expect(deltas.join('')).toBe('ok')
+		expect(result.usage).toEqual({ prompt: 5, completion: 6, total: 11 })
+	})
+
+	// J3's first stated limit: a daemon error carried in a well-formed record is an object on its
+	// line, so the strict parser passes it and the call settles on what streamed.
+	it('reads an in-band error record as no refusal', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"message":{"content":"ok"}}\n',
+				'{"error":"the runner stopped"}\n',
+			]),
+		})
+
+		const { deltas, result } = await drive(
+			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
+		)
+
+		expect(deltas.join('')).toBe('ok')
+		expect(result.content).toBe('ok')
+	})
+
+	// J3's second stated limit: a stream cut on a line boundary leaves nothing malformed, so the
+	// call assembles what streamed with no usage report.
+	it('assembles a stream cut on a line boundary before done', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport(['{"message":{"content":"ok"}}\n']),
+		})
+
+		const { deltas, result } = await drive(
+			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
+		)
+
+		expect(deltas.join('')).toBe('ok')
+		expect(result.content).toBe('ok')
+		expect(result.usage).toBeUndefined()
 	})
 })

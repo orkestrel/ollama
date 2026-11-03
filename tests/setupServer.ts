@@ -1,8 +1,12 @@
 import type { ContextSectionFormat, InstructionInterface } from '@orkestrel/agent'
 import type {
 	AgentChunk,
+	AgentFrame,
+	AgentInterface,
 	AgentResult,
 	AgentStreamInterface,
+	ApproverInterface,
+	ConversationManagerInterface,
 	JudgeRequest,
 	JudgeQuestion,
 	ProviderDelta,
@@ -96,7 +100,20 @@ import {
 	STREAM_FENCE_ANCHOR,
 	USAGE_FENCE_ANCHOR,
 } from './setup.js'
-import { createAgent, createScope, isProviderError, sumUsage } from '@orkestrel/agent'
+import {
+	agentAnswerContract,
+	agentFrameContract,
+	agentPromptContract,
+	agentStreamToFrames,
+	createAgent,
+	createApprover,
+	createAuthority,
+	createConversationManager,
+	createScope,
+	isAgentError,
+	isProviderError,
+	sumUsage,
+} from '@orkestrel/agent'
 import {
 	BROWSER_JOURNEY_ACTIONS,
 	BROWSER_JOURNEY_TOOL_NAMES,
@@ -426,6 +443,8 @@ export function buildRelayRoute(
 	const relay = createRelay({
 		provider,
 		authorize: (request) => request.headers.get('authorization') === OBFUSCATED,
+		system: { accept: true },
+		tools: { definitions: [PAGE_TOOL, WEATHER_TOOL] },
 	})
 	return {
 		method: 'POST',
@@ -1418,7 +1437,7 @@ export async function driveAgent(stream: AgentStreamInterface): Promise<{
 		if (chunk.category === 'token') tokens.push(chunk.content)
 		else if (chunk.category === 'think') thoughts.push(chunk.content)
 		else if (chunk.category === 'tool') tools.push({ call: chunk.call, result: chunk.result })
-		else usages.push(chunk.usage)
+		else if (chunk.category === 'usage') usages.push(chunk.usage)
 	}
 	const result = await stream.result
 	return { tokens, thoughts, tools, usages, result }
@@ -1434,6 +1453,19 @@ export function createScriptedAgentStream(
 		result: Promise.resolve(result),
 		abort() {},
 	}
+}
+
+/**
+ * Builds random decimal digits of a fixed length, a prompt prefix no daemon cache has seen.
+ *
+ * @remarks The length is fixed so two prefixes tokenize alike, and a `prompt_eval_count` compared
+ * across two requests reads what differs after the prefix.
+ *
+ * @param length - How many digits to build
+ * @returns The digits
+ */
+export function buildDigits(length: number): string {
+	return Array.from({ length }, () => Math.floor(Math.random() * 10)).join('')
 }
 
 /** Names the distinctive datum the lookup tool fixture returns. */
@@ -1720,16 +1752,23 @@ export function rootToPath(root: URL | string): string {
  * error and throws one uncaught error, so a test can read both recorders reporting a fault the
  * page deliberately produced. `direct` drives the daemon from the page with no relay and no
  * agent, on the prompt its caller supplies.
+ *
+ * `ask` transcribes the page fence of `agent.md` § Serving a Node agent to a page: it frames the
+ * body through one strict parser, checks each record against `agentFrameContract`, writes each
+ * `ask` frame through `textContent`, and posts each answer twice, so the duplicate's refusal
+ * crosses the same wire.
  */
 export const PAGE_DOCUMENT = `<ul id="receipts"></ul>
+<ul id="asks"></ul>
 <script type="module">
-	import { createAgent, createRelayProvider } from '@orkestrel/agent'
+	import { agentFrameContract, createAgent, createRelayProvider } from '@orkestrel/agent'
 	import { createNDJSONParser } from '@orkestrel/ndjson'
 	import { createOllama } from '@orkestrel/ollama'
 	import { createTool, createToolManager } from '@orkestrel/tool'
 
 	const definition = ${JSON.stringify(PAGE_TOOL)}
 	const list = document.getElementById('receipts')
+	const asks = document.getElementById('asks')
 
 	globalThis.page = {
 		async run(options) {
@@ -1753,7 +1792,6 @@ export const PAGE_DOCUMENT = `<ul id="receipts"></ul>
 			const agent = createAgent(
 				createRelayProvider({
 					url: options.url,
-					parser: createNDJSONParser,
 					headers: () => ({ authorization: options.authorization }),
 				}),
 				{
@@ -1778,6 +1816,58 @@ export const PAGE_DOCUMENT = `<ul id="receipts"></ul>
 					code: failure?.code,
 					status: failure?.status,
 				})
+			}
+		},
+		async ask(options) {
+			const frames = []
+			const answers = []
+			const rendered = []
+			const headers = {
+				'content-type': 'application/json',
+				authorization: options.authorization,
+			}
+			try {
+				const response = await fetch(options.url, {
+					method: 'POST',
+					headers,
+					body: JSON.stringify({ content: options.prompt }),
+				})
+				if (!response.ok || response.body === null) {
+					return JSON.stringify({
+						frames,
+						answers,
+						rendered,
+						failure: 'the run was refused',
+						status: response.status,
+					})
+				}
+				const parser = createNDJSONParser({ strict: true })
+				const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
+				for (;;) {
+					const chunk = await reader.read()
+					for (const record of parser.parse(chunk.done ? '\\n' : chunk.value)) {
+						if (!agentFrameContract.is(record)) throw new Error('a frame line was refused')
+						frames.push(record)
+						if (record.category === 'error') throw new Error('the run failed')
+						if (record.category === 'finish') {
+							return JSON.stringify({ frames, answers, rendered })
+						}
+						if (record.category === 'ask') {
+							const text = record.name + ' asks in ' + record.zone + ' with ' + record.arguments
+							const item = document.createElement('li')
+							item.textContent = text
+							asks.append(item)
+							rendered.push(text)
+							const answer = JSON.stringify({ id: record.id, approved: true })
+							const post = { method: 'POST', headers, body: answer }
+							answers.push((await fetch(options.answers, post)).status)
+							answers.push((await fetch(options.answers, post)).status)
+						}
+					}
+					if (chunk.done) throw new Error('the frames ended without finish or error')
+				}
+			} catch (failure) {
+				return JSON.stringify({ frames, answers, rendered, failure: String(failure) })
 			}
 		},
 		async control() {
@@ -1827,6 +1917,7 @@ export const PAGE_DOCUMENT = `<ul id="receipts"></ul>
  */
 export const PAGE_OPERATIONS: readonly string[] = Object.freeze([
 	'run',
+	'ask',
 	'control',
 	'fault',
 	'direct',
@@ -1840,6 +1931,12 @@ export const PAGE_NOTE = 'kyoto'
 /** Names the relay route the page dials on the fixture's own origin. */
 export const PAGE_INFERENCE_PATH = '/inference'
 
+/** Names the route pattern a page posts its prompt to, one path per thread. */
+export const PAGE_THREAD_PATH = '/threads/:thread'
+
+/** Names the route a page posts its answer to each `ask` frame to. */
+export const PAGE_ANSWER_PATH = '/answers'
+
 /**
  * Holds the steering and bounds every in-page relay run takes.
  *
@@ -1852,6 +1949,23 @@ export const PAGE_RUN = Object.freeze({
 		`You MUST call the ${PAGE_TOOL.name} tool with note "${PAGE_NOTE}" to answer. ` +
 		'After it returns, state the exact value it returned in your final reply.',
 	prompt: `Call the ${PAGE_TOOL.name} tool with note "${PAGE_NOTE}", then tell me exactly what it returned.`,
+	timeout: PAGE_BOUNDS.run,
+	limit: 4,
+})
+
+/**
+ * Holds the steering and bounds of the Node agent a page drives over the frame route.
+ *
+ * @remarks The run is steered to call `lookup` with query `datum` and to quote what it returns.
+ * Neither string carries {@link LOOKUP_DATUM}, so that value reaching a later daemon request can
+ * only have come from the tool running after the page's approval.
+ */
+export const PAGE_ASK = Object.freeze({
+	system:
+		'You MUST call the lookup tool with query "datum" to answer. ' +
+		'After it returns, state the exact value it returned in your final reply.',
+	prompt: 'Call the lookup tool with query "datum", then tell me exactly what it returned.',
+	thread: 'ask',
 	timeout: PAGE_BOUNDS.run,
 	limit: 4,
 })
@@ -1905,12 +2019,191 @@ export interface PageFixtureOptions {
 	readonly document: string
 	/** The server-side provider the authenticated relay route drives; omitted ⇒ no relay route. */
 	readonly provider?: ProviderInterface
+	/** The Node agent the frame and answer routes drive; omitted ⇒ neither route. */
+	readonly frames?: PageFrames
+}
+
+/** Represents what the answer route read and answered for one posted answer. */
+export interface PageAnswerReceipt {
+	/** The status the answer route answered with. */
+	readonly status: number
+	/** How many times the tool had run when the route read the answer, before it settled the ask. */
+	readonly executed: number
+}
+
+/**
+ * Holds the one principal's session the frame and answer routes serve: its agent, its threads, its
+ * approver, and what the answer route read.
+ *
+ * @remarks The receipts are `#` state of this entity, so the route handlers a server keeps reach
+ * them through {@link PageFrames.add} rather than through a collection their factory holds in its
+ * closure. `executed` reads the tool's recorder, so a receipt states whether the tool had run
+ * before its approval from the tool's own calls.
+ */
+export class PageFrames {
+	readonly agent: AgentInterface
+	readonly threads: ConversationManagerInterface
+	readonly approver: ApproverInterface
+	readonly #recorder: RecorderInterface<[Readonly<Record<string, unknown>>]>
+	readonly #answers: PageAnswerReceipt[] = []
+
+	/**
+	 * Creates the session over the entries the routes read.
+	 *
+	 * @param agent - The agent the frame route runs
+	 * @param threads - The conversations the frame route looks each thread up in
+	 * @param approver - The approver the answer route settles
+	 * @param recorder - The recorder the agent's tool calls
+	 */
+	constructor(
+		agent: AgentInterface,
+		threads: ConversationManagerInterface,
+		approver: ApproverInterface,
+		recorder: RecorderInterface<[Readonly<Record<string, unknown>>]>,
+	) {
+		this.agent = agent
+		this.threads = threads
+		this.approver = approver
+		this.#recorder = recorder
+	}
+
+	/** Holds every receipt the answer route added, in order. */
+	get answers(): readonly PageAnswerReceipt[] {
+		return this.#answers
+	}
+
+	/** Reports how many times the tool has run. */
+	get executed(): number {
+		return this.#recorder.count
+	}
+
+	/** Appends one answer's receipt. */
+	add(receipt: PageAnswerReceipt): void {
+		this.#answers.push(receipt)
+	}
+}
+
+/**
+ * Builds the session the frame and answer routes serve, with the `lookup` tool behind an `ask`.
+ *
+ * @param provider - The real server-side provider the agent drives
+ * @param recorder - The recorder the `lookup` tool calls when it runs
+ * @returns The agent, its threads, its approver, and its answer receipts
+ */
+export function createPageFrames(
+	provider: ProviderInterface,
+	recorder: RecorderInterface<[Readonly<Record<string, unknown>>]>,
+): PageFrames {
+	const threads = createConversationManager()
+	const approver = createApprover()
+	const tools = createToolManager()
+	tools.add(createLookupTool(recorder))
+	const authority = createAuthority({
+		rules: [
+			{ match: (context) => context.call.name === 'lookup', zone: 'restricted', verdict: 'ask' },
+		],
+		ask: approver.ask,
+	})
+	const agent = createAgent(provider, {
+		system: PAGE_ASK.system,
+		tools,
+		conversations: threads,
+		authority,
+		timeout: PAGE_ASK.timeout,
+		limit: PAGE_ASK.limit,
+	})
+	return new PageFrames(agent, threads, approver, recorder)
+}
+
+/**
+ * Builds the frame route and the answer route, transcribing the server fence of `agent.md`
+ * § Serving a Node agent to a page.
+ *
+ * @param frames - The session both routes serve
+ * @param log - The log each inbound request's recorded fields are appended to through `add`
+ * @returns The frame route, then the answer route
+ * @remarks {@link OBFUSCATED} stands in for the fence's `authenticate`, and an `origin` header equal
+ * to the request URL's own origin for its `verify`. The answer route reads `executed` before it
+ * settles the ask, so its receipt states whether the tool ran ahead of the approval.
+ */
+export function buildFrameRoutes(
+	frames: PageFrames,
+	log: RequestLog,
+): readonly [
+	RouteInput<typeof PAGE_THREAD_PATH, Record<string, never>>,
+	RouteInput<typeof PAGE_ANSWER_PATH, Record<string, never>>,
+] {
+	return [
+		{
+			method: 'POST',
+			path: PAGE_THREAD_PATH,
+			async handler(request, context) {
+				log.add(await readRequest(request))
+				if (request.headers.get('authorization') !== OBFUSCATED) {
+					return new Response(null, { status: 401 })
+				}
+				if (request.headers.get('origin') !== new URL(request.url).origin) {
+					return new Response(null, { status: 403 })
+				}
+				const prompt = parseJSONAs(await request.text(), agentPromptContract.is)
+				const id = context.params.thread
+				if (prompt === undefined) return new Response(null, { status: 400 })
+				const thread = frames.threads.conversation(id) ?? frames.threads.add({ id })
+				try {
+					const stream = frames.agent.stream({
+						conversation: thread,
+						prompt,
+						signal: request.signal,
+					})
+					const steps = agentStreamToFrames(stream, frames.approver)
+					const lines = new ReadableStream<string>({
+						pull: async (controller) => {
+							const step = await steps.next()
+							if (step.done) controller.close()
+							else controller.enqueue(`${JSON.stringify(step.value)}\n`)
+						},
+						cancel: () => stream.abort(),
+					})
+					return new Response(lines.pipeThrough(new TextEncoderStream()), {
+						headers: {
+							'content-type': 'application/x-ndjson; charset=utf-8',
+							'cache-control': 'no-store',
+						},
+					})
+				} catch (error) {
+					if (isAgentError(error) && error.code === 'CONCURRENCY') {
+						return new Response(null, { status: 409 })
+					}
+					throw error
+				}
+			},
+		},
+		{
+			method: 'POST',
+			path: PAGE_ANSWER_PATH,
+			async handler(request) {
+				log.add(await readRequest(request))
+				if (request.headers.get('authorization') !== OBFUSCATED) {
+					return new Response(null, { status: 401 })
+				}
+				if (request.headers.get('origin') !== new URL(request.url).origin) {
+					return new Response(null, { status: 403 })
+				}
+				const answer = parseJSONAs(await request.text(), agentAnswerContract.is)
+				if (answer === undefined) return new Response(null, { status: 400 })
+				const { executed } = frames
+				const status = frames.approver.answer(answer) ? 204 : 404
+				frames.add({ status, executed })
+				return new Response(null, { status })
+			},
+		},
+	]
 }
 
 /**
  * Starts the live page proof's fixture on an ephemeral loopback port.
  *
- * @param options - The document to serve and the optional relay provider
+ * @param options - The document to serve, the optional relay provider, and the optional frame session
  * @returns The ephemeral loopback server, every request it served, and its shutdown operation
  * @remarks The fixture serves the page, the installed `@orkestrel` module tree, this
  * workspace's own built output, the control route, and — when a provider is supplied — the
@@ -1973,6 +2266,11 @@ ${options.document}
 		},
 	})
 	if (options.provider !== undefined) dispatcher.add(log.relay(options.provider))
+	if (options.frames !== undefined) {
+		const [frame, answer] = buildFrameRoutes(options.frames, log)
+		dispatcher.add(frame)
+		dispatcher.add(answer)
+	}
 	const server = createServer({ dispatcher, state: () => ({}), host: '127.0.0.1' })
 	return new RecordingServer(log, server, await server.start())
 }
@@ -3824,6 +4122,8 @@ export interface PageSessionOptions {
 	readonly args: readonly string[]
 	/** The server-side provider the fixture's relay route drives; omitted ⇒ no relay route. */
 	readonly provider?: ProviderInterface
+	/** The Node agent the fixture's frame and answer routes drive; omitted ⇒ neither route. */
+	readonly frames?: PageFrames
 	/** The attempt deadline the acquisition observes, normally `boundPageAttempt`'s own. */
 	readonly signal?: AbortSignal
 }
@@ -3935,6 +4235,7 @@ export async function createPageSession(
 	const fixture = await createPageFixture({
 		document: PAGE_DOCUMENT,
 		...(options.provider === undefined ? {} : { provider: options.provider }),
+		...(options.frames === undefined ? {} : { frames: options.frames }),
 	})
 	teardown.add(() => fixture.stop())
 	try {
@@ -4254,6 +4555,29 @@ export function isPageOutcome(value: unknown): value is PageOutcome {
 	return value.status === undefined || isNumber(value.status)
 }
 
+/** Represents the outcome the page's `ask` operation reports back through `evaluate`. */
+export interface PageAskOutcome {
+	/** Every frame the page read and checked, in order. */
+	readonly frames: readonly AgentFrame[]
+	/** The status of each answer post, each ask's answer followed by its duplicate. */
+	readonly answers: readonly number[]
+	/** The text the page wrote for each `ask` frame, in order. */
+	readonly rendered: readonly string[]
+	/** The stringified failure; absent when the run reached `finish`. */
+	readonly failure?: string
+	/** The frame route's status when it refused the run. */
+	readonly status?: number
+}
+
+/** Narrows an unknown value to the outcome the page's `ask` operation reports. */
+export function isPageAskOutcome(value: unknown): value is PageAskOutcome {
+	if (!isRecord(value)) return false
+	if (!arrayOf(agentFrameContract.is)(value.frames)) return false
+	if (!arrayOf(isNumber)(value.answers) || !arrayOf(isString)(value.rendered)) return false
+	if (value.failure !== undefined && !isString(value.failure)) return false
+	return value.status === undefined || isNumber(value.status)
+}
+
 /** Represents the reading the page's control request reports. */
 export interface PageControl {
 	/** The response status the control route answered with. */
@@ -4390,6 +4714,59 @@ export function acceptPageAttempt(attempt: PageAttempt): boolean {
 		)
 	}
 	return attempt.outcome.tools.some((tool) => tool.call.name === PAGE_TOOL.name)
+}
+
+/** Represents one retained attempt of the live page proof's bounded `ask` retry. */
+export interface PageAskAttempt {
+	/** The outcome the page reported; absent when the attempt could not be observed. */
+	readonly outcome?: PageAskOutcome
+	/** How many elements `#asks` held beyond its text items; absent when it was not read. */
+	readonly markup?: number
+	/** Every request the page issued inside the operation window, as method and path, in order. */
+	readonly page: readonly string[]
+	/** Every prompt and answer request the fixture's routes received, in order. */
+	readonly served: readonly RecordedRequest[]
+	/** Every request the daemon transport issued, in turn order. */
+	readonly daemon: readonly RecordedRequest[]
+	/** What the answer route read for each posted answer. */
+	readonly receipts: readonly PageAnswerReceipt[]
+	/** The arguments of each call the `lookup` tool ran with. */
+	readonly calls: ReadonlyArray<readonly [Readonly<Record<string, unknown>>]>
+	/** The asked thread's messages when the attempt ended. */
+	readonly messages: readonly Message[]
+	/** Every uncaught page error, in observed order. */
+	readonly errors: readonly BrowserPageError[]
+	/** The acquisition, evaluate, or release failure that stopped the attempt being observed. */
+	readonly fault?: string
+}
+
+/**
+ * Decides what the live page proof's bounded `ask` retry does with one retained attempt.
+ *
+ * @param attempt - The retained attempt, whose reads and release have already settled
+ * @returns `true` when an `ask` frame crossed, `false` when `finish` arrived with none
+ * @throws An `Error` naming the fault, the page failure, or the interruption the attempt carried,
+ * or stating that it reports no terminal frame.
+ * @remarks The split is {@link acceptPageAttempt}'s, and for its reason: only a model that answered
+ * without calling the tool is worth another browser launch. An attempt with more than one `ask`
+ * frame is accepted, because a model can call `lookup` twice in a turn.
+ */
+export function acceptPageAsk(attempt: PageAskAttempt): boolean {
+	if (attempt.fault !== undefined) {
+		throw new Error(`the page attempt could not be observed: ${attempt.fault}`)
+	}
+	if (attempt.outcome === undefined) {
+		throw new Error('the page attempt retained no outcome and no fault')
+	}
+	if (attempt.outcome.failure !== undefined) {
+		throw new Error(`the page ask failed: ${attempt.outcome.failure}`)
+	}
+	const finish = attempt.outcome.frames.find((frame) => frame.category === 'finish')
+	if (finish === undefined) throw new Error('the page attempt reports neither finish nor failure')
+	if (finish.partial) {
+		throw new Error(`the page ask was interrupted before it settled: ${finish.content}`)
+	}
+	return attempt.outcome.frames.some((frame) => frame.category === 'ask')
 }
 
 /**

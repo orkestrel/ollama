@@ -1,5 +1,4 @@
 import { createRelayProvider, isProviderAbortError } from '@orkestrel/agent'
-import { createNDJSONParser } from '@orkestrel/ndjson'
 import { createOllama } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createRecordingTransport, createRelayServer, drive, OBFUSCATED } from '../setupServer.js'
@@ -19,7 +18,6 @@ describe('RelayProvider through a real server and the live daemon', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
-				parser: createNDJSONParser,
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const result = await browser.generate(
@@ -53,7 +51,6 @@ describe('RelayProvider through a real server and the live daemon', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
-				parser: createNDJSONParser,
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const { deltas, result } = await drive(
@@ -87,7 +84,6 @@ describe('RelayProvider through a real server and the live daemon', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
-				parser: createNDJSONParser,
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const stream = browser.stream(

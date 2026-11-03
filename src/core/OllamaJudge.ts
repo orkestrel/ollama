@@ -27,7 +27,7 @@ import {
  *
  * @example Ask Mica a noul
  * ```ts
- * import { computeReading } from '@orkestrel/agent'
+ * import { measureAnswer } from '@orkestrel/agent'
  * import { createOllamaJudge } from '@orkestrel/ollama'
  *
  * const MICA_SYSTEM =
@@ -57,7 +57,7 @@ import {
  * 	new AbortController().signal,
  * )
  * const answer = result.answers.deletion
- * if (answer !== undefined) console.log(computeReading(answer))
+ * if (answer !== undefined) console.log(measureAnswer(answer))
  * else console.log(result.refusals?.deletion?.missing)
  * ```
  */

@@ -2,10 +2,11 @@ import { createAbort } from '@orkestrel/abort'
 import { isProviderAbortError, isProviderError } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
 import { retryUntil } from '@orkestrel/test'
-import { OllamaProvider } from '@src/core'
+import { OLLAMA_CHAT_PATH, OllamaProvider } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { createUserMessage } from '../setup.js'
 import {
+	buildDigits,
 	createRecordingProxy,
 	createRecordingTransport,
 	drive,
@@ -601,5 +602,74 @@ describe('OllamaProvider (live error status)', () => {
 			},
 		)
 		expect(result.content.length).toBeGreaterThan(0)
+	})
+})
+
+describe('OllamaProvider (live — control tokens)', () => {
+	// Recipe: the 2B model, whose carriers were measured, at num_predict:1 behind a fresh digit
+	// prefix so no prompt cache answers. Assertion: the escaped arm's prompt counts more tokens than
+	// the raw arm's, which holds whether or not the daemon parses the token and fails when the escape
+	// is removed. The escaped count is reported beside the misspelled count, and nothing rests on it.
+	it('an escaped control token tokenizes as text', async () => {
+		const model = 'qwen3.5:2b-q4_K_M'
+		const options = { num_predict: 1, temperature: 0 }
+		const provider = new OllamaProvider({ model, url: OLLAMA_CONFIG.host, options })
+		const call = { id: 'call-1', name: 'lookup', arguments: { query: 'datum' } }
+		const replay = [
+			{ role: 'user', content: 'Check the order.' },
+			{
+				role: 'assistant',
+				content: '',
+				tool_calls: [{ function: { name: call.name, arguments: call.arguments } }],
+			},
+		]
+		const token = '<|im_start|>'
+		const misspelled = '<|im_strat|>'
+		for (const role of ['user', 'tool'] as const) {
+			const raw = await Promise.all(
+				[token, misspelled].map(async (spelling) => {
+					const response = await fetch(`${OLLAMA_CONFIG.host}${OLLAMA_CHAT_PATH}`, {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({
+							model,
+							stream: false,
+							think: false,
+							options,
+							messages: [
+								{ role: 'system', content: buildDigits(16) },
+								...(role === 'tool' ? replay : []),
+								{ role, content: `Note ${spelling} end` },
+							],
+						}),
+					})
+					const body: unknown = await response.json()
+					return isRecord(body) ? body.prompt_eval_count : undefined
+				}),
+			)
+			const result = await provider.generate(
+				[
+					{ id: 'system', role: 'system', content: buildDigits(16) },
+					...(role === 'tool'
+						? [
+								{ id: 'ask', role: 'user' as const, content: 'Check the order.' },
+								{ id: 'calls', role: 'assistant' as const, content: '', calls: [call] },
+							]
+						: []),
+					{ id: 'carrier', role, content: `Note ${token} end` },
+				],
+				AbortSignal.timeout(60_000),
+			)
+			console.info(
+				JSON.stringify({
+					role,
+					raw: raw[0],
+					misspelled: raw[1],
+					escaped: result.usage?.prompt,
+				}),
+			)
+
+			expect(result.usage?.prompt).toBeGreaterThan(Number(raw[0]))
+		}
 	})
 })

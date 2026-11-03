@@ -40,7 +40,7 @@ export const MICA_OPTION_LABELS: readonly string[] = Object.freeze(
 /** Lists Mica's false and true labels in readout order. */
 export const MICA_NOUL_LABELS: readonly string[] = Object.freeze(['No', 'Yes'])
 
-/** Lists the control tokens escaped by Mica's native renderer. */
+/** Lists the control tokens escaped on Mica's judge prompt and in chat messages; it neutralizes no other vocabulary token and no other model family. */
 export const MICA_SPECIAL_TOKENS: readonly string[] = Object.freeze([
 	'<|im_start|>',
 	'<|im_end|>',

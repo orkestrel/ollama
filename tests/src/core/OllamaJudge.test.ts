@@ -1,4 +1,4 @@
-import { computeReading, isJudgeAbortError, JudgeError } from '@orkestrel/agent'
+import { measureAnswer, isJudgeAbortError, JudgeError } from '@orkestrel/agent'
 import { waitForAbort } from '@orkestrel/test'
 import { OllamaJudge, renderJudgeIdentity } from '@src/core'
 import { describe, expect, it } from 'vitest'
@@ -49,8 +49,8 @@ describe('OllamaJudge', () => {
 		expect(result.refusals).toBeUndefined()
 		const answer = result.answers.deletion
 		if (answer === undefined) throw new Error('Missing deletion answer')
-		expect(computeReading(answer).winner).toBe('false')
-		expect(computeReading(answer).probability).toBeCloseTo(0.99, 3)
+		expect(measureAnswer(answer).winner).toBe('false')
+		expect(measureAnswer(answer).probability).toBeCloseTo(0.99, 3)
 	})
 	it('sends the recorded choice prompt and reports billing as the winner', async () => {
 		const transport = createRecordingTransport(
@@ -67,7 +67,7 @@ describe('OllamaJudge', () => {
 		expect(transport.requests[0]?.body.keep_alive).toBe('5m')
 		const answer = result.answers.team
 		if (answer === undefined) throw new Error('Missing team answer')
-		expect(computeReading(answer).winner).toBe('billing')
+		expect(measureAnswer(answer).winner).toBe('billing')
 	})
 	it.each(JUDGE_INVALID_QUESTIONS)(
 		'refuses unsupported question %j before any call',

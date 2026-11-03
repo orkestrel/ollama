@@ -31,32 +31,47 @@
  */
 
 import {
+	createRecorder,
 	requireValue,
 	retryUntil,
 	waitForAbort,
 	waitForCondition,
 	waitForDelay,
 } from '@orkestrel/test'
-import { arrayOf, isString } from '@orkestrel/contract'
+import { arrayOf, isNumber, isString } from '@orkestrel/contract'
 import { createOllama, OLLAMA_CHAT_PATH } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import { PAGE_TOOL } from '../setup.js'
-import type { PageAttempt, PageOutcome, PageReceipt, PageSessionInterface } from '../setupServer.js'
+import type {
+	PageAskAttempt,
+	PageAskOutcome,
+	PageAttempt,
+	PageOutcome,
+	PageReceipt,
+	PageSessionInterface,
+} from '../setupServer.js'
 import {
+	acceptPageAsk,
 	acceptPageAttempt,
 	boundPageAttempt,
 	CONTROL_PATH,
+	createPageFrames,
 	createPageSession,
 	createPageSessionOptions,
 	createRecordingTransport,
+	createScriptedTransport,
 	describeFailure,
 	DIST_PATH,
+	isPageAskOutcome,
 	isPageControl,
 	isPageGeneration,
 	isPageOutcome,
 	isPageReceipts,
+	LOOKUP_DATUM,
 	MODULES_PATH,
 	OBFUSCATED,
+	PAGE_ANSWER_PATH,
+	PAGE_ASK,
 	PAGE_BOUNDS,
 	PAGE_CAPITAL,
 	PAGE_FAULT,
@@ -64,6 +79,7 @@ import {
 	PAGE_INTERVALS,
 	PAGE_OPERATIONS,
 	PAGE_RUN,
+	PAGE_THREAD_PATH,
 	readOutcome,
 	requireBuild,
 	requirePageBrowser,
@@ -356,6 +372,243 @@ describe('Agent tool loop in a real page (live) — a page tool through the rela
 			expect(
 				settled.resources.filter((name) => name.endsWith(PAGE_INFERENCE_PATH)).length,
 			).toBeGreaterThanOrEqual(1)
+		},
+		PAGE_BOUNDS.retry,
+	)
+})
+
+describe('Agent in Node (scripted) — a real page writes an ask as text', () => {
+	it(
+		'writes markup in an ask argument as text, with no element in the list',
+		async () => {
+			// Scripted, so no model choice stands between the page and the frame. The live case's
+			// `datum` holds no markup, so only a text like this one tells `textContent` from `innerHTML`.
+			const query = '<b>x</b>'
+			const frames = createPageFrames(
+				createOllama({
+					model: OLLAMA_CONFIG.model,
+					fetch: createScriptedTransport([
+						{ content: '', tool_calls: [{ function: { name: 'lookup', arguments: { query } } }] },
+						{ content: 'done' },
+					]),
+				}),
+				createRecorder<[Readonly<Record<string, unknown>>]>(),
+			)
+			await boundPageAttempt(
+				PAGE_BOUNDS,
+				(signal) => createPageSession({ ...createPageSessionOptions(BROWSER), frames, signal }),
+				async (session, signal) => {
+					const thread = PAGE_THREAD_PATH.replace(':thread', PAGE_ASK.thread)
+					const options = {
+						prompt: PAGE_ASK.prompt,
+						url: `${session.fixture.url}${thread}`,
+						answers: `${session.fixture.url}${PAGE_ANSWER_PATH}`,
+						authorization: OBFUSCATED,
+					}
+					const outcome = await readOutcome(
+						session.page,
+						`page.ask(${JSON.stringify(options)})`,
+						isPageAskOutcome,
+						{ timeout: PAGE_BOUNDS.evaluate, signal },
+					)
+					const text = `lookup asks in restricted with ${JSON.stringify({ query })}`
+					expect(outcome.failure).toBeUndefined()
+					expect(outcome.rendered).toEqual([text])
+					expect(outcome.answers).toEqual([204, 404])
+					expect(
+						await readOutcome(
+							session.page,
+							"JSON.stringify(document.querySelectorAll('#asks > :not(li), #asks li *').length)",
+							isNumber,
+							{ timeout: PAGE_BOUNDS.read, signal },
+						),
+					).toBe(0)
+					expect(
+						await readOutcome(
+							session.page,
+							"JSON.stringify(document.querySelector('#asks li').textContent)",
+							isString,
+							{ timeout: PAGE_BOUNDS.read, signal },
+						),
+					).toBe(text)
+				},
+			)
+		},
+		PAGE_BOUNDS.case,
+	)
+})
+
+describe('Agent in Node (live) — a real page answers an ask', () => {
+	it(
+		'answers a live ask from a real page over the frame route and runs the tool after the approval',
+		async () => {
+			const thread = PAGE_THREAD_PATH.replace(':thread', PAGE_ASK.thread)
+			const attempts: PageAskAttempt[] = []
+			const retried = await retryUntil(
+				'have the model call lookup so that a real page answers its ask',
+				async () => {
+					const daemon = createRecordingTransport()
+					const recorder = createRecorder<[Readonly<Record<string, unknown>>]>()
+					const frames = createPageFrames(
+						createOllama({
+							model: OLLAMA_CONFIG.model,
+							url: OLLAMA_CONFIG.host,
+							options: TOOL_LOOP_OPTIONS,
+							fetch: daemon.fetch,
+						}),
+						recorder,
+					)
+					// The receipt case's retained-attempt pattern: nothing in this producer throws,
+					// and `acceptPageAsk` decides from the record whether another launch can change
+					// the reading.
+					const reads: Array<
+						| {
+								readonly category: 'session'
+								readonly session: PageSessionInterface
+								readonly mark: number
+						  }
+						| { readonly category: 'outcome'; readonly outcome: PageAskOutcome }
+						| { readonly category: 'markup'; readonly markup: number }
+					> = []
+					const fault = await boundPageAttempt(
+						PAGE_BOUNDS,
+						(signal) => createPageSession({ ...createPageSessionOptions(BROWSER), frames, signal }),
+						async (acquired, signal) => {
+							reads.push({
+								category: 'session',
+								session: acquired,
+								mark: acquired.requests.length,
+							})
+							const options = {
+								prompt: PAGE_ASK.prompt,
+								url: `${acquired.fixture.url}${thread}`,
+								answers: `${acquired.fixture.url}${PAGE_ANSWER_PATH}`,
+								authorization: OBFUSCATED,
+							}
+							reads.push({
+								category: 'outcome',
+								outcome: await readOutcome(
+									acquired.page,
+									`page.ask(${JSON.stringify(options)})`,
+									isPageAskOutcome,
+									{ timeout: PAGE_BOUNDS.evaluate, signal },
+								),
+							})
+							reads.push({
+								category: 'markup',
+								markup: await readOutcome(
+									acquired.page,
+									"JSON.stringify(document.querySelectorAll('#asks > :not(li), #asks li *').length)",
+									isNumber,
+									{ timeout: PAGE_BOUNDS.read, signal },
+								),
+							})
+						},
+					).then(
+						() => undefined,
+						(failure: unknown) => String(failure),
+					)
+					const opened = reads.find((read) => read.category === 'session')
+					const requests = opened?.session.requests ?? []
+					const outcome = reads.find((read) => read.category === 'outcome')
+					const markup = reads.find((read) => read.category === 'markup')
+					const attempt: PageAskAttempt = {
+						...(outcome === undefined ? {} : { outcome: outcome.outcome }),
+						...(markup === undefined ? {} : { markup: markup.markup }),
+						page: requests
+							.slice(opened?.mark ?? 0)
+							.map((request) => `${request.method} ${new URL(request.url).pathname}`),
+						served:
+							opened?.session.fixture.requests.filter((request) => request.method === 'POST') ?? [],
+						daemon: [...daemon.requests],
+						receipts: frames.answers,
+						calls: recorder.calls,
+						messages: frames.threads.conversation(PAGE_ASK.thread)?.messages() ?? [],
+						errors: opened?.session.errors ?? [],
+						...(fault === undefined ? {} : { fault }),
+					}
+					attempts.push(attempt)
+					return attempt
+				},
+				acceptPageAsk,
+				{
+					attempts: PAGE_BOUNDS.launches,
+					budget: PAGE_BOUNDS.budget,
+				},
+			).then(
+				(accepted) => ({ accepted, failure: undefined }),
+				(failure: unknown) => ({ accepted: undefined, failure }),
+			)
+
+			// ── The request accounting, over EVERY retained attempt ───────────────────
+			// One prompt post and two answer posts per ask frame are the page's whole request
+			// window, zero asks included; each daemon request reports one usage frame.
+			for (const [index, attempt] of attempts.entries()) {
+				expect(attempt.fault, `attempt ${index}`).toBeUndefined()
+				const outcome = requireValue(attempt.outcome, `attempt ${index} retained no outcome`)
+				const asks = outcome.frames.filter((frame) => frame.category === 'ask').length
+				expect(attempt.page, `attempt ${index}`).toEqual([
+					`POST ${thread}`,
+					...Array.from({ length: asks * 2 }, () => `POST ${PAGE_ANSWER_PATH}`),
+				])
+				expect(attempt.daemon, `attempt ${index}`).toHaveLength(
+					outcome.frames.filter((frame) => frame.category === 'usage').length,
+				)
+				expect(attempt.errors, `attempt ${index}`).toEqual([])
+			}
+			if (retried.failure !== undefined) throw retried.failure
+			const settled = requireValue(
+				retried.accepted,
+				'the bounded retry returned no satisfied attempt',
+			)
+			const outcome = requireValue(settled.outcome, 'the satisfied attempt retained no outcome')
+
+			// ── The frames, in order, on a strict page parser ─────────────────────────
+			const categories = outcome.frames.map((frame) => frame.category)
+			expect(categories.indexOf('usage')).toBeGreaterThanOrEqual(0)
+			expect(categories.indexOf('ask')).toBeGreaterThan(categories.indexOf('usage'))
+			expect(categories.indexOf('tool')).toBeGreaterThan(categories.indexOf('ask'))
+			expect(categories.indexOf('finish')).toBe(categories.length - 1)
+			expect(outcome.frames.at(-1)).toMatchObject({ category: 'finish', partial: false })
+			const ask = requireValue(
+				outcome.frames.find((frame) => frame.category === 'ask'),
+				'the satisfied attempt reported no ask frame',
+			)
+			expect(ask.name).toBe('lookup')
+			expect(ask.zone).toBe('restricted')
+			// The frame's argument text is the call the tool then ran with.
+			const asked: unknown = JSON.parse(ask.arguments)
+			expect(asked).toEqual(settled.calls[0]?.[0])
+
+			// ── The approval, ahead of the tool ───────────────────────────────────────
+			expect(outcome.answers.slice(0, 2)).toEqual([204, 404])
+			expect(settled.receipts[0]?.executed).toBe(0)
+			expect(outcome.frames.find((frame) => frame.category === 'tool')).toMatchObject({
+				success: true,
+			})
+
+			// ── What the page wrote ───────────────────────────────────────────────────
+			expect(outcome.rendered[0]).toContain('lookup')
+			expect(settled.markup).toBe(0)
+
+			// ── The feedback, on the daemon's own wire ────────────────────────────────
+			const requested = requireValue(settled.daemon.at(0), 'the daemon recorded no request')
+			expect(requested.text).not.toContain(LOOKUP_DATUM)
+			const fed = requireValue(
+				settled.daemon.at(1),
+				'the daemon recorded no request after the call',
+			)
+			expect(
+				wireMessages(fed).some(
+					(message) => message.role === 'tool' && message.content.includes(LOOKUP_DATUM),
+				),
+			).toBe(true)
+
+			// ── The thread and the system text stay on the server ─────────────────────
+			expect(settled.messages[0]).toMatchObject({ role: 'user', content: PAGE_ASK.prompt })
+			const directive = JSON.stringify(PAGE_ASK.system).slice(1, -1)
+			expect(requested.text).toContain(directive)
+			expect(settled.served.some((request) => request.text.includes(directive))).toBe(false)
 		},
 		PAGE_BOUNDS.retry,
 	)

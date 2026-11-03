@@ -1,4 +1,4 @@
-import { computeReading, createSystemOneJudge, isJudgeError } from '@orkestrel/agent'
+import { measureAnswer, createSystemOneJudge, isJudgeError } from '@orkestrel/agent'
 import { createOllamaJudge } from '@src/core'
 import { beforeAll, expect, it } from 'vitest'
 import { JUDGE_NOUL_REQUEST, JUDGE_SYSTEM_REQUEST, MICA_SYSTEM } from '../setupServer.js'
@@ -25,10 +25,10 @@ it('reads Mica raw probabilities, native decision forms, and the Mica System One
 	const result = await judge.ask(JUDGE_NOUL_REQUEST, AbortSignal.timeout(120_000))
 	const answer = result.answers.deletion
 	if (answer === undefined) throw new Error('Mica refused the deletion question')
-	const reading = computeReading(answer)
-	expect(reading.winner).toBe('false')
+	const measure = measureAnswer(answer)
+	expect(measure.winner).toBe('false')
 	// The raw fixture reads No 0.990 against the desk's pinned 0.9884; 0.005 covers that observed gap.
-	expect(Math.abs(reading.probability - 0.9884)).toBeLessThanOrEqual(0.005)
+	expect(Math.abs(measure.probability - 0.9884)).toBeLessThanOrEqual(0.005)
 	expect(result.usage?.completion).toBe(1)
 
 	const native = createSystemOneJudge({
@@ -42,7 +42,7 @@ it('reads Mica raw probabilities, native decision forms, and the Mica System One
 	expect(decisions.answers.refund?.form).toBe('noul')
 	expect(decisions.answers.severity?.form).toBe('score')
 	for (const decision of Object.values(decisions.answers)) {
-		const observed = computeReading(decision)
+		const observed = measureAnswer(decision)
 		expect(observed.probability).toBeGreaterThanOrEqual(0)
 		expect(observed.probability).toBeLessThanOrEqual(1)
 	}

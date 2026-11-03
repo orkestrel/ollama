@@ -1187,6 +1187,30 @@ describe('driveAgent', () => {
 		expect(driven.result).toBe(settled)
 	})
 
+	it('buckets an ask chunk nowhere and keeps the usage it reports', async () => {
+		const usage = { prompt: 3, completion: 5, total: 8 }
+		const settled: AgentResult = { content: '', partial: false }
+		const stream = createScriptedAgentStream(
+			[
+				{ category: 'usage', usage, estimate: 2 },
+				{
+					category: 'ask',
+					call: { id: 'c1', name: 'lookup', arguments: { query: 'weather' } },
+					decision: { zone: 'restricted', verdict: 'ask' },
+				},
+			],
+			settled,
+		)
+
+		const driven = await driveAgent(stream)
+
+		expect(driven.tokens).toEqual([])
+		expect(driven.thoughts).toEqual([])
+		expect(driven.tools).toEqual([])
+		expect(driven.usages).toEqual([usage])
+		expect(driven.result).toBe(settled)
+	})
+
 	it('returns empty buckets for a stream with no chunks', async () => {
 		const settled: AgentResult = { content: '', partial: false }
 		const driven = await driveAgent(createScriptedAgentStream([], settled))

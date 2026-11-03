@@ -61,10 +61,10 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 	/**
 	 * Creates fresh NDJSON framing state for a call.
 	 *
-	 * @returns The parser that buffers incomplete Ollama records
+	 * @returns The strict parser that buffers incomplete Ollama records and refuses a line that is not a JSON object
 	 */
 	frame(): ProviderParserInterface {
-		return createNDJSONParser()
+		return createNDJSONParser({ strict: true })
 	}
 
 	/**

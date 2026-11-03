@@ -61,7 +61,7 @@ export function createChallengeTools(challenge: string, code: string): readonly 
  * @param content - The user message's text content
  * @returns A user-role message with a minted id
  */
-export function createUserMessage(content: string): Message {
+export function createUserMessage(content: string): Message & { readonly role: 'user' } {
 	return { id: crypto.randomUUID(), role: 'user', content }
 }
 
@@ -84,7 +84,9 @@ export function createUserMessage(content: string): Message {
  * // [{ role: 'user', content: 'Small talk turn 0: ...' }, { role: 'assistant', content: 'Small talk turn 1: ...' }]
  * ```
  */
-export function buildTurns(count: number): readonly Message[] {
+export function buildTurns(
+	count: number,
+): ReadonlyArray<Message & { readonly role: 'user' | 'assistant' }> {
 	return Array.from({ length: Math.ceil(count) }, (_, index) => {
 		const role = index % 2 === 0 ? 'user' : 'assistant'
 		const content =

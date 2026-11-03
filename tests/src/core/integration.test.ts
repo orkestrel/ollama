@@ -71,7 +71,6 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
-				parser: createNDJSONParser,
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const messages: readonly Message[] = [{ id: 'question', role: 'user', content: 'Hello' }]
@@ -124,7 +123,6 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
-				parser: createNDJSONParser,
 				headers: () => ({ authorization: 'Bearer wrong-token' }),
 			})
 			const error = await browser
@@ -149,7 +147,6 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
-				parser: createNDJSONParser,
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const stream = browser.stream([], abort.signal)
@@ -184,7 +181,6 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
-				parser: createNDJSONParser,
 				headers: () => ({ authorization: OBFUSCATED }),
 				fetch: wire.fetch,
 			})
@@ -219,7 +215,6 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
-				parser: createNDJSONParser,
 				headers: () => ({ authorization: OBFUSCATED }),
 				fetch: wire.fetch,
 			})
@@ -244,6 +239,68 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		}
 	}, 3000)
 
+	it('a daemon line the strict frame refuses crosses the relay as the fixed public error frame', async () => {
+		const wire = createRecordingTransport()
+		const server = await createRelayServer(
+			createOllama({
+				model: 'fixture-model',
+				fetch: createStreamingTransport([
+					'{"message":{"content":"first"}}\n',
+					'fixture-daemon-private-text\n',
+				]),
+			}),
+		)
+		try {
+			const browser = createRelayProvider({
+				url: `${server.url}/inference`,
+				headers: () => ({ authorization: OBFUSCATED }),
+				fetch: wire.fetch,
+			})
+			const stream = browser.stream([], AbortSignal.timeout(2000))
+			expect(await stream.next()).toEqual({
+				done: false,
+				value: { channel: 'content', text: 'first' },
+			})
+			const error = await stream.next().catch((failure: unknown) => failure)
+			expect(isProviderError(error)).toBe(true)
+			expect(isProviderAbortError(error)).toBe(false)
+			expect(error).toMatchObject({ code: 'PROVIDER', message: 'relay provider failed' })
+			expect(String(error)).not.toContain('fixture-daemon-private-text')
+			expect(createNDJSONParser().parse(wire.chunks.join(''))).toEqual([
+				{ channel: 'content', text: 'first' },
+				{ channel: 'error', message: 'relay provider failed' },
+			])
+		} finally {
+			await server.stop()
+		}
+	}, 3000)
+
+	it('answers 422 for a page tool the relay does not declare and never enters the daemon transport', async () => {
+		const daemon = createRecordingTransport(createStreamingTransport(RELAY_DAEMON_CHUNKS))
+		const server = await createRelayServer(
+			createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
+		)
+		try {
+			const browser = createRelayProvider({
+				url: `${server.url}/inference`,
+				headers: () => ({ authorization: OBFUSCATED }),
+			})
+			const undeclared = {
+				name: 'undeclared_tool',
+				description: 'A tool no relay declares.',
+				parameters: { type: 'object', properties: {} },
+			}
+			const error = await browser
+				.generate([], AbortSignal.timeout(2000), [undeclared])
+				.catch((failure: unknown) => failure)
+			expect(isProviderError(error)).toBe(true)
+			expect(error).toMatchObject({ code: 'HTTP', status: 422 })
+			expect(daemon.requests).toEqual([])
+		} finally {
+			await server.stop()
+		}
+	})
+
 	it('advertises a function tool and replays returned calls in a following tool message', async () => {
 		const daemon = createRecordingTransport(createStreamingTransport(RELAY_DAEMON_CHUNKS))
 		const server = await createRelayServer(
@@ -252,7 +309,6 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
-				parser: createNDJSONParser,
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const signal = AbortSignal.timeout(2000)
@@ -496,7 +552,7 @@ describe('Conversation framing (provider-behavior) — the TIGHTENED recap prefi
 describe('Conversation.reference (provider-behavior) — cross-conversation attribution (provenance not bled)', () => {
 	// Conversation A is ACTIVE (a one-fact A-context: "we are debugging auth"); a SEPARATE
 	// conversation B's reference() — carrying a B-fact ("the team chose Postgres") — is written
-	// into A's ACTIVE WORKSPACE (the SOLE document context build() folds into the system block).
+	// into A's ACTIVE WORKSPACE (the SOLE document context build() folds into the context message).
 	// Assertion strategy: the DETERMINISTIC reference-block content is
 	// still asserted directly, and the "surfaces + attributes" model-output claim is replaced with a
 	// provider-behavior assertion — the recorded request body the provider sends carries the
@@ -623,13 +679,14 @@ describe('Conversation.reference (provider-behavior) — cherry-pick ONE relevan
 // Hermetic context-assembly order tests use a deliberately unreachable upstream.
 // `AgentContext.build()` emits one
 // leading system message joining [system prompt, '## Instructions' (descending priority,
-// stable ties), '## Workspace' (active workspace text files)], then the conversation as
-// subsequent messages. The recording proxy captures the exact request body before the
-// unreachable forward fails, so the suite passes with the daemon down.
+// stable ties)], then a context message, role `user`, opening with '## Workspace' (active
+// workspace text files), then the conversation as subsequent messages. The recording proxy
+// captures the exact request body before the unreachable forward fails, so the suite passes
+// with the daemon down.
 
 describe('AgentContext (hermetic provider behavior) — canonical assembly order on the wire', () => {
 	it(
-		'the context assembles system, instructions, workspace, then conversation',
+		'the context assembles system, instructions, the workspace context message, then conversation',
 		async () => {
 			const request = await captureOpenRequest(
 				SCENARIO_PROVIDER,
@@ -652,16 +709,19 @@ describe('AgentContext (hermetic provider behavior) — canonical assembly order
 			const text = systemText(request)
 			const systemIndex = text.indexOf('SENTINEL-SYSTEM-PROMPT-7182')
 			const instructionsIndex = text.indexOf('## Instructions')
-			const workspaceIndex = text.indexOf('## Workspace')
 			expect(systemIndex).toBeGreaterThanOrEqual(0)
 			expect(instructionsIndex).toBeGreaterThan(systemIndex)
-			expect(workspaceIndex).toBeGreaterThan(instructionsIndex)
+			expect(text).not.toContain('## Workspace')
 
 			const messages = wireMessages(request)
+			const context = messages[1]
+			expect(context?.role).toBe('user')
+			expect(context?.content.startsWith('## Workspace')).toBe(true)
+			expect(context?.content).toContain('workspace filler text')
 			const userIndex = messages.findIndex(
 				(message) => message.role === 'user' && message.content.includes('What is the weather?'),
 			)
-			expect(userIndex).toBeGreaterThan(0)
+			expect(userIndex).toBeGreaterThan(1)
 			const [first] = messages
 			expect(first?.content.includes('What is the weather?')).toBe(false)
 		},
@@ -727,7 +787,7 @@ describe('AgentContext (hermetic provider behavior) — canonical assembly order
 			const text = systemText(request)
 			expect(text).toContain('SENTINEL-ONLY-SYSTEM-4291')
 			expect(text).not.toContain('## Instructions')
-			expect(text).not.toContain('## Workspace')
+			expect(wireText(request)).not.toContain('## Workspace')
 		},
 		CASE_TIMEOUT,
 	)
@@ -789,7 +849,7 @@ describe('AgentContext scope (provider-behavior) — an instructions allow-list 
 
 describe('AgentContext scope (provider-behavior) — a files allow-list filters the workspace section', () => {
 	it(
-		'a files allow-list omits unlisted workspace files from the system block',
+		'a files allow-list omits unlisted workspace files from the context message',
 		async () => {
 			const request = await captureOpenRequest(
 				SCENARIO_PROVIDER,
@@ -835,12 +895,15 @@ describe('AgentContext scope (provider-behavior) — an empty allow-list drops t
 				const agent = createAgent(provider, { tools, scope, timeout: CASE_TIMEOUT })
 				agent.context.messages.add({ role: 'user', content: 'Hello.' })
 
-				agent.generate().catch(() => {})
+				const refused = agent.generate().catch(() => {})
 				await waitForRequest(proxy, 1)
 				const emptyRequest = proxy.requests[0]
 				expect(emptyRequest).toBeDefined()
 				expect(emptyRequest === undefined ? [] : wireTools(emptyRequest)).toEqual([])
 
+				// One conversation runs one live run: the second call waits for the first to settle,
+				// because the proxy recorded the request before the refused upstream ended that run.
+				await refused
 				agent.context.apply(undefined)
 				agent.generate().catch(() => {})
 				await waitForRequest(proxy, 2)
@@ -866,7 +929,7 @@ describe('AgentContext scope (provider-behavior) — an empty allow-list drops t
 
 describe('AgentContext workspaces (hermetic provider behavior) — large-context injection', () => {
 	it(
-		'a many-file workspace fences every text file into the system block in insertion order',
+		'a many-file workspace fences every text file into the context message in insertion order',
 		async () => {
 			// Recipe: FAST_OPTIONS — the response outcome is irrelevant; the proxy records the
 			// request before forwarding. fillWorkspace's defaults (count:12, bytesEach:700) keep the
@@ -887,7 +950,11 @@ describe('AgentContext workspaces (hermetic provider behavior) — large-context
 				createOllama,
 			)
 
-			const text = systemText(request)
+			const context = wireMessages(request).find((message) =>
+				message.content.startsWith('## Workspace'),
+			)
+			expect(context?.role).toBe('user')
+			const text = context?.content ?? ''
 			expect(text).toContain('## Workspace')
 			expect(text).toContain('File: doc-01.md')
 			expect(text).toContain('THE-SENTINEL-VALUE-4471')
@@ -931,7 +998,7 @@ describe('AgentContext workspaces (hermetic provider behavior) — large-context
 			// Recipe: FAST_OPTIONS. One text file + one image file (seated through the workspace
 			// constructor `seed` — the only way to seat a non-text/binary file per
 			// WorkspaceOptions.seed's documented contract) are placed in the active workspace. The text file's content must
-			// fence into the system block; the image's base64 payload must never appear as fenced
+			// fence into the context message; the image's base64 payload must never appear as fenced
 			// text in any wire message content.
 			const request = await captureSettledRequest(
 				SCENARIO_PROVIDER,

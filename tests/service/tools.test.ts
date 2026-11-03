@@ -197,7 +197,7 @@ describe('Agent tool loop (live) — authority denial blocks execution', () => {
 					{
 						match: (context) => context.call.name === 'lookup',
 						zone: 'restricted',
-						allowed: false,
+						verdict: 'deny',
 						reason: 'denied for test',
 					},
 				],

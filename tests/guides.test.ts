@@ -48,7 +48,7 @@ await new GuideCommand({
 	// The setup module resolves only under the runner, so it loads inside this callback.
 	const { createOllamaInstructionFormat } = await import('./setupServer.js')
 	const {
-		computeReading,
+		measureAnswer,
 		createAgent,
 		createInstructionManager,
 		createSystemOneJudge,
@@ -58,7 +58,6 @@ await new GuideCommand({
 		isJudgeAbortError,
 		JudgeError,
 	} = await import('@orkestrel/agent')
-	const { createNDJSONParser } = await import('@orkestrel/ndjson')
 	const { createDispatcher } = await import('@orkestrel/router')
 	const { captureError, createRecorder, requireValue } = await import('@orkestrel/test')
 	const barrel = await import('@src/core')
@@ -263,7 +262,7 @@ await new GuideCommand({
 			}
 			expect(result.usage).toEqual({ prompt: 276, completion: 2, total: 278 })
 			const answer = requireValue(result.answers.deletion, 'Missing answer')
-			expect(computeReading(answer).probability).toBeCloseTo(0.9899737974147249, 12)
+			expect(measureAnswer(answer).probability).toBeCloseTo(0.9899737974147249, 12)
 			expect(
 				extractTopLogprobs({
 					logprobs: [
@@ -445,8 +444,8 @@ await new GuideCommand({
 			const result = await judge.ask(request, new AbortController().signal)
 			const answer = result.answers.deletion
 			if (answer === undefined) throw new Error('Missing deletion answer')
-			expect(computeReading(answer).winner).toBe('false')
-			expect(computeReading(answer).probability).toBeCloseTo(0.99, 3)
+			expect(measureAnswer(answer).winner).toBe('false')
+			expect(measureAnswer(answer).probability).toBeCloseTo(0.99, 3)
 			expect(transport.requests[0]?.body.prompt).toBe(JUDGE_WIRE_NOUL.prompt)
 		})
 
@@ -499,13 +498,13 @@ await new GuideCommand({
 			expect(transport.requests).toHaveLength(1)
 			expect(transport.requests[0]?.path).toBe('/v1/systemone')
 			expect(transport.requests[0]?.body).toEqual(JUDGE_WIRE_SYSTEM)
-			const readings = Object.fromEntries(
-				Object.entries(result.answers).map(([id, answer]) => [id, computeReading(answer)]),
+			const measures = Object.fromEntries(
+				Object.entries(result.answers).map(([id, answer]) => [id, measureAnswer(answer)]),
 			)
-			expect(readings.label?.winner).toBe('bug')
-			expect(readings.label?.confidence).toBeCloseTo(0.9536250219153858, 12)
-			expect(readings.refund?.probability).toBeCloseTo(0.9978973674111222, 12)
-			expect(readings.severity?.score).toBeCloseTo(0.9919248376139791, 12)
+			expect(measures.label?.winner).toBe('bug')
+			expect(measures.label?.confidence).toBeCloseTo(0.9536250219153858, 12)
+			expect(measures.refund?.probability).toBeCloseTo(0.9978973674111222, 12)
+			expect(measures.severity?.score).toBeCloseTo(0.9919248376139791, 12)
 		})
 
 		it('executes Inspect the raw judge wire', () => {
@@ -700,7 +699,6 @@ await new GuideCommand({
 			try {
 				const browser = createRelayProvider({
 					url: `${server.url}/inference`,
-					parser: createNDJSONParser,
 					headers: () => ({ authorization: OBFUSCATED }),
 				})
 
@@ -737,7 +735,6 @@ await new GuideCommand({
 			})
 			const browser = createRelayProvider({
 				url: 'https://app.example.com/inference',
-				parser: createNDJSONParser,
 				headers: () => ({ authorization: 'Bearer wrong' }),
 				fetch: (input, init) => dispatcher.handle(new Request(input, init), undefined),
 			})
@@ -764,7 +761,7 @@ await new GuideCommand({
 			expect(guideText).toContain('const port = await server.start()')
 			expect(guideText).toContain('await server.stop()')
 			expect(guideText).toContain('const browser = createRelayProvider({')
-			expect(guideText).toContain('parser: createNDJSONParser,')
+			expect(guideText).not.toContain('parser: createNDJSONParser,')
 		})
 
 		// `guides/ollama.md` § Narrowing a failed call with `isProviderError`: a non-OK status

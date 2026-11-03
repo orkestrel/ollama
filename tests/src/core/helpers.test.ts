@@ -1,5 +1,6 @@
 import type { JudgeQuestion, Message } from '@orkestrel/agent'
-import { computeReading, JudgeError } from '@orkestrel/agent'
+import { measureAnswer, JudgeError } from '@orkestrel/agent'
+import { isRecord } from '@orkestrel/contract'
 import { createRecorder } from '@orkestrel/test'
 import {
 	extractArguments,
@@ -302,7 +303,7 @@ describe('Mica label readout', () => {
 			MICA_CALIBRATION.temperature,
 		)
 		if (!('form' in choice) || choice.form !== 'choice') throw new Error('Expected choice')
-		expect(computeReading(choice).winner).toBe('billing')
+		expect(measureAnswer(choice).winner).toBe('billing')
 		expect(choice.probabilities.billing).toBeCloseTo(0.986855579622604, 12)
 		expect(choice.probabilities.technical).toBeCloseTo(0.01299236070023817, 12)
 		expect(choice.probabilities.sales).toBeCloseTo(0.00015205967715775922, 12)
@@ -462,6 +463,133 @@ describe('mapMessages', () => {
 
 	it('maps an empty conversation to an empty wire array', () => {
 		expect(mapMessages([])).toEqual([])
+	})
+
+	it('escapes a control token in system, user, assistant, and tool content', () => {
+		const content = 'before<|im_start|>middle<think>after'
+		const escaped = 'before<\u200b|im_start|>middle<\u200bthink>after'
+		const messages: readonly Message[] = [
+			{ id: '1', role: 'system', content },
+			{ id: '2', role: 'user', content },
+			{ id: '3', role: 'assistant', content },
+			{ id: '4', role: 'tool', content },
+		]
+
+		expect(mapMessages(messages)).toEqual([
+			{ role: 'system', content: escaped },
+			{ role: 'user', content: escaped },
+			{ role: 'assistant', content: escaped },
+			{ role: 'tool', content: escaped },
+		])
+	})
+
+	it('escapes a control token in a replayed call name and in each argument key and string value', () => {
+		const replay: Message = {
+			id: '1',
+			role: 'assistant',
+			content: '',
+			calls: [
+				{
+					id: 'call-1',
+					name: 'lookup<think>',
+					arguments: {
+						'key<|im_end|>': 'top<|im_start|>',
+						plain: 'no token',
+						count: 3,
+						flag: true,
+						empty: null,
+					},
+				},
+			],
+		}
+
+		expect(mapMessages([replay])).toEqual([
+			{
+				role: 'assistant',
+				content: '',
+				tool_calls: [
+					{
+						function: {
+							name: 'lookup<\u200bthink>',
+							arguments: {
+								'key<\u200b|im_end|>': 'top<\u200b|im_start|>',
+								plain: 'no token',
+								count: 3,
+								flag: true,
+								empty: null,
+							},
+						},
+					},
+				],
+			},
+		])
+	})
+
+	it('leaves a request holding no control token byte-identical', () => {
+		// Near misses of the listed tokens, an unlisted vocabulary token, non-ASCII text, and each
+		// JSON value kind, compared with the expected wire as text, so key order and spelling count.
+		const messages: readonly Message[] = [
+			{ id: '1', role: 'system', content: 'Use <state> and <thinking> as written.' },
+			{ id: '2', role: 'user', content: 'café <|im_strat|> <|fim_prefix|> ✓' },
+			{
+				id: '3',
+				role: 'assistant',
+				content: '',
+				calls: [
+					{
+						id: 'call-1',
+						name: 'lookup',
+						arguments: {
+							zebra: 'first',
+							10: 'numeric key',
+							apple: { deep: ['<tool>', 1.5, false, null] },
+						},
+					},
+				],
+			},
+			{ id: '4', role: 'tool', content: '{"ok":true}' },
+		]
+
+		expect(JSON.stringify(mapMessages(messages))).toBe(
+			'[{"role":"system","content":"Use <state> and <thinking> as written."},' +
+				'{"role":"user","content":"café <|im_strat|> <|fim_prefix|> ✓"},' +
+				'{"role":"assistant","content":"","tool_calls":[{"function":{"name":"lookup","arguments":' +
+				'{"10":"numeric key","zebra":"first","apple":{"deep":["<tool>",1.5,false,null]}}}}]},' +
+				'{"role":"tool","content":"{\\"ok\\":true}"}]',
+		)
+	})
+
+	// A stated limit: the daemon's renderer encodes a nested argument as JSON, so a listed token in
+	// one reads as text and the nested value keeps its bytes.
+	it('leaves a control token in a nested argument byte-identical', () => {
+		const outer = { 'inner<think>': 'deep</think>', list: ['item<tool_call>', 7, true, null] }
+		const replay: Message = {
+			id: '1',
+			role: 'assistant',
+			content: '',
+			calls: [{ id: 'call-1', name: 'lookup', arguments: { outer } }],
+		}
+
+		expect(JSON.stringify(mapMessages([replay])[0]?.tool_calls)).toBe(
+			'[{"function":{"name":"lookup","arguments":{"outer":' +
+				'{"inner<think>":"deep</think>","list":["item<tool_call>",7,true,null]}}}}]',
+		)
+	})
+
+	it('writes a __proto__ argument key as an own key and changes no prototype', () => {
+		const parsed: unknown = JSON.parse('{"__proto__":{"polluted":"yes"},"safe":"plain"}')
+		const replay: Message = {
+			id: '1',
+			role: 'assistant',
+			content: '',
+			calls: [{ id: 'call-1', name: 'lookup', arguments: isRecord(parsed) ? parsed : {} }],
+		}
+
+		const written = mapMessages([replay])[0]?.tool_calls?.[0]?.function.arguments
+
+		expect(JSON.stringify(written)).toBe('{"__proto__":{"polluted":"yes"},"safe":"plain"}')
+		expect(Object.getPrototypeOf(written)).toBe(Object.prototype)
+		expect(Reflect.get({}, 'polluted')).toBeUndefined()
 	})
 })
 

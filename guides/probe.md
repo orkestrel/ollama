@@ -393,19 +393,18 @@ only a verdict you assembled by hand and passed to `computeReceipt` yourself.
 than the message beside it. **A `claimant` issue is a tool's diagnostic about a candidate draft,
 and nothing else. Every other claimant fault is a throw.** That invariant is what lets one union
 serve both an issue and a failure: without it, a caller's own mistake — a test path no project
-collects, a `Claim.project` path that escapes the workspace — would arrive as a `claimant`
+collects, a `Claim.project` path that resolves outside the workspace — would arrive as a `claimant`
 issue and satisfy the condition that a test which never ran must never satisfy. A `workspace` issue
 carries the target tree's own defect, such as a symbolic link in a mutation path, a mutation path
 whose existing components cannot be inspected, a specification directory the target tree blocks
 probe from creating, a Vitest project the root configuration declares as a path string, into which
 the runtime stage can install no overlay, or a covered module the workspace's own configuration
-served before the runtime overlay. An `instrument` issue carries this package's own
-message about an inspection that did not complete — a specification it could not write, after its
-directory exists, for a reason the target tree does not own, a module that ran no test, or a covered
-module probe's own loader received and did not resolve.
-`formatIssue` renders the value first as `[claimant]`, `[workspace]`, or `[instrument]`, so the
-ownership survives `formatVerdict`. A clean runtime stage result means every collected test
-passed, not that the module reported itself passed.
+served before the runtime overlay. An `instrument` issue carries this package's own message about an
+inspection that did not complete — a specification it could not write, after its directory exists,
+for a reason the target tree does not own, a module that ran no test, or a covered module probe's
+own loader received and did not resolve. `formatIssue` renders the value first as `[claimant]`,
+`[workspace]`, or `[instrument]`, so the ownership survives `formatVerdict`. A clean runtime stage
+result means every collected test passed, not that the module reported itself passed.
 
 **A diagnostic about a project belongs to the workspace.** The compiler reports a configuration
 fault — a JSON syntax error, an option it cannot apply, a `types` entry or an extended project it
@@ -468,17 +467,17 @@ and does not match the contract it is read against, `destroyed` builds a replace
 teardown is permanent, and `deadline` changes the budget or the work it bounds. Neither axis is
 derivable from the other. These are the pairs this package raises:
 
-| Party        | Code        | Raised when                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| ------------ | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claimant`   | `refused`   | An input is rejected: a path escaping the workspace, a caller-supplied name the host refuses to inspect or create — an overlong component and one carrying a NUL byte are the shapes this package meets — a claim the tool guard rejects, a control repeating the case's candidate drafts and test byte for byte, a candidate naming no scoped project, a caller-named project whose diagnostic names no file, or a lint inspection its caller supplied no bound for. |
-| `claimant`   | `missing`   | The declared test path names no configured Vitest project, or names one the root configuration does not define.                                                                                                                                                                                                                                                                                                                                                       |
-| `claimant`   | `destroyed` | A probe, a server, or a stage is used after its `destroy`.                                                                                                                                                                                                                                                                                                                                                                                                            |
-| `claimant`   | `deadline`  | `ProbeOptions.deadline` expired while the stage was performing claimant-owned work, so the claim outran the budget. That stage was replaced before the next inspection began. The lint stage raises the same pair on its own when the bound its caller supplied stops a diagnostics wait, and a coordinator that armed that bound replaces the pair with its own refusal.                                                                                             |
-| `workspace`  | `refused`   | A mutation path crosses a symbolic link in the target tree.                                                                                                                                                                                                                                                                                                                                                                                                           |
-| `workspace`  | `missing`   | The target tree does not install a tool probe resolves from it, or publishes no binary under that tool's name.                                                                                                                                                                                                                                                                                                                                                        |
-| `workspace`  | `malformed` | The target tree publishes something probe cannot read: an unparsable manifest, a `bin` entry that is not a path, a TypeScript project its own compiler refuses, an unsupported tool version, a mutation path whose existing components cannot be inspected, or a directory it blocks probe from creating for the boot workbench.                                                                                                                                      |
-| `instrument` | `malformed` | probe's own tooling could not serve: a boot control that did not report red, a language server frame it could not parse, a schema or verdict of its own it could not validate.                                                                                                                                                                                                                                                                                        |
-| `instrument` | `deadline`  | A stage was not performing claimant-owned work when its budget expired, or a language server did not answer its teardown exchange within the stage's own bound.                                                                                                                                                                                                                                                                                                       |
+| Party        | Code        | Raised when                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| ------------ | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `claimant`   | `refused`   | An input is rejected: a path resolving outside the workspace, a caller-supplied name the host refuses to inspect or create — an overlong component and one carrying a NUL byte are the shapes this package meets — a claim the tool guard rejects, a control repeating the case's candidate drafts and test byte for byte, a candidate naming no scoped project, a caller-named project whose diagnostic names no file, or a lint inspection its caller supplied no bound for. |
+| `claimant`   | `missing`   | The declared test path names no configured Vitest project, or names one the root configuration does not define.                                                                                                                                                                                                                                                                                                                                                                |
+| `claimant`   | `destroyed` | A probe, a server, or a stage is used after its `destroy`.                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `claimant`   | `deadline`  | `ProbeOptions.deadline` expired while the stage was performing claimant-owned work, so the claim outran the budget. That stage was replaced before the next inspection began. The lint stage raises the same pair on its own when the bound its caller supplied stops a diagnostics wait, and a coordinator that armed that bound replaces the pair with its own refusal.                                                                                                      |
+| `workspace`  | `refused`   | A mutation path crosses a symbolic link in the target tree.                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `workspace`  | `missing`   | The target tree does not install a tool probe resolves from it, or publishes no binary under that tool's name.                                                                                                                                                                                                                                                                                                                                                                 |
+| `workspace`  | `malformed` | The target tree publishes something probe cannot read: an unparsable manifest, a `bin` entry that is not a path, a TypeScript project its own compiler refuses, an unsupported tool version, a mutation path whose existing components cannot be inspected, or a directory it blocks probe from creating for the boot workbench.                                                                                                                                               |
+| `instrument` | `malformed` | probe's own tooling could not serve: a boot control that did not report red, a language server frame it could not parse, a schema or verdict of its own it could not validate.                                                                                                                                                                                                                                                                                                 |
+| `instrument` | `deadline`  | A stage was not performing claimant-owned work when its budget expired, or a language server did not answer its teardown exchange within the stage's own bound.                                                                                                                                                                                                                                                                                                                |
 
 A TypeScript project whose JSON the compiler cannot parse reaches you as that `workspace` and
 `malformed` pair, carrying the compiler's own diagnostic, the stage, and the project you named in
@@ -873,8 +872,8 @@ itself.
 The project digest is the digest of the `compilerOptions` member of `tsc --showConfig -p <project>`,
 read against the mirrored copy of the project with the mirror as the current directory, so the
 digest and the check read one set of files. `computeWorkspaceDigest` canonicalizes the record: a
-relative path the project declares that escapes the workspace root resolves against the mirror's
-own ancestors, and the mirror carries nothing such a path names. It still **moves with the
+relative path the project declares that points outside the workspace root resolves against the
+mirror's own ancestors, and the mirror carries nothing such a path names. It still **moves with the
 TypeScript version**, because a compiler decides which options it resolves and how it spells them.
 That is contained rather than surprising: the token already names `typescript@<version>`, so any
 policy pinning a digest already pins the version.
@@ -907,8 +906,8 @@ rather than as a limit on the token.
 
 ## What containment reaches
 
-Containment is not one rule, and the difference between its rules decides what a hostile claim can
-do.
+Containment is not one rule, and the difference between its rules decides what an untrusted claim
+can do.
 
 **Every path a claim carries is contained lexically.** `isDraft` refuses an absolute `Draft.path`
 and one that traverses out of the workspace, and `resolveWorkspaceFile` refuses the same shapes
@@ -958,12 +957,15 @@ indeterminate answer preserves the resource; only confirmed absence permits the 
 **A read is contained lexically only, and that is the reach to plan for.** The mirror carries
 regular files inside the workspace only: a symbolic link is not carried, so a file reached only
 through one is absent from the mirror and the compiler reports what its absence causes, as a
-claimant issue like any other. A candidate path beneath an in-workspace symbolic link resolves to a
+claimant issue like any other. Of the workspace-root `tmp/` directory the mirror carries only
+`tmp/probes/`, because the scaffold tmp layout keeps nothing else there that an inspection reads,
+and a consumer's ignored data must never be read or copied; the match is the lowercase `tmp`
+spelling exactly, and a `tmp` directory below the root is walked like any other. A candidate path beneath an in-workspace symbolic link resolves to a
 file outside the workspace, and Oxlint, which reads the workspace directly rather than a mirror of
 it, inspects it there. A `Claim.project` that reaches outside the workspace through `extends`,
 `files`, `include`, or project references reaches nothing there: the type stage reads a project
-against the mirror, so an escaping relative path resolves against the mirror's own ancestors, and
-the mirror carries nothing such a path names.
+against the mirror, so a relative path that points outside the workspace resolves against the
+mirror's own ancestors, and the mirror carries nothing such a path names.
 
 Measured on 2026-08-20: with `link` a symbolic link to a directory outside the workspace,
 `isDraft({ path: 'link/secret.ts', text })` returns `true`,
@@ -1239,7 +1241,7 @@ server, and the supervising Codex process remained present; no synthetic load wa
   the package declares, what `verdict.digest` covers, and the flagship claim run for its receipt.
 - [`helpers.test.ts`](../tests/src/core/helpers.test.ts) — the formatters, the receipt token's
   conditions, and the generated specification's marker.
-- [`validators.test.ts`](../tests/src/core/validators.test.ts) — every guard against hostile shapes,
+- [`validators.test.ts`](../tests/src/core/validators.test.ts) — every guard against malformed shapes,
   including the draft path the advertised schema admits and the guard refuses.
 - [`errors.test.ts`](../tests/src/core/errors.test.ts) — the failure guard against lookalikes and a
   duplicate copy of the package, and every failure path a test can drive without a resident tool,

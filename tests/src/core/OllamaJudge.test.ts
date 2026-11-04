@@ -91,14 +91,35 @@ describe('OllamaJudge', () => {
 			).rejects.toMatchObject({
 				code: 'QUESTION',
 				message: expect.stringMatching(/^judge error: question invalid /),
-				cause: expect.objectContaining({
-					code: 'QUESTION',
-					message: expect.stringMatching(/^judge error: [a-z]/),
-				}),
 			})
 			expect(transport.signals).toEqual([])
 		},
 	)
+	it('keeps the wire error as the cause of a refusal the engine passed on', async () => {
+		const judge = new OllamaJudge({ model: 'mica', system: MICA_SYSTEM })
+
+		await expect(
+			judge.ask(
+				{
+					state: 'state',
+					questions: {
+						invalid: {
+							form: 'score',
+							criteria: ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10'],
+						},
+					},
+				},
+				new AbortController().signal,
+			),
+		).rejects.toMatchObject({
+			code: 'QUESTION',
+			message: expect.stringMatching(/^judge error: question invalid /),
+			cause: expect.objectContaining({
+				code: 'QUESTION',
+				message: expect.stringMatching(/^judge error: [a-z]/),
+			}),
+		})
+	})
 	it('sends truncate:false by default and truncate:true as the opt-out, which the identity records', () => {
 		const refusing = new OllamaJudge({ model: 'mica', system: MICA_SYSTEM })
 		const cutting = new OllamaJudge({ model: 'mica', system: MICA_SYSTEM, truncate: true })
@@ -196,7 +217,7 @@ describe('OllamaJudge', () => {
 				expect.objectContaining({
 					code: 'QUESTION',
 					message: expect.stringContaining(path),
-					cause: {
+					context: {
 						faults: expect.arrayContaining([expect.objectContaining({ path: [path] })]),
 					},
 				}),
@@ -215,6 +236,45 @@ describe('OllamaJudge', () => {
 					calibration: Object.assign({ temperature: 1 }, { tempreture: 1 }),
 				}),
 		).toThrow(expect.objectContaining({ message: expect.stringContaining('tempreture') }))
+	})
+	it('passes the engine answer door with a choice keyed __proto__', async () => {
+		const judge = new OllamaJudge({
+			model: 'mica',
+			system: MICA_SYSTEM,
+			fetch: createStreamingTransport([
+				JSON.stringify({
+					done: true,
+					logprobs: [
+						{
+							top_logprobs: [
+								{ token: 'A', logprob: 0 },
+								{ token: 'B', logprob: -1 },
+							],
+						},
+					],
+					prompt_eval_count: 1,
+					eval_count: 1,
+				}),
+			]),
+		})
+
+		const result = await judge.ask(
+			{
+				state: 'state',
+				questions: {
+					team: {
+						form: 'choice',
+						instructions: 'Which fits?',
+						criteria: { ['__proto__']: 'first', other: 'second' },
+					},
+				},
+			},
+			new AbortController().signal,
+		)
+		const answer = result.answers.team
+		if (answer?.form !== 'choice') throw new Error('Missing choice')
+
+		expect(Object.keys(answer.probabilities).toSorted()).toEqual(['__proto__', 'other'])
 	})
 	it('keeps later answers and sums spent usage when a preceding question is refused', async () => {
 		const transport = createRecordingTransport(

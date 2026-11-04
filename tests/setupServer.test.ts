@@ -582,7 +582,7 @@ describe('dedicated daemon protocol infrastructure', () => {
 describe('createRelayServer', () => {
 	it('records accepted and refused request fields and mounts the authenticated inference route', async () => {
 		const daemon = createRecordingTransport(
-			createStreamingTransport(['{"message":{"content":"answer"}}\n']),
+			createStreamingTransport(['{"message":{"content":"answer"}}\n', '{"done":true}\n']),
 		)
 		const server = await createRelayServer(
 			createOllama({ model: 'fixture-model', fetch: daemon.fetch }),
@@ -1216,7 +1216,7 @@ describe('buildRelayRoute', () => {
 
 	it('appends every inbound request, accepted or refused, to the log it was given', async () => {
 		const daemon = createRecordingTransport(
-			createStreamingTransport(['{"message":{"content":"answer"}}\n']),
+			createStreamingTransport(['{"message":{"content":"answer"}}\n', '{"done":true}\n']),
 		)
 		const log = new RequestLog()
 		const dispatcher = createDispatcher<Record<string, never>>()
@@ -1981,7 +1981,7 @@ describe('createPageFixture', () => {
 
 	it('mounts the same authenticated relay route the relay server mounts when given a provider', async () => {
 		const daemon = createRecordingTransport(
-			createStreamingTransport(['{"message":{"content":"answer"}}\n']),
+			createStreamingTransport(['{"message":{"content":"answer"}}\n', '{"done":true}\n']),
 		)
 		const fixture = await createPageFixture({
 			document: PAGE_DOCUMENT,
@@ -7019,17 +7019,21 @@ describe('store fixtures', () => {
 				tools,
 				turns: ['Look up the kettle twice.', 'Look up the kettle once more.'],
 			})
+			// The call the model makes after the tools are gone is fed back as a denial, never a final
+			// answer, so the turn asks once more before it ends on the text.
 			expect(daemon.requests.map(wireTools)).toEqual([
 				STORE_REFUSAL_TOOLS,
 				STORE_REFUSAL_TOOLS,
 				STORE_REFUSAL_TOOLS,
 				STORE_REFUSAL_TOOLS,
 				[],
+				[],
 			])
 			expect(conversation.calls.map((call) => [call.name, call.success])).toEqual([
 				['lookup', true],
 				['lookup', true],
 				['lookup', true],
+				['fail', false],
 			])
 			expect(conversation.ended).toBe(1)
 			expect(conversation.result).toMatchObject({ partial: false })

@@ -29,7 +29,7 @@ import {
  * every body before inference, bounds calls, and preserves completed answers on abort.
  * The model identity includes the tag, system prompt, calibration, effective options, and render revision.
  * Every body sends `truncate`, `false` by default, so a prompt over the context window refuses. The
- * constructor refuses malformed options with code `QUESTION`, listing every fault.
+ * constructor refuses malformed options with code `QUESTION`, listing every fault in `context.faults`.
  *
  * @example Ask Mica a noul
  * ```ts
@@ -82,7 +82,7 @@ export class OllamaJudge extends AgentJudge implements AgentJudgeInterface {
 			throw new JudgeError(
 				'QUESTION',
 				`judge error: refused options\n${describeFaults(faults, ollamaJudgeOptionsContract.schema)}`,
-				{ cause: { faults } },
+				{ context: { faults } },
 			)
 		const {
 			model,

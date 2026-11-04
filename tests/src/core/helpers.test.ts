@@ -1,5 +1,5 @@
 import type { JudgeQuestion, Message } from '@orkestrel/agent'
-import { measureAnswer, JudgeError } from '@orkestrel/agent'
+import { measureAnswer, JudgeError, scanJudgmentTies } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
 import { createRecorder } from '@orkestrel/test'
 import {
@@ -35,6 +35,7 @@ import {
 	buildClosingList,
 	buildRepeatedTokenCases,
 	createUserMessage,
+	JUDGE_TIE_CASES,
 	NON_ADJACENT_DUPLICATE_TOP,
 	TIMING_FIELDS,
 	TIMING_HOSTILE,
@@ -636,6 +637,37 @@ describe('mapMessages', () => {
 		expect(JSON.stringify(written)).toBe('{"__proto__":{"polluted":"yes"},"safe":"plain"}')
 		expect(Object.getPrototypeOf(written)).toBe(Object.prototype)
 		expect(Reflect.get({}, 'polluted')).toBeUndefined()
+	})
+})
+
+describe('computeAnswer against the judge write door', () => {
+	it.each(JUDGE_TIE_CASES)(
+		'answers %s with what the door holds',
+		(_label, question, top, temperature) => {
+			const answer = computeAnswer(question, top, temperature)
+			if ('missing' in answer) throw new Error(`Refused: ${answer.missing.join(', ')}`)
+
+			expect(scanJudgmentTies(question, answer)).toEqual([])
+		},
+	)
+
+	// The control: the door refuses what a wrong wire would have produced, so an empty report above is a result.
+	it('reports a choice that leaves a criterion out, a score of the wrong length, and a value past 1', () => {
+		expect(
+			scanJudgmentTies(
+				{ form: 'choice', criteria: { billing: null, bug: null } },
+				{ form: 'choice', probabilities: { billing: 1 } },
+			),
+		).toHaveLength(1)
+		expect(
+			scanJudgmentTies(
+				{ form: 'score', criteria: ['Low', 'High'] },
+				{ form: 'score', probabilities: [1] },
+			),
+		).toHaveLength(1)
+		expect(
+			scanJudgmentTies({ form: 'noul', instructions: 'Is it?' }, { form: 'noul', noul: 2 }),
+		).toHaveLength(1)
 	})
 })
 

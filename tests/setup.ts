@@ -611,7 +611,7 @@ export const JUDGE_TIE_CASES: ReadonlyArray<
 	],
 	[
 		'the largest score',
-		{ form: 'score', criteria: Array.from({ length: 10 }, (_, index) => `Level ${index}`) },
+		{ form: 'score', criteria: ['L0', 'L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9'] },
 		Array.from('ABCDEFGHIJ', (token, index) => ({ token, logprob: -index })),
 		1,
 	],

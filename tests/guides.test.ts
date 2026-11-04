@@ -246,7 +246,7 @@ await new GuideCommand({
 			})
 			const result = await judge.ask(
 				{
-					state: '',
+					state: 'state',
 					questions: {
 						deletion: { form: 'noul', instructions: 'Delete it?' },
 						permission: { form: 'noul', instructions: 'May it proceed?' },
@@ -310,7 +310,7 @@ await new GuideCommand({
 			})
 			const result = await judge.ask(
 				{
-					state: '',
+					state: 'state',
 					questions: {
 						routing: {
 							form: 'choice',
@@ -339,7 +339,7 @@ await new GuideCommand({
 				await expect(
 					judge.ask(
 						{
-							state: '',
+							state: 'state',
 							questions: {
 								valid: { form: 'noul', instructions: 'Is it valid?' },
 								invalid: question,
@@ -411,7 +411,7 @@ await new GuideCommand({
 			const error: unknown = await judge
 				.ask(
 					{
-						state: '',
+						state: 'state',
 						questions: {
 							permission: { form: 'noul', instructions: 'May it proceed?' },
 							routing: { form: 'noul', instructions: 'Is it routed?' },

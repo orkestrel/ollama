@@ -7,7 +7,7 @@ import { OllamaJudge } from './OllamaJudge.js'
  * Creates a Mica judge that reads calibrated candidate probabilities from raw Ollama logprobs.
  * @param options - The model tag, training system prompt, calibration, and transport settings
  * @returns A judge backed by Ollama's non-streaming generate endpoint
- * @throws JudgeError Thrown with code `QUESTION` for invalid calibration or malformed options
+ * @throws JudgeError Thrown with code `QUESTION` for invalid calibration, or for malformed options, with every fault in `context.faults`
  * @example
  * ```ts
  * import { createOllamaJudge } from '@orkestrel/ollama'

@@ -6,13 +6,13 @@ import type {
 	OllamaModel,
 } from './types.js'
 import type { OllamaTiming } from '@src/core'
-import { arrayOf, isRecord, isString, parseJSONAs } from '@orkestrel/contract'
+import { arrayOf, isRecord, isString, objectOf, parseJSONAs } from '@orkestrel/contract'
 import { mergePlatformEnvironment } from '@orkestrel/process/server'
 import { createHash } from 'node:crypto'
 import { extractTiming } from '@src/core'
 import { OLLAMA_METADATA_BYTES, OLLAMA_METADATA_TIMEOUT } from './constants.js'
 import { isOllamaError, OllamaError } from './errors.js'
-import { isOllamaModel, isOllamaOrigin } from './validators.js'
+import { isOllamaOrigin } from './validators.js'
 
 /**
  * Checks whether every key of a record is one the declaration names.
@@ -115,6 +115,10 @@ export function verifyOllamaVersion(value: unknown, expected: string): void {
 
 /**
  * Verifies every declared model against a complete metadata inventory.
+ * @remarks
+ * The reply is foreign: a real entry carries `model`, `modified_at`, `size`, and `details` beside the
+ * two fields this compares, and the inventory lists models no declaration names. So each entry passes an
+ * open guard on those two fields, and only a declaration meets the exact `isOllamaModel` guard.
  * @param value - The parsed tags reply
  * @param models - The caller's exact model identities
  * @returns Nothing after every declared digest matches
@@ -125,7 +129,7 @@ export function verifyOllamaVersion(value: unknown, expected: string): void {
  * ```
  */
 export function verifyOllamaModels(value: unknown, models: readonly OllamaModel[]): void {
-	if (!isRecord(value) || !arrayOf(isOllamaModel)(value.models))
+	if (!isRecord(value) || !arrayOf(objectOf({ name: isString, digest: isString }))(value.models))
 		throw new OllamaError('Malformed model metadata', { code: 'metadata' })
 	const inventory = value.models
 	for (const model of models) {

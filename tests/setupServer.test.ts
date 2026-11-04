@@ -105,6 +105,7 @@ import {
 	createDaemonPeer,
 	createRechunkingTransport,
 	DAEMON_MODEL,
+	DAEMON_UNLOAD_REPLY,
 	DAEMON_VERSION,
 	DAEMON_DECLARATION,
 	DAEMON_SERVICE_REFUSALS,
@@ -529,9 +530,7 @@ describe('dedicated daemon protocol infrastructure', () => {
 			if (response.body === null) throw new Error('Missing re-chunked body')
 			const chunks = await collectStream(response.body)
 			expect(chunks.every((chunk) => chunk.byteLength === 1)).toBe(true)
-			expect(Buffer.concat(chunks).toString()).toBe(
-				'{"model":"fixture:雪","done":true,"eval_count":0}',
-			)
+			expect(Buffer.concat(chunks).toString()).toBe(DAEMON_UNLOAD_REPLY)
 			expect(sent.calls).toEqual([['record'], ['send']])
 			expect(await requests.calls[0]?.[0].text()).toBe('雪')
 			const empty = await createRechunkingTransport(() => Promise.resolve(new Response(null)))(
@@ -562,11 +561,25 @@ describe('dedicated daemon protocol infrastructure', () => {
 				version: DAEMON_VERSION,
 			})
 			await expect((await fetch(`${peer.url}/api/tags`)).json()).resolves.toEqual({
-				models: [DAEMON_MODEL],
+				models: [
+					expect.objectContaining({
+						...DAEMON_MODEL,
+						model: DAEMON_MODEL.name,
+						modified_at: expect.any(String),
+						size: expect.any(Number),
+						details: expect.objectContaining({ format: 'gguf' }),
+					}),
+				],
 			})
 			await expect(
 				(await fetch(`${peer.url}/api/generate`, { method: 'POST', body: 'exact-request' })).json(),
-			).resolves.toEqual({ model: 'selected-control', done: true, eval_count: 0 })
+			).resolves.toEqual({
+				model: 'selected-control',
+				created_at: expect.any(String),
+				response: '',
+				done: true,
+				done_reason: 'unload',
+			})
 			expect(peer.requests).toEqual([
 				{ path: '/api/version', body: '' },
 				{ path: '/api/tags', body: '' },

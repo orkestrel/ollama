@@ -10,10 +10,12 @@ import {
 	retainOllamaBytes,
 	verifyOllamaModels,
 	verifyOllamaVersion,
+	isOllamaModel,
 } from '@src/server'
 import {
 	createDaemonPeer,
 	createRechunkingTransport,
+	buildDaemonInventory,
 	DAEMON_MODEL,
 	DAEMON_UNLOAD_REPLY,
 	DAEMON_VERSION,
@@ -159,6 +161,35 @@ describe('daemon protocol helpers', () => {
 		expect(() => verifyOllamaModels({ models: [{ name: 7 }] }, [DAEMON_MODEL])).toThrow(
 			expect.objectContaining({ code: 'metadata' }),
 		)
+	})
+
+	// The reply is foreign and a declaration is owned, so one entry must pass the reader and refuse the guard.
+	it('reads only the name and digest of a real inventory, and leaves the declaration guard exact', () => {
+		const inventory = buildDaemonInventory([
+			{ name: 'undeclared:latest', digest: 'undeclared-digest' },
+			DAEMON_MODEL,
+		])
+
+		expect(() => verifyOllamaModels(inventory, [DAEMON_MODEL])).not.toThrow()
+		expect(isOllamaModel(inventory.models[1])).toBe(false)
+	})
+
+	it('still compares a real inventory entry, and refuses one whose two read fields are malformed', () => {
+		expect(() =>
+			verifyOllamaModels(buildDaemonInventory([{ ...DAEMON_MODEL, digest: 'other' }]), [
+				DAEMON_MODEL,
+			]),
+		).toThrow(expect.objectContaining({ code: 'model' }))
+		for (const entry of [
+			{ name: DAEMON_MODEL.name, size: 7 },
+			{ digest: DAEMON_MODEL.digest, size: 7 },
+			{ ...DAEMON_MODEL, digest: 7 },
+			'fixture',
+		]) {
+			expect(() => verifyOllamaModels({ models: [entry] }, [DAEMON_MODEL])).toThrow(
+				expect.objectContaining({ code: 'metadata' }),
+			)
+		}
 	})
 
 	it('accepts a version reply delayed past 1500 ms within the declared bound', async () => {

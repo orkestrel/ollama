@@ -19,8 +19,9 @@ import type { TokenUsage } from '@orkestrel/budget'
 import type { RecorderInterface } from '@orkestrel/test'
 import type { FenceError, FenceObservation, StreamFenceCase } from './setup.js'
 import type { DistributionResolution } from './setupDistribution.js'
+import type { ModelResponse } from 'ollama'
 import type { OllamaOptions } from '@src/core'
-import type { OllamaDaemonOptions } from '@src/server'
+import type { OllamaDaemonOptions, OllamaModel } from '@src/server'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { RouteInput } from '@orkestrel/router'
 import type { ServerInterface } from '@orkestrel/server'
@@ -2394,6 +2395,46 @@ export const DAEMON_VERSION = '0.40.8'
 /** Declares the exact model inventory entry the dedicated protocol peer advertises. */
 export const DAEMON_MODEL = Object.freeze({ name: 'fixture:雪', digest: 'fixture-digest' })
 
+/** Represents one `/api/tags` entry on the wire: the official client's `ModelResponse`, whose `Date` fields JSON carries as text, without the `/api/ps` fields. */
+export type DaemonInventoryEntry = Omit<
+	ModelResponse,
+	'modified_at' | 'expires_at' | 'size_vram'
+> & {
+	readonly modified_at: string
+}
+
+/**
+ * Builds a `/api/tags` reply as a real daemon sends it, so a proof reads every field a reader must leave alone.
+ *
+ * @param models - The name and digest of each entry
+ * @returns The reply, each entry carrying `model`, `modified_at`, `size`, and `details` beside those two
+ * @example
+ * ```ts
+ * buildDaemonInventory([DAEMON_MODEL]).models[0]?.size // 2147483648
+ * ```
+ */
+export function buildDaemonInventory(models: readonly OllamaModel[]): {
+	readonly models: readonly DaemonInventoryEntry[]
+} {
+	return {
+		models: models.map(({ name, digest }) => ({
+			name,
+			model: name,
+			modified_at: '2026-10-23T14:08:45.7014834Z',
+			size: 2147483648,
+			digest,
+			details: {
+				parent_model: '',
+				format: 'gguf',
+				family: 'qwen3',
+				families: ['qwen3'],
+				parameter_size: '2B',
+				quantization_level: 'Q4_K_M',
+			},
+		})),
+	}
+}
+
 /** Declares distinct fixture identities for ordered maintenance proofs. */
 export const DAEMON_MODELS = Object.freeze([
 	DAEMON_MODEL,
@@ -2446,7 +2487,8 @@ export const DAEMON_SENDERS = Object.freeze(['collaborator', 'global'] as const)
 export const DAEMON_REFUSED_PATHS = Object.freeze(['/api/version', '/api/tags', '/api/generate'])
 
 /** Preserves the fixture's successful unload reply independently of the daemon's reader. */
-export const DAEMON_UNLOAD_REPLY = '{"model":"fixture:雪","done":true,"eval_count":0}'
+export const DAEMON_UNLOAD_REPLY =
+	'{"model":"fixture:雪","created_at":"2026-10-23T14:08:45.7014834Z","response":"","done":true,"done_reason":"unload"}'
 
 /**
  * Re-chunks a real transport's response into single bytes while recording requests before send.
@@ -2703,8 +2745,16 @@ export class DaemonPeer {
 				request.url === '/api/version'
 					? { version: this.#options.version ?? DAEMON_VERSION }
 					: request.url === '/api/tags'
-						? { models: this.#options.models ?? [DAEMON_MODEL] }
-						: { model: this.#options.unload ?? DAEMON_MODEL.name, done: true, eval_count: 0 },
+						? this.#options.models === undefined
+							? buildDaemonInventory([DAEMON_MODEL])
+							: { models: this.#options.models }
+						: {
+								model: this.#options.unload ?? DAEMON_MODEL.name,
+								created_at: '2026-10-23T14:08:45.7014834Z',
+								response: '',
+								done: true,
+								done_reason: 'unload',
+							},
 			),
 		)
 	}

@@ -74,7 +74,7 @@ describe('OllamaDaemon lifecycle', () => {
 							const response = Buffer.from(
 								record.model.name === DAEMON_MODEL.name
 									? DAEMON_UNLOAD_REPLY
-									: '{"model":"fixture:cedar","done":true,"eval_count":0}',
+									: DAEMON_UNLOAD_REPLY.replace('fixture:雪', 'fixture:cedar'),
 							)
 							expect(record.request).toEqual({
 								content: expected.toString('base64'),
@@ -90,7 +90,8 @@ describe('OllamaDaemon lifecycle', () => {
 							})
 							expect(record.status).toBe(200)
 							expect(record.error).toBeUndefined()
-							expect(record.timing?.counts.decode).toBe(0)
+							expect(record.timing?.counts.decode).toBeUndefined()
+							expect(record.timing?.invalid).toEqual([])
 						}
 						expect(globals.calls).toEqual(
 							sender === 'collaborator' ? [] : requests.calls.map(([request]) => [request.url]),

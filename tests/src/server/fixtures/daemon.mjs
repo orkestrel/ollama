@@ -9,6 +9,24 @@ const origin = new URL(`http://${process.env.OLLAMA_HOST}`)
 const models = process.env.FIXTURE_MODELS
 	? JSON.parse(process.env.FIXTURE_MODELS)
 	: [{ name: 'fixture:雪', digest: mode === 'digest' ? 'wrong-digest' : 'fixture-digest' }]
+// A real daemon's inventory: each entry carries more than a name and a digest, and it lists models no declaration names.
+const inventory = [...models, { name: 'undeclared:latest', digest: 'undeclared-digest' }].map(
+	({ name, digest }) => ({
+		name,
+		model: name,
+		modified_at: '2026-10-23T14:08:45.7014834Z',
+		size: 2147483648,
+		digest,
+		details: {
+			parent_model: '',
+			format: 'gguf',
+			family: 'qwen3',
+			families: ['qwen3'],
+			parameter_size: '2B',
+			quantization_level: 'Q4_K_M',
+		},
+	}),
+)
 if (origin.hostname !== '127.0.0.1' || origin.port === '11434' || origin.port === '') {
 	throw new Error('The fixture requires a dedicated loopback port')
 }
@@ -57,7 +75,7 @@ if (mode === 'sentinel' || mode === 'runner') {
 				request.url === '/api/version'
 					? { version: mode === 'version' ? 'wrong-version' : '0.40.8' }
 					: request.url === '/api/tags'
-						? { models }
+						? { models: inventory }
 						: {
 								model:
 									process.env.FIXTURE_UNLOAD && existsSync(process.env.FIXTURE_UNLOAD)
@@ -65,8 +83,10 @@ if (mode === 'sentinel' || mode === 'runner') {
 										: mode === 'unload'
 											? 'other-model'
 											: JSON.parse(Buffer.concat(chunks).toString()).model,
+								created_at: '2026-10-23T14:08:45.7014834Z',
+								response: '',
 								done: true,
-								eval_count: 0,
+								done_reason: 'unload',
 							},
 			),
 		)
@@ -84,7 +104,7 @@ if (mode === 'sentinel' || mode === 'runner') {
 		server.listen(Number(origin.port), origin.hostname, () => {
 			if (mode !== 'silence')
 				process.stderr.write(
-					`time=2026 level=INFO msg="Listening on 127.0.0.1:${origin.port} (version 0.40.8)"\n`,
+					`time=2026-10-23T14:08:45.701Z level=INFO source=routes.go:1615 msg="Listening on 127.0.0.1:${origin.port} (version 0.40.8)"\n`,
 				)
 		})
 	}

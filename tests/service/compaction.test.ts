@@ -15,6 +15,7 @@ import {
 	buildTurns,
 	CASE_TIMEOUT,
 	countRequestCharacters,
+	createAllowAuthority,
 	createChallengeTools,
 	createUserMessage,
 	estimateRequestMessages,
@@ -153,6 +154,7 @@ describe('Agent (live) — automatic compaction folds an older exchange mid-run'
 								system:
 									'You MUST call the lookup_code tool to obtain the secret access code, then state the code in your final reply. Never invent a code.',
 								tools,
+								authority: createAllowAuthority(),
 								conversations,
 								window: createBudget({ max: 48, consumer: estimateRequestMessages }),
 								timeout: CASE_TIMEOUT,
@@ -281,6 +283,7 @@ describe('Agent (live) — dependent lookups cause repeated mid-run compaction',
 								system:
 									'You MUST first call lookup_challenge. Wait for its result, then call lookup_secret with the returned challenge. State the secret code in your final reply. Never invent a challenge or code.',
 								tools,
+								authority: createAllowAuthority(),
 								conversations,
 								window: createBudget({ max: 40, consumer: estimateRequestMessages }),
 								timeout: CASE_TIMEOUT,

@@ -24,6 +24,7 @@ describe('Agent tool loop (live) — an allow rule lets the tool execute', () =>
 						verdict: 'allow',
 					},
 				],
+				fallback: { zone: 'default', verdict: 'allow' },
 			})
 
 			const { driven, executed, denied } = await retryUntil(
@@ -88,6 +89,7 @@ describe('Agent tool loop (live) — a rule that throws during evaluation fails 
 						verdict: 'deny',
 					},
 				],
+				fallback: { zone: 'default', verdict: 'allow' },
 			})
 
 			const { driven, executed, denied } = await retryUntil(
@@ -149,6 +151,7 @@ describe('Agent tool loop (live) — no matching rule falls back to default allo
 						verdict: 'deny',
 					},
 				],
+				fallback: { zone: 'default', verdict: 'allow' },
 			})
 
 			const { driven, executed, denied } = await retryUntil(

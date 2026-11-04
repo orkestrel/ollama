@@ -3,7 +3,7 @@ import { createAgent } from '@orkestrel/agent'
 import { createRecorder, retryUntil } from '@orkestrel/test'
 import { createToolManager } from '@orkestrel/tool'
 import { describe, expect, it } from 'vitest'
-import { CASE_TIMEOUT } from '../setup.js'
+import { CASE_TIMEOUT, createAllowAuthority } from '../setup.js'
 import { createLookupTool } from '../setupServer.js'
 import { ABORT_OPTIONS, createLiveOllama, RETRY_BUDGET, STREAM_OPTIONS } from '../setupService.js'
 
@@ -269,6 +269,7 @@ describe('Agent (live) — a per-run limit override reaches the loop', () => {
 					const agent = createAgent(createLiveOllama(), {
 						system: 'You MUST call the lookup tool with query "datum" immediately.',
 						tools,
+						authority: createAllowAuthority(),
 						timeout: CASE_TIMEOUT,
 						on: { exhaust: (turns) => exhaustRecorder.handler(turns) },
 					})

@@ -4,7 +4,7 @@ import { createToolManager } from '@orkestrel/tool'
 import type { ToolCall } from '@orkestrel/tool'
 import { createOllama } from '@src/core'
 import { describe, expect, it } from 'vitest'
-import { CASE_TIMEOUT } from '../setup.js'
+import { CASE_TIMEOUT, createAllowAuthority } from '../setup.js'
 import {
 	createInsatiableTool,
 	createLookupTool,
@@ -47,6 +47,7 @@ describe('Agent tool loop (live) — dispatch by name', () => {
 						system:
 							'You MUST call the lookup tool with query "datum" to answer. Never call the fail tool.',
 						tools,
+						authority: createAllowAuthority(),
 						timeout: CASE_TIMEOUT,
 						limit: 4,
 					})
@@ -101,6 +102,7 @@ describe('Agent tool loop (live) — tool-result feedback reaches the wire', () 
 							system:
 								'You MUST call the lookup tool with query "datum" to answer, then state the exact returned value in your final reply.',
 							tools,
+							authority: createAllowAuthority(),
 							timeout: CASE_TIMEOUT,
 							limit: 4,
 						})
@@ -154,6 +156,7 @@ describe('Agent tool loop (live) — a thrown tool error is isolated', () => {
 						system:
 							'You are a tool-calling harness. Your ONLY permitted first action is calling the fail tool with any arguments. Do not answer in text before calling it.',
 						tools,
+						authority: createAllowAuthority(),
 						timeout: CASE_TIMEOUT,
 						limit: 4,
 					})
@@ -201,6 +204,7 @@ describe('Agent tool loop (live) — authority denial blocks execution', () => {
 						reason: 'denied for test',
 					},
 				],
+				fallback: { zone: 'default', verdict: 'allow' },
 			})
 
 			const { driven, executed, denied } = await retryUntil(
@@ -270,6 +274,7 @@ describe('Agent tool loop (live) — turn-limit exhaustion', () => {
 					const agent = createAgent(createLiveOllama(), {
 						system: 'You MUST call the lookup tool with query "datum" immediately.',
 						tools,
+						authority: createAllowAuthority(),
 						limit: 1,
 						timeout: CASE_TIMEOUT,
 						on: {
@@ -341,6 +346,7 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 					system:
 						'You MUST call the more tool right now. Do not write any text response. After every single tool result you receive, immediately call the more tool again — never write a text answer, only call the more tool, every turn without exception.',
 					tools,
+					authority: createAllowAuthority(),
 					limit: 2,
 					timeout: CASE_TIMEOUT,
 					on: {
@@ -396,6 +402,7 @@ describe('Agent tool loop (live) — default limit exhaustion under sustained pr
 					system:
 						'You have a mission to fetch ALL 12 chunks of the requested data. You MUST call the more tool right now. Do not write any text response. After every single tool result you receive, immediately call the more tool again to get the next chunk — never write a text answer, only call the more tool, every turn without exception, until all 12 chunks have arrived.',
 					tools,
+					authority: createAllowAuthority(),
 					// A default-limit (10-turn) sustained round-trip needs far longer than the
 					// file's 60s CASE_TIMEOUT (tuned for 1-4 turn tests) — bounded well under the
 					// per-it 360_000ms timeout instead.
@@ -449,6 +456,7 @@ describe('Agent tool loop (live) — a single turn carries multiple tool calls',
 						system:
 							'You MUST call BOTH the lookup tool (with query "datum") AND the more tool in the SAME turn, immediately, before saying anything else.',
 						tools,
+						authority: createAllowAuthority(),
 						timeout: CASE_TIMEOUT,
 						limit: 2,
 					})

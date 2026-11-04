@@ -677,7 +677,9 @@ A provider and a judge send `truncate: false`, so the daemon refuses a prompt ov
 
 Set `AgentOptions.window` to fold the conversation before the provider call, raise `options.num_ctx`, or set `truncate: true` to let the daemon cut the prompt. Set `window` well under `num_ctx`: real prompt tokens ran 1.23 to 1.78 times `estimateTokens` on the same daemon, and an over-window request refuses.
 
-The default changes the request body, so `StudyOllamaReplay` refuses a recorded prefix made before it. That is a new replay lineage, which you screen first by the Ollama rule before you record it.
+The default changes the request body, so `StudyOllamaReplay` refuses a recorded prefix made before it. That is a new replay lineage, so screen the model and the daemon again before you record it, as you would after a daemon change.
+
+A refusal keeps the `HTTP` code and the 400 status, so the following fence narrows it as any other failed call.
 
 ```ts
 import { isProviderError } from '@orkestrel/agent'

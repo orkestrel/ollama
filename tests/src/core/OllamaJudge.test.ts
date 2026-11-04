@@ -135,6 +135,17 @@ describe('OllamaJudge', () => {
 			},
 		)
 	})
+	it('leaves another status that names the context as the daemon said it', async () => {
+		const judge = new OllamaJudge({
+			model: 'mica',
+			system: MICA_SYSTEM,
+			fetch: createErrorTransport(500, OLLAMA_CONTEXT_REFUSAL),
+		})
+
+		await expect(judge.ask(JUDGE_NOUL_REQUEST, new AbortController().signal)).rejects.toMatchObject(
+			{ message: `judge error: 500 - ${OLLAMA_CONTEXT_REFUSAL}` },
+		)
+	})
 	it('leaves a 400 that names no context as the daemon said it', async () => {
 		const judge = new OllamaJudge({
 			model: 'mica',

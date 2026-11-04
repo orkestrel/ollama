@@ -131,6 +131,15 @@ import {
 } from '@orkestrel/browser'
 import { createFileBrowserJourneyStore, createFileBrowserRunStore } from '@orkestrel/browser/server'
 import { createContract, schemaToShape } from '@orkestrel/contract'
+import { ollamaDaemonContract, ollamaDaemonShape } from '@src/server'
+
+/** Builds the daemon contract and shape pairs for the standing check. */
+export function buildOllamaDaemonContractCases() {
+	return [
+		{ name: 'daemon contract', wire: ollamaDaemonContract },
+		{ name: 'daemon shape', wire: createContract(ollamaDaemonShape) },
+	]
+}
 import { createScratch, readInventory } from '@orkestrel/test/server'
 import { createToolManager } from '@orkestrel/tool'
 

@@ -13,6 +13,30 @@ import type { Logprob, OllamaTiming } from '@src/core'
 import { createAuthority, estimateMessages } from '@orkestrel/agent'
 import { isString } from '@orkestrel/contract'
 import { createTool } from '@orkestrel/tool'
+import {
+	ollamaOptionsContract,
+	ollamaOptionsShape,
+	ollamaJudgeOptionsContract,
+	ollamaJudgeOptionsShape,
+} from '@src/core'
+
+/** Builds the serializable options pairs for the standing check. */
+export function buildOllamaContractCases() {
+	return [
+		{
+			name: 'provider',
+			wire: ollamaOptionsContract,
+			shape: ollamaOptionsShape,
+			positive: { model: 'cedar' },
+		},
+		{
+			name: 'judge',
+			wire: ollamaJudgeOptionsContract,
+			shape: ollamaJudgeOptionsShape,
+			positive: { model: 'mica', system: 'Judge the state.' },
+		},
+	]
+}
 
 /**
  * Creates dependent lookup tools that reveal a code only for the returned challenge.

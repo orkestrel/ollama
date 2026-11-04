@@ -20,6 +20,9 @@ import {
 import { describe, expect, it } from 'vitest'
 
 describe('daemon declaration validators', () => {
+	it('refuses a relative workspace as a semantic condition', () => {
+		expect(isOllamaDaemonOptions({ ...DAEMON_DECLARATION, workspace: 'relative' })).toBe(false)
+	})
 	it('accepts a complete dedicated declaration', () => {
 		const options = DAEMON_DECLARATION
 		expect(isOllamaDaemonOptions(options)).toBe(true)

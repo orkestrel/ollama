@@ -11,9 +11,8 @@ import type {
 import type { ToolDefinition } from '@orkestrel/tool'
 import type { OllamaOptions, WireChatRequest } from './types.js'
 import { AgentProvider, isProviderError, ProviderError } from '@orkestrel/agent'
-import { preview } from '@orkestrel/contract'
+import { describeFaults, preview } from '@orkestrel/contract'
 import { createNDJSONParser } from '@orkestrel/ndjson'
-import { describeFaults } from '@orkestrel/tool'
 import {
 	DEFAULT_KEEP_ALIVE,
 	DEFAULT_OLLAMA_URL,

@@ -1,8 +1,7 @@
 import type { AgentJudgeInterface, JudgeRequest, JudgeResult } from '@orkestrel/agent'
 import type { OllamaJudgeOptions, WireGenerateRequest } from './types.js'
 import { AgentJudge, isJudgeError, isProviderError, JudgeError } from '@orkestrel/agent'
-import { isObject, preview } from '@orkestrel/contract'
-import { describeFaults } from '@orkestrel/tool'
+import { describeFaults, isObject, preview } from '@orkestrel/contract'
 import {
 	DEFAULT_KEEP_ALIVE,
 	DEFAULT_OLLAMA_URL,

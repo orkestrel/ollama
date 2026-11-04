@@ -7,6 +7,7 @@ import { createToolManager } from '@orkestrel/tool'
 import { OLLAMA_CHAT_PATH, OllamaProvider } from '@src/core'
 import {
 	CASE_TIMEOUT,
+	createAllowAuthority,
 	createUserMessage,
 	LONG_ANSWER_PROMPT,
 	SHORT_ANSWER_PROMPT,
@@ -87,6 +88,7 @@ describe('Agent budget (live) — an exhausted token budget trips the loop', () 
 							'You MUST call the lookup tool with query "test" to obtain the reference datum, ' +
 							'then state it in your final reply. Never invent a value.',
 						tools,
+						authority: createAllowAuthority(),
 						budget,
 						limit: 4,
 						timeout: CASE_TIMEOUT,
@@ -345,7 +347,7 @@ describe('Agent model layer (live) — the model ends an answer at its own token
 	)
 
 	it(
-		'an oversized prompt is silently truncated by default without a provider truncation flag or agent stop',
+		'an oversized prompt refuses by default and names the remedy, and truncate: true cuts it without a flag or a stop',
 		async () => {
 			const messages = [
 				createUserMessage('Background material. '.repeat(1024)),
@@ -357,12 +359,24 @@ describe('Agent model layer (live) — the model ends an answer at its own token
 				url: OLLAMA_CONFIG.host,
 				options: { num_ctx: 8192, num_predict: 256, temperature: 0 },
 			})
-			const provider = new OllamaProvider({
+			const refusing = new OllamaProvider({
 				model: OLLAMA_CONFIG.model,
 				url: OLLAMA_CONFIG.host,
 				options: { num_ctx: 512, num_predict: 256, temperature: 0 },
 			})
-			expect(provider.encode({ messages })).not.toHaveProperty('truncate')
+			const provider = new OllamaProvider({
+				model: OLLAMA_CONFIG.model,
+				url: OLLAMA_CONFIG.host,
+				options: { num_ctx: 512, num_predict: 256, temperature: 0 },
+				truncate: true,
+			})
+			await expect(
+				refusing.generate(messages, AbortSignal.timeout(CASE_TIMEOUT)),
+			).rejects.toMatchObject({
+				code: 'HTTP',
+				status: 400,
+				message: expect.stringContaining('set truncate: true to let the daemon cut it'),
+			})
 			const full = await control.generate(messages, AbortSignal.timeout(CASE_TIMEOUT))
 			const generated = await provider.generate(messages, AbortSignal.timeout(CASE_TIMEOUT))
 			const complete = full.usage
@@ -415,6 +429,7 @@ describe('Agent usage (live) — multi-turn usage accumulates across provider ca
 							'You MUST call the lookup tool with query "test" to obtain the reference datum, ' +
 							'then state it in your final reply. Never invent a value.',
 						tools,
+						authority: createAllowAuthority(),
 						limit: 4,
 						timeout: CASE_TIMEOUT,
 					})

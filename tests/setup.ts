@@ -1,9 +1,15 @@
-import type { Message, ProviderDelta, ProviderRequest, ProviderResult } from '@orkestrel/agent'
+import type {
+	AuthorityInterface,
+	Message,
+	ProviderDelta,
+	ProviderRequest,
+	ProviderResult,
+} from '@orkestrel/agent'
 import type { RecorderInterface } from '@orkestrel/test'
 import type { ToolContext, ToolDefinition, ToolInterface } from '@orkestrel/tool'
 import type { WorkspaceInterface } from '@orkestrel/workspace'
 import type { Logprob, OllamaTiming } from '@src/core'
-import { estimateMessages } from '@orkestrel/agent'
+import { createAuthority, estimateMessages } from '@orkestrel/agent'
 import { isString } from '@orkestrel/contract'
 import { createTool } from '@orkestrel/tool'
 
@@ -13,7 +19,7 @@ import { createTool } from '@orkestrel/tool'
  * @param challenge - The opaque value the first lookup returns
  * @param code - The code the second lookup returns for the correct challenge
  * @returns The challenge lookup followed by the secret lookup
- * @throws TypeError - Thrown when the secret lookup receives a missing or incorrect challenge.
+ * @throws TypeError - Thrown when the secret lookup receives an incorrect challenge.
  * @example
  * ```ts
  * const tools = createChallengeTools('opaque-challenge', '7193')
@@ -44,6 +50,20 @@ export function createChallengeTools(challenge: string, code: string): readonly 
 			},
 		}),
 	]
+}
+
+/**
+ * Creates the authority a proof passes when every call its agent advertises runs, because an agent
+ * built with tools refuses to construct without one.
+ *
+ * @returns An authority with no rules and an allowing fallback
+ * @example
+ * ```ts
+ * createAllowAuthority().evaluate({ call: { id: '1', name: 'lookup', arguments: {} } }).verdict // 'allow'
+ * ```
+ */
+export function createAllowAuthority(): AuthorityInterface {
+	return createAuthority({ fallback: { zone: 'default', verdict: 'allow' } })
 }
 
 // ── Agent data-stub factory (real shape, not a mock) ─────────────────────────
@@ -328,16 +348,23 @@ export const TIMING_HOSTILE: readonly unknown[] = Object.freeze<unknown[]>([
 	[5],
 ])
 
-/** Holds the unchanged default encoded chat prefix for context-control proofs. */
+/** Holds the encoded chat prefix the context switches follow, for context-control proofs. */
 export const OLLAMA_CONTEXT_PREFIX =
 	'{"model":"test-model","messages":[{"role":"user","content":"hi"}],"stream":true,"keep_alive":"5m","think":false'
+
+/** Holds the encoded suffix of a body that sets no context switch: `truncate` alone, at its default. */
+export const OLLAMA_CONTEXT_DEFAULT = ',"truncate":false'
+
+/** Holds the body of the daemon's refusal of a prompt over its window, read from Ollama 0.40.14 on 2026-11-04. */
+export const OLLAMA_CONTEXT_REFUSAL =
+	'{"error":"request (3245 tokens) exceeds the available context size (2048 tokens), try increasing it"}'
 
 /** Holds independent and paired native chat context switches with their expected wire suffixes. */
 export const OLLAMA_CONTEXT_CASES = Object.freeze([
 	{ name: 'truncate false', control: { truncate: false }, suffix: ',"truncate":false' },
 	{ name: 'truncate true', control: { truncate: true }, suffix: ',"truncate":true' },
-	{ name: 'shift false', control: { shift: false }, suffix: ',"shift":false' },
-	{ name: 'shift true', control: { shift: true }, suffix: ',"shift":true' },
+	{ name: 'shift false', control: { shift: false }, suffix: ',"truncate":false,"shift":false' },
+	{ name: 'shift true', control: { shift: true }, suffix: ',"truncate":false,"shift":true' },
 	{
 		name: 'both false',
 		control: { truncate: false, shift: false },
@@ -359,6 +386,142 @@ export const OLLAMA_CONTEXT_CASES = Object.freeze([
 		suffix: ',"truncate":true,"shift":false',
 	},
 ] as const)
+
+// ── Provider and judge option matrices ────────────────────────────────────────
+//
+// The option records a constructor admits and the ones it refuses, each with the fault path its
+// refusal names. Inert data, so the option proofs restate no record.
+
+/** Pairs a label with options a provider's constructor admits. */
+export const OLLAMA_VALID_OPTIONS: ReadonlyArray<
+	readonly [label: string, options: Readonly<Record<string, unknown>>]
+> = Object.freeze([
+	['an absolute url', { url: 'http://127.0.0.1:11435' }],
+	['a same-origin path', { url: '/llm' }],
+	['a url with a path', { url: 'https://my-app.example.com/llm' }],
+	['a duration', { keepAlive: '5m' }],
+	['a compound duration', { keepAlive: '1h30m' }],
+	['a fractional duration', { keepAlive: '1.5h' }],
+	['a negative duration', { keepAlive: '-1m' }],
+	['a zero duration', { keepAlive: '0' }],
+	['seconds', { keepAlive: 300 }],
+	['the unload after the call', { keepAlive: 0 }],
+	['the resident model', { keepAlive: -1 }],
+	['the smallest timeout', { timeout: 1 }],
+	['an empty options bag', { options: {} }],
+	['a sampling bag', { options: { num_ctx: 8192, stop: ['</answer>'] } }],
+	['each switch', { think: true, truncate: true, shift: false }],
+	['each replay', { replay: 'turn' }],
+	['a key set to undefined', { url: undefined, timeout: undefined }],
+	['the callbacks', { fetch: globalThis.fetch, headers: () => ({}) }],
+])
+
+/** Pairs a label with options a provider's constructor refuses and the path of the fault it names. */
+export const OLLAMA_INVALID_OPTIONS: ReadonlyArray<
+	readonly [label: string, options: Readonly<Record<string, unknown>>, path: string]
+> = Object.freeze([
+	['an empty model', { model: '' }, 'model'],
+	['a numeric model', { model: 7 }, 'model'],
+	['a url that is not one', { url: 'not a url' }, 'url'],
+	['an empty url', { url: '' }, 'url'],
+	['a url with no host', { url: 'http://' }, 'url'],
+	['a zero timeout', { timeout: 0 }, 'timeout'],
+	['a negative timeout', { timeout: -1 }, 'timeout'],
+	['a fractional timeout', { timeout: 1.5 }, 'timeout'],
+	['a text timeout', { timeout: '30' }, 'timeout'],
+	['a timeout past the safe range', { timeout: Number.MAX_SAFE_INTEGER + 1 }, 'timeout'],
+	['a NaN timeout', { timeout: Number.NaN }, 'timeout'],
+	['a keep-alive word', { keepAlive: 'soon' }, 'keepAlive'],
+	['a keep-alive with no unit', { keepAlive: '5' }, 'keepAlive'],
+	['an empty keep-alive', { keepAlive: '' }, 'keepAlive'],
+	['fractional keep-alive seconds', { keepAlive: 1.5 }, 'keepAlive'],
+	['keep-alive seconds under -1', { keepAlive: -2 }, 'keepAlive'],
+	['a text options bag', { options: 'fast' }, 'options'],
+	['a list options bag', { options: [] }, 'options'],
+	['a text think', { think: 'yes' }, 'think'],
+	['a text truncate', { truncate: 'false' }, 'truncate'],
+	['a numeric shift', { shift: 0 }, 'shift'],
+	['an unknown replay', { replay: 'some' }, 'replay'],
+	['an undeclared key', { keepalive: '5m' }, 'keepalive'],
+])
+
+// ── Malformed wire records ────────────────────────────────────────────────────
+//
+// The `/api/chat` records `read` refuses, each with text its refusal must hold. Inert data.
+
+/** Pairs a label with a record `read` refuses and the text its refusal holds. */
+export const OLLAMA_MALFORMED_RECORDS: ReadonlyArray<
+	readonly [label: string, record: Readonly<Record<string, unknown>>, text: string]
+> = Object.freeze([
+	['a text message', { message: 'ok' }, 'message must be a record'],
+	['a null message', { message: null }, 'message must be a record'],
+	['a list message', { message: [] }, 'message must be a record'],
+	['a numeric content', { message: { content: 42 } }, 'message.content must be a string'],
+	['a null content', { message: { content: null } }, 'message.content must be a string'],
+	['a numeric thinking', { message: { thinking: 42 } }, 'message.thinking must be a string'],
+	['text tool calls', { message: { tool_calls: 'weather' } }, 'tool_calls must be an array'],
+	['a text entry', { message: { tool_calls: ['weather'] } }, 'tool_calls[0]'],
+	['an entry with no function', { message: { tool_calls: [{}] } }, 'tool_calls[0]'],
+	[
+		'an entry whose function is text',
+		{ message: { tool_calls: [{ function: 'weather' }] } },
+		'tool_calls[0]',
+	],
+	[
+		'an entry whose name is a number',
+		{ message: { tool_calls: [{ function: { name: 7, arguments: {} } }] } },
+		'tool_calls[0]',
+	],
+	[
+		'the second entry',
+		{
+			message: {
+				tool_calls: [{ function: { name: 'weather', arguments: {} } }, { function: {} }],
+			},
+		},
+		'tool_calls[1]',
+	],
+	[
+		'arguments left out',
+		{ message: { tool_calls: [{ function: { name: 'weather' } }] } },
+		'arguments must be a record',
+	],
+	[
+		'malformed argument text',
+		{ message: { tool_calls: [{ function: { name: 'weather', arguments: '{city:' } }] } },
+		'arguments must be a record',
+	],
+	[
+		'argument text that is no record',
+		{ message: { tool_calls: [{ function: { name: 'weather', arguments: '42' } }] } },
+		'arguments must be a record',
+	],
+	[
+		'numeric arguments',
+		{ message: { tool_calls: [{ function: { name: 'weather', arguments: 42 } }] } },
+		'arguments must be a record',
+	],
+	[
+		'a negative count',
+		{ done: true, prompt_eval_count: -1, eval_count: 4 },
+		'prompt_eval_count must be a finite nonnegative number',
+	],
+	[
+		'a text count',
+		{ done: true, prompt_eval_count: 3, eval_count: '4' },
+		'eval_count must be a finite nonnegative number',
+	],
+	[
+		'a malformed count beside an absent one',
+		{ done: true, eval_count: Number.POSITIVE_INFINITY },
+		'eval_count must be a finite nonnegative number',
+	],
+	['a model load', { done: true, done_reason: 'load' }, "done_reason 'load'"],
+	['an in-band error', { error: 'the runner stopped' }, 'the runner stopped'],
+	['an in-band error with no text', { error: { code: 7 } }, 'the daemon reported'],
+	['another model', { model: 'other-model', message: { content: 'ok' } }, '"other-model"'],
+	['a model that is no tag', { model: 7, message: { content: 'ok' } }, 'answered for model'],
+])
 
 // ── Truncation reason matrices ────────────────────────────────────────────────
 //
@@ -814,6 +977,7 @@ export function buildFenceBody(prompt: string): Readonly<Record<string, unknown>
 		stream: true,
 		keep_alive: '5m',
 		think: false,
+		truncate: false,
 	}
 }
 

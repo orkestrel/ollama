@@ -219,11 +219,11 @@ await new GuideCommand({
 			expect(
 				renderJudgePrompt(
 					{ n: 1e-7 },
-					{ form: 'noul', criteria: { false: '', true: '' } },
+					{ form: 'noul', instructions: 'Is it?', criteria: { false: '', true: '' } },
 					'system',
 				),
 			).toBe(
-				'<|im_start|>system\nsystem<|im_end|>\n<|im_start|>user\n<state>\n{\n "n": 1e-7\n}\n</state>\nQuestion: \nCriteria:\nfalse: false\ntrue: true\nAnswer Yes if true, or No if false.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n',
+				'<|im_start|>system\nsystem<|im_end|>\n<|im_start|>user\n<state>\n{\n "n": 1e-7\n}\n</state>\nQuestion: Is it?\nCriteria:\nfalse: false\ntrue: true\nAnswer Yes if true, or No if false.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n',
 			)
 			expect(
 				renderJudgePrompt(
@@ -245,7 +245,13 @@ await new GuideCommand({
 				fetch: transport.fetch,
 			})
 			const result = await judge.ask(
-				{ state: '', questions: { deletion: { form: 'noul' }, permission: { form: 'noul' } } },
+				{
+					state: '',
+					questions: {
+						deletion: { form: 'noul', instructions: 'Delete it?' },
+						permission: { form: 'noul', instructions: 'May it proceed?' },
+					},
+				},
 				new AbortController().signal,
 			)
 			expect(transport.requests).toHaveLength(2)
@@ -286,9 +292,9 @@ await new GuideCommand({
 					],
 				}),
 			).toThrow(JudgeError)
-			expect(
-				judge.read({ ...JUDGE_RAW_NOUL, eval_count: -1 }, JUDGE_NOUL_REQUEST).usage,
-			).toBeUndefined()
+			expect(() => judge.read({ ...JUDGE_RAW_NOUL, eval_count: -1 }, JUDGE_NOUL_REQUEST)).toThrow(
+				JudgeError,
+			)
 			expect(
 				judge.read({ ...JUDGE_RAW_NOUL, eval_count: undefined }, JUDGE_NOUL_REQUEST).usage,
 			).toBeUndefined()
@@ -310,7 +316,7 @@ await new GuideCommand({
 							form: 'choice',
 							criteria: { billing: null, technical: null, sales: null, account: null },
 						},
-						permission: { form: 'noul' },
+						permission: { form: 'noul', instructions: 'May it proceed?' },
 					},
 				},
 				new AbortController().signal,
@@ -332,7 +338,13 @@ await new GuideCommand({
 			for (const question of JUDGE_INVALID_QUESTIONS) {
 				await expect(
 					judge.ask(
-						{ state: '', questions: { valid: { form: 'noul' }, invalid: question } },
+						{
+							state: '',
+							questions: {
+								valid: { form: 'noul', instructions: 'Is it valid?' },
+								invalid: question,
+							},
+						},
 						new AbortController().signal,
 					),
 				).rejects.toMatchObject({
@@ -398,7 +410,13 @@ await new GuideCommand({
 			).not.toBe(identity)
 			const error: unknown = await judge
 				.ask(
-					{ state: '', questions: { permission: { form: 'noul' }, routing: { form: 'noul' } } },
+					{
+						state: '',
+						questions: {
+							permission: { form: 'noul', instructions: 'May it proceed?' },
+							routing: { form: 'noul', instructions: 'Is it routed?' },
+						},
+					},
 					abort.signal,
 				)
 				.catch((caught: unknown) => caught)
@@ -508,7 +526,7 @@ await new GuideCommand({
 		})
 
 		it('executes Inspect the raw judge wire', () => {
-			const question: JudgeQuestion = { form: 'noul' }
+			const question: JudgeQuestion = { form: 'noul', instructions: 'Is it approved?' }
 			expect(escapeSpecialTokens('<think>')).toBe('<\u200bthink>')
 			const labels = buildJudgeLabels(question)
 			expect(labels.get('false')).toBe('No')
@@ -657,6 +675,7 @@ await new GuideCommand({
 				thinking: '',
 				tools: [],
 				usage: { prompt: 3, completion: 4, total: 7 },
+				done: true,
 			})
 			expect(provider.finish(parser)).toEqual([])
 		})

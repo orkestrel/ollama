@@ -21,12 +21,12 @@ describe('createOllamaJudge', () => {
 			createStreamingTransport([JSON.stringify(JUDGE_RAW_NOUL)]),
 		)
 		const judge = createOllamaJudge({
-			model: 'mica',
+			model: JUDGE_RAW_NOUL.model,
 			system: MICA_SYSTEM,
 			keepAlive: 0,
 			fetch: transport.fetch,
 		})
-		const other = createOllamaJudge({ model: 'mica', system: MICA_SYSTEM })
+		const other = createOllamaJudge({ model: JUDGE_RAW_NOUL.model, system: MICA_SYSTEM })
 		expect(judge.id).not.toBe(other.id)
 		expect(judge.name).toBe('ollama')
 		expect(judge.model).toBe(other.model)
@@ -64,13 +64,15 @@ describe('createOllama (shape)', () => {
 // suite passes with the daemon down.
 describe('createOllama (defaults)', () => {
 	it('defaults the destination and replay while accepting a custom transport', async () => {
-		const transport = createRecordingTransport(createStreamingTransport([]))
+		const transport = createRecordingTransport(createStreamingTransport(['{"done":true}\n']))
 		const provider = createOllama({
 			model: 'test-model',
 			fetch: transport.fetch,
 		})
 
-		expect(await provider.generate([], createAbort().signal)).toEqual({ content: '' })
+		expect(await provider.generate([createUserMessage('hi')], createAbort().signal)).toEqual({
+			content: '',
+		})
 		expect(transport.requests[0]?.path).toBe('/api/chat')
 		expect(provider.replay).toBe('none')
 	})
@@ -94,7 +96,7 @@ describe('createOllama (defaults)', () => {
 				timeout: 1_000,
 				replay: 'turn',
 			})
-			await provider.generate([], createAbort().signal).catch(() => {})
+			await provider.generate([createUserMessage('hi')], createAbort().signal).catch(() => {})
 
 			expect(provider.replay).toBe('turn')
 			expect(transport.requests[0]?.path).toBe('/api/chat')
@@ -102,11 +104,12 @@ describe('createOllama (defaults)', () => {
 			expect(proxy.requests[0]?.headers['x-provider']).toBe('factory')
 			expect(proxy.requests[0]?.body).toEqual({
 				model: 'test-model',
-				messages: [],
+				messages: [{ role: 'user', content: 'hi' }],
 				stream: true,
 				keep_alive: 0,
 				think: true,
 				options: { seed: 7 },
+				truncate: false,
 			})
 		} finally {
 			await proxy.stop()
@@ -127,7 +130,9 @@ describe('createOllama (defaults)', () => {
 			},
 		})
 
-		await expect(provider.generate([], createAbort().signal)).rejects.toThrow(Error)
+		await expect(
+			provider.generate([createUserMessage('hi')], createAbort().signal),
+		).rejects.toThrow(Error)
 		expect(signals.calls.map(([signal]) => signal.aborted)).toEqual([true])
 		expect(transport.signals).toEqual([])
 	})

@@ -1,20 +1,24 @@
 import type { AgentJudgeInterface, JudgeRequest, JudgeResult } from '@orkestrel/agent'
 import type { OllamaJudgeOptions, WireGenerateRequest } from './types.js'
-import { AgentJudge, isJudgeError, JudgeError } from '@orkestrel/agent'
-import { isTokenUsage } from '@orkestrel/budget'
-import { isObject } from '@orkestrel/contract'
+import { AgentJudge, isJudgeError, isProviderError, JudgeError } from '@orkestrel/agent'
+import { isObject, preview } from '@orkestrel/contract'
+import { describeFaults } from '@orkestrel/tool'
 import {
 	DEFAULT_KEEP_ALIVE,
 	DEFAULT_OLLAMA_URL,
 	OLLAMA_GENERATE_PATH,
+	OLLAMA_JUDGE_CONTEXT_REMEDY,
 	TOP_LOGPROBS,
 } from './constants.js'
+import { ollamaJudgeOptionsContract } from './contracts.js'
 import {
 	computeAnswer,
 	extractTopLogprobs,
 	extractUsage,
+	matchesContextRefusal,
 	renderJudgeIdentity,
 	renderJudgePrompt,
+	scanOptionFaults,
 } from './helpers.js'
 
 /**
@@ -24,6 +28,8 @@ import {
  * Each question uses a separate non-streaming generate request. The engine validates
  * every body before inference, bounds calls, and preserves completed answers on abort.
  * The model identity includes the tag, system prompt, calibration, effective options, and render revision.
+ * Every body sends `truncate`, `false` by default, so a prompt over the context window refuses. The
+ * constructor refuses malformed options with code `QUESTION`, listing every fault.
  *
  * @example Ask Mica a noul
  * ```ts
@@ -68,8 +74,16 @@ export class OllamaJudge extends AgentJudge implements AgentJudgeInterface {
 	readonly #temperature: number
 	readonly #keepAlive: string | number
 	readonly #options: Readonly<Record<string, unknown>>
+	readonly #truncate: boolean
 
 	constructor(options: OllamaJudgeOptions) {
+		const faults = scanOptionFaults(ollamaJudgeOptionsContract, options, ['fetch', 'headers'])
+		if (faults.length > 0)
+			throw new JudgeError(
+				'QUESTION',
+				`judge error: refused options\n${describeFaults(faults, ollamaJudgeOptionsContract.schema)}`,
+				{ cause: { faults } },
+			)
 		const {
 			model,
 			system,
@@ -80,6 +94,7 @@ export class OllamaJudge extends AgentJudge implements AgentJudgeInterface {
 			timeout,
 			fetch,
 			headers,
+			truncate,
 		} = options
 		const temperature = calibration?.temperature ?? 1
 		const effective = Object.freeze({ ...sampling, num_predict: 1, temperature: 1 })
@@ -91,6 +106,7 @@ export class OllamaJudge extends AgentJudge implements AgentJudgeInterface {
 				system,
 				calibration: { temperature },
 				options: effective,
+				...(truncate === undefined ? {} : { truncate }),
 			}),
 			batch: false,
 			...(timeout === undefined ? {} : { timeout }),
@@ -102,6 +118,32 @@ export class OllamaJudge extends AgentJudge implements AgentJudgeInterface {
 		this.#temperature = temperature
 		this.#keepAlive = keepAlive ?? DEFAULT_KEEP_ALIVE
 		this.#options = effective
+		this.#truncate = truncate ?? false
+	}
+
+	/**
+	 * Asks every question, naming the remedy when the daemon refuses a prompt over its context window.
+	 * @param request - The state and the questions keyed by caller id
+	 * @param signal - The caller's cancellation bound
+	 * @returns The merged answers, refusals, and usage of every call
+	 * @throws JudgeError Thrown with code `HTTP` and status 400, its text naming `num_ctx` and `truncate`, when the daemon's refusal names the context window
+	 */
+	override async ask(request: JudgeRequest, signal: AbortSignal): Promise<JudgeResult> {
+		try {
+			return await super.ask(request, signal)
+		} catch (error) {
+			if (
+				isJudgeError(error) &&
+				error.code === 'HTTP' &&
+				error.status === 400 &&
+				matchesContextRefusal(error.message)
+			)
+				throw new JudgeError('HTTP', `${error.message}; ${OLLAMA_JUDGE_CONTEXT_REMEDY}`, {
+					status: 400,
+					cause: error,
+				})
+			throw error
+		}
 	}
 
 	/**
@@ -125,6 +167,7 @@ export class OllamaJudge extends AgentJudge implements AgentJudgeInterface {
 				top_logprobs: TOP_LOGPROBS,
 				keep_alive: this.#keepAlive,
 				options: this.#options,
+				truncate: this.#truncate,
 			}
 		} catch (error) {
 			if (isJudgeError(error) && error.code === 'QUESTION')
@@ -142,7 +185,7 @@ export class OllamaJudge extends AgentJudge implements AgentJudgeInterface {
 	 * @param value - The parsed generate response
 	 * @param request - The single question defining the expected candidate labels
 	 * @returns The calibrated answer or refusal, configured identity, and available usage
-	 * @throws JudgeError Thrown with code `PROTOCOL` for an incomplete or malformed response
+	 * @throws JudgeError Thrown with code `PROTOCOL` for an incomplete or malformed response, or a `model` other than the configured tag
 	 */
 	read(value: unknown, request: JudgeRequest): JudgeResult {
 		const entries = Object.entries(request.questions)
@@ -152,6 +195,12 @@ export class OllamaJudge extends AgentJudge implements AgentJudgeInterface {
 		try {
 			if (!isObject(value) || Reflect.get(value, 'done') !== true)
 				throw new JudgeError('PROTOCOL', 'judge error: mica read requires a completed response')
+			const model = Reflect.get(value, 'model')
+			if (model !== undefined && model !== this.#tag)
+				throw new JudgeError(
+					'PROTOCOL',
+					`judge error: the daemon answered for model ${preview(model)} and this judge names ${preview(this.#tag)}; set model to the tag the daemon serves`,
+				)
 			const answer = computeAnswer(entry[1], extractTopLogprobs(value), this.#temperature)
 			const usage = extractUsage({
 				prompt_eval_count: Reflect.get(value, 'prompt_eval_count'),
@@ -162,13 +211,13 @@ export class OllamaJudge extends AgentJudge implements AgentJudgeInterface {
 				...('form' in answer
 					? { answers: { [entry[0]]: answer } }
 					: { answers: {}, refusals: { [entry[0]]: answer } }),
-				...(isTokenUsage(usage) ? { usage } : {}),
+				...(usage === undefined ? {} : { usage }),
 			}
 		} catch (error) {
-			if (isJudgeError(error) && error.code === 'PROTOCOL')
+			if ((isJudgeError(error) || isProviderError(error)) && error.code === 'PROTOCOL')
 				throw new JudgeError(
 					'PROTOCOL',
-					`judge error: question ${entry[0]} ${error.message.replace(/^judge error: /, '')}`,
+					`judge error: question ${entry[0]} ${error.message.replace(/^(?:judge|provider) error: /, '')}`,
 					{ cause: error },
 				)
 			throw error

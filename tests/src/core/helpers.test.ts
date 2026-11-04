@@ -11,6 +11,15 @@ import {
 	extractTruncated,
 	extractUsage,
 	mapMessages,
+	matchesCandidateName,
+	matchesContextRefusal,
+	matchesCriterionText,
+	ollamaOptionsContract,
+	readMessage,
+	readMessageText,
+	readUsageCount,
+	renderDaemonFailure,
+	scanOptionFaults,
 	escapeSpecialTokens,
 	renderJudgePrompt,
 	buildJudgeLabels,
@@ -46,11 +55,42 @@ import {
 } from '../../setupServer.js'
 
 describe('Mica prompt rendering', () => {
+	it('refuses a question that carries no text, and names the remedy', () => {
+		for (const question of [
+			{ form: 'noul' },
+			{ form: 'noul', instructions: ' ' },
+			{ form: 'noul', criteria: { false: '', true: '  ' } },
+			{ form: 'choice', criteria: { 0: null, 1: '' } },
+			{ form: 'score', criteria: [null, null] },
+		] satisfies readonly JudgeQuestion[]) {
+			expect(() => renderJudgePrompt('state', question, 'system')).toThrow(
+				expect.objectContaining({
+					code: 'QUESTION',
+					message: expect.stringContaining('set instructions'),
+				}),
+			)
+		}
+	})
+	it('admits a question with instructions, a described candidate, or a named one alone', () => {
+		for (const question of [
+			{ form: 'noul', instructions: 'Is it approved?' },
+			{ form: 'noul', criteria: { true: 'It is approved.' } },
+			{ form: 'choice', criteria: { 0: 'First', 1: null } },
+			{ form: 'choice', criteria: { billing: null, bug: null } },
+			{ form: 'score', criteria: [null, 'High'] },
+		] satisfies readonly JudgeQuestion[]) {
+			expect(renderJudgePrompt('state', question, 'system')).toContain('<state>')
+		}
+	})
 	it('renders empty noul criteria as their key words', () => {
 		expect(
-			renderJudgePrompt('', { form: 'noul', criteria: { false: '', true: '' } }, 'system'),
+			renderJudgePrompt(
+				'',
+				{ form: 'noul', instructions: 'Is it?', criteria: { false: '', true: '' } },
+				'system',
+			),
 		).toBe(
-			'<|im_start|>system\nsystem<|im_end|>\n<|im_start|>user\n<state>\n\n</state>\nQuestion: \nCriteria:\nfalse: false\ntrue: true\nAnswer Yes if true, or No if false.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n',
+			'<|im_start|>system\nsystem<|im_end|>\n<|im_start|>user\n<state>\n\n</state>\nQuestion: Is it?\nCriteria:\nfalse: false\ntrue: true\nAnswer Yes if true, or No if false.<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n',
 		)
 	})
 	it('hides Unicode decimal positional ids like ASCII positional ids', () => {
@@ -96,8 +136,14 @@ describe('Mica prompt rendering', () => {
 		)
 	})
 	it('renders structured state, absent criteria, null descriptions, and positional names', () => {
-		expect(renderJudgePrompt({ café: ['yes', true] }, { form: 'noul' }, 'system')).toContain(
-			'<state>\n{\n "café": [\n  "yes",\n  true\n ]\n}\n</state>\nQuestion: \nCriteria:\nfalse: false\ntrue: true\n',
+		expect(
+			renderJudgePrompt(
+				{ café: ['yes', true] },
+				{ form: 'noul', instructions: 'Is it?' },
+				'system',
+			),
+		).toContain(
+			'<state>\n{\n "café": [\n  "yes",\n  true\n ]\n}\n</state>\nQuestion: Is it?\nCriteria:\nfalse: false\ntrue: true\n',
 		)
 		expect(
 			renderJudgePrompt(
@@ -593,21 +639,143 @@ describe('mapMessages', () => {
 	})
 })
 
+describe('scanOptionFaults', () => {
+	it('leaves the callbacks and a key set to undefined out of the contract', () => {
+		expect(
+			scanOptionFaults(
+				ollamaOptionsContract,
+				{ model: 'mica', fetch: globalThis.fetch, headers: () => ({}), url: undefined },
+				['fetch', 'headers'],
+			),
+		).toEqual([])
+	})
+
+	it('reports an undeclared key by its path and a type fault beside it', () => {
+		expect(
+			scanOptionFaults(ollamaOptionsContract, { model: 7, keepalive: '5m' }, []).map(
+				(fault) => fault.path,
+			),
+		).toEqual([['model'], ['keepalive']])
+	})
+
+	it('reports a coercible value, because nothing repairs a host-written option', () => {
+		expect(
+			scanOptionFaults(ollamaOptionsContract, { model: 'mica', timeout: '30' }, []),
+		).toHaveLength(1)
+	})
+})
+
+describe('matchesContextRefusal', () => {
+	it('matches the texts a daemon has used for the window', () => {
+		expect(
+			matchesContextRefusal(
+				'request (3245 tokens) exceeds the available context size (2048 tokens), try increasing it',
+			),
+		).toBe(true)
+		expect(matchesContextRefusal('the input length exceeds the context length')).toBe(true)
+		expect(matchesContextRefusal('Prompt exceeds the Context Window')).toBe(true)
+	})
+
+	it('leaves other refusals alone', () => {
+		expect(matchesContextRefusal('model not found')).toBe(false)
+		expect(matchesContextRefusal('invalid context')).toBe(false)
+	})
+})
+
+describe('renderDaemonFailure', () => {
+	it('keeps a short text and bounds a long one', () => {
+		expect(renderDaemonFailure('the runner stopped')).toBe('the runner stopped')
+		expect(renderDaemonFailure('x'.repeat(4096))).toHaveLength(2048)
+	})
+
+	it('renders a value that is no text', () => {
+		expect(renderDaemonFailure({ code: 7 })).toBe('object')
+	})
+
+	it('appends the remedy when the text names the context', () => {
+		expect(renderDaemonFailure('exceeds the context size')).toBe(
+			"exceeds the context size; the prompt exceeds the model's context window; set AgentOptions.window to fold the conversation, raise options.num_ctx, or set truncate: true to let the daemon cut it",
+		)
+	})
+})
+
+describe('matchesCandidateName', () => {
+	it('reads a name and refuses a position, an empty key, and the label itself', () => {
+		expect(matchesCandidateName('billing', 'A')).toBe(true)
+		expect(matchesCandidateName('0', 'A')).toBe(false)
+		expect(matchesCandidateName('c1', 'A')).toBe(false)
+		expect(matchesCandidateName('', 'A')).toBe(false)
+		expect(matchesCandidateName('A', 'A')).toBe(false)
+	})
+})
+
+describe('matchesCriterionText', () => {
+	it('reads each form', () => {
+		expect(matchesCriterionText({ form: 'noul', criteria: { true: 'It holds.' } })).toBe(true)
+		expect(matchesCriterionText({ form: 'noul' })).toBe(false)
+		expect(matchesCriterionText({ form: 'score', criteria: ['Low', null] })).toBe(true)
+		expect(matchesCriterionText({ form: 'score', criteria: ['', null] })).toBe(false)
+		expect(matchesCriterionText({ form: 'choice', criteria: { billing: null, bug: null } })).toBe(
+			true,
+		)
+		expect(matchesCriterionText({ form: 'choice', criteria: { 0: null, 1: null } })).toBe(false)
+	})
+})
+
+describe('readMessage', () => {
+	it('reads a record, leaves an absent message undefined, and refuses anything else', () => {
+		expect(readMessage({ message: { content: 'ok' } })).toEqual({ content: 'ok' })
+		expect(readMessage({ done: true })).toBeUndefined()
+		expect(() => readMessage({ message: 'ok' })).toThrow(
+			expect.objectContaining({ code: 'PROTOCOL' }),
+		)
+	})
+})
+
+describe('readMessageText', () => {
+	it('reads text, leaves an absent field empty, and refuses anything else', () => {
+		expect(readMessageText({ message: { content: 'ok' } }, 'content')).toBe('ok')
+		expect(readMessageText({ message: {} }, 'content')).toBe('')
+		expect(readMessageText({ done: true }, 'content')).toBe('')
+		expect(() => readMessageText({ message: { content: 42 } }, 'content')).toThrow(
+			expect.objectContaining({ code: 'PROTOCOL' }),
+		)
+	})
+})
+
+describe('readUsageCount', () => {
+	it('reads a count, leaves an absent one undefined, and refuses anything else', () => {
+		expect(readUsageCount({ eval_count: 0 }, 'eval_count')).toBe(0)
+		expect(readUsageCount({ eval_count: 1.5 }, 'eval_count')).toBe(1.5)
+		expect(readUsageCount({}, 'eval_count')).toBeUndefined()
+		for (const count of [-1, Number.NaN, Number.POSITIVE_INFINITY, '4', null]) {
+			expect(() => readUsageCount({ eval_count: count }, 'eval_count')).toThrow(
+				expect.objectContaining({ code: 'PROTOCOL' }),
+			)
+		}
+	})
+})
+
 describe('extractContent', () => {
 	it('reads a string message.content', () => {
 		expect(extractContent({ message: { content: 'ok' } })).toBe('ok')
 	})
 
-	it('degrades to an empty string for a missing message', () => {
+	it('reads an absent message and an absent content as empty', () => {
 		expect(extractContent({})).toBe('')
+		expect(extractContent({ message: {} })).toBe('')
 	})
 
-	it('degrades to an empty string for a non-record message', () => {
-		expect(extractContent({ message: 'ok' })).toBe('')
+	it('refuses a non-record message', () => {
+		expect(() => extractContent({ message: 'ok' })).toThrow(
+			expect.objectContaining({ code: 'PROTOCOL' }),
+		)
 	})
 
-	it('degrades to an empty string for a non-string content', () => {
-		expect(extractContent({ message: { content: 42 } })).toBe('')
+	it('refuses a non-string content', () => {
+		expect(() => extractContent({ message: { content: 42 } })).toThrow(
+			expect.objectContaining({ code: 'PROTOCOL' }),
+		)
 	})
 })
 
@@ -616,12 +784,17 @@ describe('extractThinking', () => {
 		expect(extractThinking({ message: { thinking: 'weighing it' } })).toBe('weighing it')
 	})
 
-	it('degrades to an empty string for a content-only record', () => {
+	it('reads a content-only record as empty', () => {
 		expect(extractThinking({ message: { content: 'ok' } })).toBe('')
 	})
 
-	it('degrades to an empty string for a non-record message', () => {
-		expect(extractThinking({ message: null })).toBe('')
+	it('refuses a non-record message and a non-string thinking', () => {
+		expect(() => extractThinking({ message: null })).toThrow(
+			expect.objectContaining({ code: 'PROTOCOL' }),
+		)
+		expect(() => extractThinking({ message: { thinking: 42 } })).toThrow(
+			expect.objectContaining({ code: 'PROTOCOL' }),
+		)
 	})
 })
 
@@ -638,8 +811,31 @@ describe('extractUsage', () => {
 		expect(extractUsage({ prompt_eval_count: 3 })).toBeUndefined()
 	})
 
-	it('yields undefined when a count is not a number', () => {
-		expect(extractUsage({ prompt_eval_count: '3', eval_count: 4 })).toBeUndefined()
+	it('yields undefined when both counts are absent, or set to undefined', () => {
+		expect(extractUsage({ done: true })).toBeUndefined()
+		expect(extractUsage({ prompt_eval_count: undefined, eval_count: undefined })).toBeUndefined()
+	})
+
+	it('reads a zero count, which a repeat of a cached prompt can report', () => {
+		expect(extractUsage({ prompt_eval_count: 0, eval_count: 2 })).toEqual({
+			prompt: 0,
+			completion: 2,
+			total: 2,
+		})
+	})
+
+	it('refuses a present count that is not a finite nonnegative number', () => {
+		for (const count of ['3', -1, Number.NaN, Number.POSITIVE_INFINITY, null]) {
+			expect(() => extractUsage({ prompt_eval_count: count, eval_count: 4 })).toThrow(
+				expect.objectContaining({ code: 'PROTOCOL' }),
+			)
+			expect(() => extractUsage({ prompt_eval_count: 3, eval_count: count })).toThrow(
+				expect.objectContaining({ code: 'PROTOCOL' }),
+			)
+			expect(() => extractUsage({ eval_count: count })).toThrow(
+				expect.objectContaining({ code: 'PROTOCOL' }),
+			)
+		}
 	})
 
 	it('yields undefined for a delta line carrying neither count', () => {
@@ -794,30 +990,48 @@ describe('extractTools', () => {
 
 	it('keeps a string id from the wire', () => {
 		const [call] = extractTools({
-			message: { tool_calls: [{ id: 'call-1', function: { name: 'weather' } }] },
+			message: { tool_calls: [{ id: 'call-1', function: { name: 'weather', arguments: {} } }] },
 		})
 
 		expect(call?.id).toBe('call-1')
 	})
 
-	it('drops an entry whose function is not a record', () => {
-		expect(extractTools({ message: { tool_calls: [{ function: 'weather' }] } })).toEqual([])
+	it('refuses an entry that is not a record, naming its position', () => {
+		expect(() =>
+			extractTools({
+				message: { tool_calls: [{ function: { name: 'weather', arguments: {} } }, 'clock'] },
+			}),
+		).toThrow(
+			expect.objectContaining({
+				code: 'PROTOCOL',
+				message: expect.stringContaining('message.tool_calls[1]'),
+			}),
+		)
 	})
 
-	it('drops an entry whose name is not a string', () => {
-		expect(extractTools({ message: { tool_calls: [{ function: { name: 7 } }] } })).toEqual([])
+	it('refuses an entry whose function is absent or not a record', () => {
+		for (const entry of [{}, { function: 'weather' }]) {
+			expect(() => extractTools({ message: { tool_calls: [entry] } })).toThrow(
+				expect.objectContaining({ code: 'PROTOCOL' }),
+			)
+		}
 	})
 
-	it('drops a hole among the entries and keeps the others in wire order', () => {
+	it('refuses an entry whose name is not a string', () => {
+		expect(() =>
+			extractTools({ message: { tool_calls: [{ function: { name: 7, arguments: {} } }] } }),
+		).toThrow(expect.objectContaining({ code: 'PROTOCOL' }))
+	})
+
+	it('refuses a hole among the entries, because a dropped call reads as a final answer', () => {
 		const calls = Object.assign([], {
-			0: { id: 'call-1', function: { name: 'weather' } },
-			2: { id: 'call-3', function: { name: 'clock' } },
+			0: { id: 'call-1', function: { name: 'weather', arguments: {} } },
+			2: { id: 'call-3', function: { name: 'clock', arguments: {} } },
 		})
 
-		expect(extractTools({ message: { tool_calls: calls } }).map((call) => call.id)).toEqual([
-			'call-1',
-			'call-3',
-		])
+		expect(() => extractTools({ message: { tool_calls: calls } })).toThrow(
+			expect.objectContaining({ code: 'PROTOCOL' }),
+		)
 	})
 
 	it('throws on an array without an iterator instead of reading it as array-like', () => {
@@ -853,7 +1067,7 @@ describe('extractTools', () => {
 					return Object.defineProperty({}, 'function', {
 						get: () => {
 							events.handler(`read ${index}`)
-							return { name }
+							return { name, arguments: {} }
 						},
 					})
 				}),
@@ -866,10 +1080,18 @@ describe('extractTools', () => {
 		expect(events.calls).toEqual([['next 0'], ['read 0'], ['next 1'], ['read 1']])
 	})
 
-	it('returns no calls when tool_calls is absent or not an array', () => {
+	it('returns no calls when tool_calls or the message is absent', () => {
 		expect(extractTools({ message: { content: 'ok' } })).toEqual([])
-		expect(extractTools({ message: { tool_calls: 'weather' } })).toEqual([])
 		expect(extractTools({})).toEqual([])
+	})
+
+	it('refuses tool_calls that are not an array and a message that is not a record', () => {
+		expect(() => extractTools({ message: { tool_calls: 'weather' } })).toThrow(
+			expect.objectContaining({ code: 'PROTOCOL' }),
+		)
+		expect(() => extractTools({ message: 'ok' })).toThrow(
+			expect.objectContaining({ code: 'PROTOCOL' }),
+		)
 	})
 })
 
@@ -882,15 +1104,17 @@ describe('extractArguments', () => {
 		expect(extractArguments('{"city":"Oslo"}')).toEqual({ city: 'Oslo' })
 	})
 
-	it('yields an empty record for a malformed JSON string', () => {
-		expect(extractArguments('{city:')).toEqual({})
+	it('refuses a malformed JSON string', () => {
+		expect(() => extractArguments('{city:')).toThrow(expect.objectContaining({ code: 'PROTOCOL' }))
 	})
 
-	it('yields an empty record for a JSON string that is not an object', () => {
-		expect(extractArguments('42')).toEqual({})
+	it('refuses a JSON string that is not an object', () => {
+		expect(() => extractArguments('42')).toThrow(expect.objectContaining({ code: 'PROTOCOL' }))
 	})
 
-	it('yields an empty record for a value that is neither', () => {
-		expect(extractArguments(undefined)).toEqual({})
+	it('refuses a value that is neither, an absent one included', () => {
+		for (const value of [undefined, null, 42, []]) {
+			expect(() => extractArguments(value)).toThrow(expect.objectContaining({ code: 'PROTOCOL' }))
+		}
 	})
 })

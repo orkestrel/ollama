@@ -27,6 +27,7 @@ import {
 	CANNED_STREAM_DELTAS,
 	CANNED_STREAM_DONE,
 	CASE_TIMEOUT,
+	createAllowAuthority,
 	createRecordingSummarizer,
 	createThrowingSummarizer,
 	createUserMessage,
@@ -149,7 +150,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 				url: `${server.url}/inference`,
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
-			const stream = browser.stream([], abort.signal)
+			const stream = browser.stream([createUserMessage('hi')], abort.signal)
 			expect(await stream.next()).toEqual({
 				done: false,
 				value: { channel: 'content', text: 'first' },
@@ -184,7 +185,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 				headers: () => ({ authorization: OBFUSCATED }),
 				fetch: wire.fetch,
 			})
-			const stream = browser.stream([], abort.signal)
+			const stream = browser.stream([createUserMessage('hi')], abort.signal)
 			expect(await stream.next()).toEqual({
 				done: false,
 				value: { channel: 'content', text: 'first' },
@@ -218,7 +219,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 				headers: () => ({ authorization: OBFUSCATED }),
 				fetch: wire.fetch,
 			})
-			const stream = browser.stream([], abort.signal)
+			const stream = browser.stream([createUserMessage('hi')], abort.signal)
 			expect(await stream.next()).toEqual({
 				done: false,
 				value: { channel: 'content', text: 'first' },
@@ -256,7 +257,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 				headers: () => ({ authorization: OBFUSCATED }),
 				fetch: wire.fetch,
 			})
-			const stream = browser.stream([], AbortSignal.timeout(2000))
+			const stream = browser.stream([createUserMessage('hi')], AbortSignal.timeout(2000))
 			expect(await stream.next()).toEqual({
 				done: false,
 				value: { channel: 'content', text: 'first' },
@@ -312,7 +313,9 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const signal = AbortSignal.timeout(2000)
-			const { result } = await drive(browser.stream([], signal, [WEATHER_TOOL]))
+			const { result } = await drive(
+				browser.stream([createUserMessage('hi')], signal, [WEATHER_TOOL]),
+			)
 			expect(daemon.requests[0]?.body.tools).toEqual([{ type: 'function', function: WEATHER_TOOL }])
 			const call = result.tools?.[0]
 			if (call === undefined) throw new Error('relay returned no tool call')
@@ -806,7 +809,12 @@ describe('AgentContext scope (provider-behavior) — a tools allow-list filters 
 					tools.add(createLookupTool())
 					tools.add(createInsatiableTool())
 					const scope = createScope({ name: 'lookup-only', tools: ['lookup'] })
-					const agent = createAgent(provider, { tools, scope, timeout: CASE_TIMEOUT })
+					const agent = createAgent(provider, {
+						tools,
+						authority: createAllowAuthority(),
+						scope,
+						timeout: CASE_TIMEOUT,
+					})
 					agent.context.messages.add({ role: 'user', content: 'Hello.' })
 					return agent.generate()
 				},
@@ -892,7 +900,12 @@ describe('AgentContext scope (provider-behavior) — an empty allow-list drops t
 				tools.add(createLookupTool())
 				tools.add(createInsatiableTool())
 				const scope = createScope({ name: 'none', tools: [] })
-				const agent = createAgent(provider, { tools, scope, timeout: CASE_TIMEOUT })
+				const agent = createAgent(provider, {
+					tools,
+					authority: createAllowAuthority(),
+					scope,
+					timeout: CASE_TIMEOUT,
+				})
 				agent.context.messages.add({ role: 'user', content: 'Hello.' })
 
 				const refused = agent.generate().catch(() => {})

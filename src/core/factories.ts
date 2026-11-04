@@ -7,7 +7,7 @@ import { OllamaJudge } from './OllamaJudge.js'
  * Creates a Mica judge that reads calibrated candidate probabilities from raw Ollama logprobs.
  * @param options - The model tag, training system prompt, calibration, and transport settings
  * @returns A judge backed by Ollama's non-streaming generate endpoint
- * @throws JudgeError Thrown with code `QUESTION` for invalid calibration
+ * @throws JudgeError Thrown with code `QUESTION` for invalid calibration or malformed options
  * @example
  * ```ts
  * import { createOllamaJudge } from '@orkestrel/ollama'
@@ -43,18 +43,10 @@ export function createOllamaJudge(options: OllamaJudgeOptions): JudgeInterface {
  * reaches the LLM through your middleware without this library ever handling the real API
  * key. Both omitted ⇒ the global `fetch` and only a JSON content type.
  *
- * The optional `format` is the provider's context-framing default — the provider-default
- * level of `AgentContext`'s format cascade (beaten by a manager-options or per-item
- * override, beating the managers' built-in framing), declaring how this
- * provider's models prefer context sections framed (for example XML group wrappers vs. Markdown
- * headers). It is exposed on the provider for the Agent's `build()` and is not Ollama's
- * `/api/chat` `format` wire parameter (structured output) — the framing default and that
- * wire parameter are unrelated despite the shared word. Omitted ⇒ the provider is
- * framing-agnostic (core's built-in defaults).
- *
  * @param options - `model` (required), and optional `url` / `keepAlive` / `timeout` /
- *   `options` / `fetch` / `headers` / `format` (see {@link OllamaOptions})
+ *   `options` / `think` / `truncate` / `shift` / `replay` / `fetch` / `headers` (see {@link OllamaOptions})
  * @returns A working {@link ProviderInterface} backed by Ollama
+ * @throws ProviderError Thrown with code `PROTOCOL` for malformed options, listing every fault
  *
  * @example createOllama + generate
  * ```ts
@@ -85,21 +77,6 @@ export function createOllamaJudge(options: OllamaJudgeOptions): JudgeInterface {
  * })
  * ```
  *
- * @example
- * Declare a context-framing default — wrap the instructions section in an XML group (the
- * provider-default level of `AgentContext`'s cascade; not the wire `format`):
- * ```ts
- * const provider = createOllama({
- *   model: 'qwen3.5:2b-q4_K_M',
- *   format: {
- *     instructions: {
- *       open: '<instructions>',
- *       render: (i) => `<instruction>${i.content}</instruction>`,
- *       close: '</instructions>',
- *     },
- *   },
- * })
- * ```
  */
 export function createOllama(options: OllamaOptions): ProviderInterface {
 	return new OllamaProvider(options)

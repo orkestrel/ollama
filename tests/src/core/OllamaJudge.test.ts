@@ -3,6 +3,12 @@ import { waitForAbort } from '@orkestrel/test'
 import { OllamaJudge, renderJudgeIdentity } from '@src/core'
 import { describe, expect, it } from 'vitest'
 import {
+	OLLAMA_CONTEXT_REFUSAL,
+	OLLAMA_INVALID_OPTIONS,
+	OLLAMA_VALID_OPTIONS,
+} from '../../setup.js'
+import {
+	createErrorTransport,
 	createRecordingTransport,
 	createRefusingTransport,
 	createStreamingTransport,
@@ -76,7 +82,10 @@ describe('OllamaJudge', () => {
 			const judge = new OllamaJudge({ model: 'mica', system: MICA_SYSTEM, fetch: transport.fetch })
 			await expect(
 				judge.ask(
-					{ state: 'state', questions: { valid: { form: 'noul' }, invalid: question } },
+					{
+						state: 'state',
+						questions: { valid: { form: 'noul', instructions: 'Is it valid?' }, invalid: question },
+					},
 					new AbortController().signal,
 				),
 			).rejects.toMatchObject({
@@ -90,9 +99,115 @@ describe('OllamaJudge', () => {
 			expect(transport.signals).toEqual([])
 		},
 	)
+	it('sends truncate:false by default and truncate:true as the opt-out, which the identity records', () => {
+		const refusing = new OllamaJudge({ model: 'mica', system: MICA_SYSTEM })
+		const cutting = new OllamaJudge({ model: 'mica', system: MICA_SYSTEM, truncate: true })
+
+		expect(refusing.encode(JUDGE_NOUL_REQUEST).truncate).toBe(false)
+		expect(cutting.encode(JUDGE_NOUL_REQUEST).truncate).toBe(true)
+		expect(refusing.model).toBe(
+			new OllamaJudge({ model: 'mica', system: MICA_SYSTEM, truncate: false }).model,
+		)
+		expect(cutting.model).not.toBe(refusing.model)
+		expect(refusing.model).toBe(
+			JSON.stringify([
+				'mica',
+				MICA_SYSTEM,
+				1,
+				{ num_predict: 1, temperature: 1 },
+				'mica-native-2026-10-07-v1',
+			]),
+		)
+	})
+	it('names the remedy on the 400 the daemon answers a prompt over its window, keeping the code and status', async () => {
+		const judge = new OllamaJudge({
+			model: 'mica',
+			system: MICA_SYSTEM,
+			fetch: createErrorTransport(400, OLLAMA_CONTEXT_REFUSAL),
+		})
+
+		await expect(judge.ask(JUDGE_NOUL_REQUEST, new AbortController().signal)).rejects.toMatchObject(
+			{
+				code: 'HTTP',
+				status: 400,
+				message: `judge error: 400 - ${OLLAMA_CONTEXT_REFUSAL}; the prompt exceeds the model's context window; shorten the state, raise options.num_ctx, or set truncate: true to let the daemon cut it`,
+				cause: expect.any(JudgeError),
+			},
+		)
+	})
+	it('leaves a 400 that names no context as the daemon said it', async () => {
+		const judge = new OllamaJudge({
+			model: 'mica',
+			system: MICA_SYSTEM,
+			fetch: createErrorTransport(400, '{"error":"model does not support logprobs"}'),
+		})
+
+		await expect(judge.ask(JUDGE_NOUL_REQUEST, new AbortController().signal)).rejects.toMatchObject(
+			{
+				message: 'judge error: 400 - {"error":"model does not support logprobs"}',
+			},
+		)
+	})
+	it('refuses a response that names another model and admits one that names none', () => {
+		const judge = new OllamaJudge({ model: 'mica', system: MICA_SYSTEM })
+
+		expect(() => judge.read({ ...JUDGE_RAW_NOUL, model: 'other' }, JUDGE_NOUL_REQUEST)).toThrow(
+			expect.objectContaining({
+				code: 'PROTOCOL',
+				message: expect.stringContaining('question deletion the daemon answered for model "other"'),
+			}),
+		)
+		expect(
+			judge.read({ ...JUDGE_RAW_NOUL, model: undefined }, JUDGE_NOUL_REQUEST).answers.deletion,
+		).toBeDefined()
+		expect(
+			new OllamaJudge({ model: JUDGE_RAW_NOUL.model, system: MICA_SYSTEM }).read(
+				JUDGE_RAW_NOUL,
+				JUDGE_NOUL_REQUEST,
+			).answers.deletion,
+		).toBeDefined()
+	})
+	it.each(
+		OLLAMA_VALID_OPTIONS.filter(([, options]) => !('think' in options || 'replay' in options)),
+	)('admits %s', (_label, options) => {
+		const judge: unknown = Reflect.construct(OllamaJudge, [
+			{ model: 'mica', system: MICA_SYSTEM, ...options },
+		])
+
+		expect(judge).toBeInstanceOf(OllamaJudge)
+	})
+	it.each(OLLAMA_INVALID_OPTIONS.filter(([, options]) => !('shift' in options)))(
+		'refuses %s at construction, naming the path',
+		(_label, options, path) => {
+			expect(() =>
+				Reflect.construct(OllamaJudge, [{ model: 'mica', system: MICA_SYSTEM, ...options }]),
+			).toThrow(
+				expect.objectContaining({
+					code: 'QUESTION',
+					message: expect.stringContaining(path),
+					cause: {
+						faults: expect.arrayContaining([expect.objectContaining({ path: [path] })]),
+					},
+				}),
+			)
+		},
+	)
+	it('refuses a judge with no system prompt and a malformed calibration at construction', () => {
+		expect(() => Reflect.construct(OllamaJudge, [{ model: 'mica' }])).toThrow(
+			expect.objectContaining({ code: 'QUESTION', message: expect.stringContaining('system') }),
+		)
+		expect(
+			() =>
+				new OllamaJudge({
+					model: 'mica',
+					system: MICA_SYSTEM,
+					calibration: Object.assign({ temperature: 1 }, { tempreture: 1 }),
+				}),
+		).toThrow(expect.objectContaining({ message: expect.stringContaining('tempreture') }))
+	})
 	it('keeps later answers and sums spent usage when a preceding question is refused', async () => {
 		const transport = createRecordingTransport(
-			createStreamingTransport([JSON.stringify(JUDGE_RAW_NOUL)]),
+			createStreamingTransport([JSON.stringify({ ...JUDGE_RAW_NOUL, model: 'mica' })]),
 		)
 		const judge = new OllamaJudge({ model: 'mica', system: MICA_SYSTEM, fetch: transport.fetch })
 		const result = await judge.ask(
@@ -103,7 +218,7 @@ describe('OllamaJudge', () => {
 						form: 'choice',
 						criteria: { billing: null, technical: null, sales: null, account: null },
 					},
-					permission: { form: 'noul' },
+					permission: { form: 'noul', instructions: 'May the agent proceed?' },
 				},
 			},
 			new AbortController().signal,
@@ -114,7 +229,7 @@ describe('OllamaJudge', () => {
 		expect(transport.requests).toHaveLength(2)
 	})
 	it('reads score distributions and preserves arbitrary caller keys', () => {
-		const judge = new OllamaJudge({ model: 'mica', system: MICA_SYSTEM })
+		const judge = new OllamaJudge({ model: JUDGE_RAW_CHOICE.model, system: MICA_SYSTEM })
 		const result = judge.read(JUDGE_RAW_CHOICE, {
 			state: '',
 			questions: { ['__proto__']: { form: 'score', criteria: ['low', 'middle', 'high'] } },
@@ -125,7 +240,7 @@ describe('OllamaJudge', () => {
 		expect(answer.probabilities.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 12)
 	})
 	it('rejects malformed or incomplete responses and omits unavailable usage', () => {
-		const judge = new OllamaJudge({ model: 'mica', system: MICA_SYSTEM })
+		const judge = new OllamaJudge({ model: JUDGE_RAW_NOUL.model, system: MICA_SYSTEM })
 		expect(() => judge.read({ ...JUDGE_RAW_NOUL, done: false }, JUDGE_NOUL_REQUEST)).toThrow(
 			expect.objectContaining({
 				code: 'PROTOCOL',
@@ -152,9 +267,17 @@ describe('OllamaJudge', () => {
 		expect(
 			judge.read({ ...JUDGE_RAW_NOUL, eval_count: undefined }, JUDGE_NOUL_REQUEST).usage,
 		).toBeUndefined()
-		expect(
-			judge.read({ ...JUDGE_RAW_NOUL, eval_count: -1 }, JUDGE_NOUL_REQUEST).usage,
-		).toBeUndefined()
+		expect(() => judge.read({ ...JUDGE_RAW_NOUL, eval_count: -1 }, JUDGE_NOUL_REQUEST)).toThrow(
+			expect.objectContaining({
+				code: 'PROTOCOL',
+				message:
+					'judge error: question deletion eval_count must be a finite nonnegative number; received -1',
+				cause: expect.any(Error),
+			}),
+		)
+		expect(() => judge.read({ ...JUDGE_RAW_NOUL, eval_count: -1 }, JUDGE_NOUL_REQUEST)).toThrow(
+			JudgeError,
+		)
 		expect(() => judge.encode({ state: '', questions: {} })).toThrow(JudgeError)
 	})
 	it('rejects invalid calibration before transport', () => {
@@ -189,7 +312,7 @@ describe('OllamaJudge', () => {
 	it('preserves completed usage when the second header hook cancels', async () => {
 		const abort = new AbortController()
 		const transport = createRecordingTransport(
-			createStreamingTransport([JSON.stringify(JUDGE_RAW_NOUL)]),
+			createStreamingTransport([JSON.stringify({ ...JUDGE_RAW_NOUL, model: 'mica' })]),
 		)
 		const judge = new OllamaJudge({
 			model: 'mica',
@@ -202,7 +325,13 @@ describe('OllamaJudge', () => {
 		})
 		const error: unknown = await judge
 			.ask(
-				{ state: 'state', questions: { first: { form: 'noul' }, second: { form: 'noul' } } },
+				{
+					state: 'state',
+					questions: {
+						first: { form: 'noul', instructions: 'Is the first true?' },
+						second: { form: 'noul', instructions: 'Is the second true?' },
+					},
+				},
 				abort.signal,
 			)
 			.catch((caught: unknown) => caught)

@@ -17,6 +17,14 @@ export const DEFAULT_OLLAMA_URL = 'http://localhost:11434'
  */
 export const DEFAULT_KEEP_ALIVE = '5m'
 
+/** Names what a chat refusal appends when the daemon's text names the context window. */
+export const OLLAMA_CONTEXT_REMEDY =
+	"the prompt exceeds the model's context window; set AgentOptions.window to fold the conversation, raise options.num_ctx, or set truncate: true to let the daemon cut it"
+
+/** Names what a judge refusal appends when the daemon's text names the context window. */
+export const OLLAMA_JUDGE_CONTEXT_REMEDY =
+	"the prompt exceeds the model's context window; shorten the state, raise options.num_ctx, or set truncate: true to let the daemon cut it"
+
 /** Names the Ollama chat endpoint appended to the configured base URL. */
 export const OLLAMA_CHAT_PATH = '/api/chat'
 

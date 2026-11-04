@@ -1,17 +1,19 @@
 import type { JudgeAnswer, JudgeEntry, JudgeQuestion, Message, Refusal } from '@orkestrel/agent'
 import type { TokenUsage } from '@orkestrel/budget'
+import type { AuditFault, ContractInterface } from '@orkestrel/contract'
 import type { ToolCall } from '@orkestrel/tool'
 import type { Logprob, OllamaJudgeOptions, OllamaTiming, WireChatRequest } from './types.js'
-import { JudgeError } from '@orkestrel/agent'
+import { JudgeError, MAX_ERROR_BODY_LENGTH, ProviderError } from '@orkestrel/agent'
+import { isBudgetAmount } from '@orkestrel/budget'
 import {
 	isArray,
 	isFiniteNumber,
 	isNonNegativeInteger,
-	isNumber,
 	isObject,
 	isRecord,
 	isString,
 	parseJSONAs,
+	preview,
 } from '@orkestrel/contract'
 import {
 	MAX_MICA_LEVELS,
@@ -19,6 +21,7 @@ import {
 	MICA_OPTION_LABELS,
 	MICA_RENDER_REVISION,
 	MICA_SPECIAL_TOKENS,
+	OLLAMA_CONTEXT_REMEDY,
 	TOP_LOGPROBS,
 } from './constants.js'
 
@@ -46,10 +49,10 @@ export function escapeSpecialTokens(text: string): string {
  * @param question - The question with string instructions and descriptions
  * @param system - The model's training system prompt, preserved verbatim
  * @returns The complete raw generate prompt
- * @throws JudgeError Thrown with code `QUESTION` for structured instructions or criteria, or an unsupported candidate count
+ * @throws JudgeError Thrown with code `QUESTION` for structured instructions or criteria, an unsupported candidate count, or a question that carries no text
  * @example
  * ```ts
- * renderJudgePrompt('Approved.', { form: 'noul' }, 'Judge the state.')
+ * renderJudgePrompt('Approved.', { form: 'noul', instructions: 'Is it approved?' }, 'Judge the state.')
  * ```
  */
 export function renderJudgePrompt(
@@ -91,19 +94,57 @@ export function renderJudgePrompt(
 								`judge error: mica criterion ${key} must be text or null`,
 							)
 						const label = labels.get(key)
-						const named =
-							question.form === 'choice' &&
-							key !== '' &&
-							key !== label &&
-							!/^[cs]?\p{Nd}+$/u.test(key)
-						return `${label}) ${named ? `[${escapeSpecialTokens(key)}] ` : ''}${escapeSpecialTokens(text === null ? 'None' : text)}`
+						return `${label}) ${question.form === 'choice' && matchesCandidateName(key, label) ? `[${escapeSpecialTokens(key)}] ` : ''}${escapeSpecialTokens(text === null ? 'None' : text)}`
 					},
 				)
+	if (instructions.trim() === '' && !matchesCriterionText(question))
+		throw new JudgeError(
+			'QUESTION',
+			'judge error: mica question carries no text; set instructions, or describe or name a candidate in criteria',
+		)
 	const ending =
 		question.form === 'noul'
 			? `Criteria:\n${lines.join('\n')}\nAnswer Yes if true, or No if false.`
 			: `Candidates:\n${lines.join('\n')}\nAnswer with the label of the best ${question.form === 'score' ? 'level' : 'candidate'}.`
 	return `<|im_start|>system\n${system}<|im_end|>\n<|im_start|>user\n<state>\n${escapeSpecialTokens(isString(state) ? state : JSON.stringify(state, null, 1))}\n</state>\nQuestion: ${escapeSpecialTokens(instructions)}\n${ending}<|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n`
+}
+
+/**
+ * Checks whether a choice key renders as a candidate name rather than as a position.
+ * @param key - The caller's candidate key
+ * @param label - The wire label the key maps to
+ * @returns True if the key is nonempty, differs from its label, and is not positional; false otherwise
+ * @example
+ * ```ts
+ * matchesCandidateName('billing', 'A') // true
+ * matchesCandidateName('0', 'A') // false
+ * ```
+ */
+export function matchesCandidateName(key: string, label: string | undefined): boolean {
+	return key !== '' && key !== label && !/^[cs]?\p{Nd}+$/u.test(key)
+}
+
+/**
+ * Checks whether a question's criteria give the model anything to read: a description, or a choice's name.
+ * @param question - The question whose criteria it reads
+ * @returns True if a candidate carries nonblank text or a rendered name; false otherwise
+ * @example
+ * ```ts
+ * matchesCriterionText({ form: 'noul', criteria: { true: 'It holds.' } }) // true
+ * matchesCriterionText({ form: 'noul' }) // false
+ * ```
+ */
+export function matchesCriterionText(question: JudgeQuestion): boolean {
+	const texts: readonly unknown[] =
+		question.form === 'noul'
+			? [question.criteria?.false, question.criteria?.true]
+			: question.form === 'score'
+				? question.criteria
+				: Object.values(question.criteria)
+	if (texts.some((text) => isString(text) && text.trim() !== '')) return true
+	if (question.form !== 'choice') return false
+	const labels = buildJudgeLabels(question)
+	return Object.keys(question.criteria).some((key) => matchesCandidateName(key, labels.get(key)))
 }
 
 /**
@@ -228,6 +269,9 @@ export function computeAnswer(
 
 /**
  * Renders a stable identity from the model tag, system prompt, calibration, sorted effective options, and render revision.
+ * @remarks
+ * A judge set to `truncate: true` appends the switch, because a cut prompt can answer differently; the
+ * default leaves the tuple as it was, because a prompt that fits renders and answers the same.
  * @param options - The settings that define the judge's answers
  * @param revision - The render revision; defaults to the published revision
  * @returns An unambiguous JSON tuple identifying the configured judge
@@ -252,7 +296,78 @@ export function renderJudgeIdentity(
 	const sorted = Object.fromEntries(
 		Object.entries(effective).sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)),
 	)
-	return JSON.stringify([options.model, options.system, temperature, sorted, revision])
+	return JSON.stringify([
+		options.model,
+		options.system,
+		temperature,
+		sorted,
+		revision,
+		...(options.truncate === true ? [{ truncate: true }] : []),
+	])
+}
+
+/**
+ * Scans a constructor's options against a contract, leaving out the live values and every key set
+ * to `undefined`.
+ *
+ * @remarks
+ * A callback or a signal has no shape. A key set to `undefined` is absent under the options'
+ * TypeScript type, so the contract reads it as absent too. Every fault refuses: a host writes the
+ * options, so nothing here repairs a value.
+ *
+ * @param contract - The compiled contract of the serializable options
+ * @param options - The options as the constructor received them
+ * @param live - The keys that hold live values
+ * @returns Every fault the contract reports, or an empty list
+ *
+ * @example
+ * ```ts
+ * scanOptionFaults(ollamaOptionsContract, { model: 'mica', fetch: globalThis.fetch }, ['fetch']) // []
+ * scanOptionFaults(ollamaOptionsContract, { model: 'mica', keepalive: '5m' }, [])
+ * // [{ reason: 'extra', path: ['keepalive'] }]
+ * ```
+ */
+export function scanOptionFaults(
+	contract: ContractInterface<unknown>,
+	options: object,
+	live: readonly string[],
+): readonly AuditFault[] {
+	const declared = Object.fromEntries(
+		Object.entries(options).filter(([key, value]) => !live.includes(key) && value !== undefined),
+	)
+	return contract.is(declared) ? [] : contract.audit(declared)
+}
+
+/**
+ * Checks whether a daemon's refusal text names the context window.
+ *
+ * @param text - The daemon's refusal text, or an error message that holds it
+ * @returns True if the text names the context size, length, or window; false otherwise
+ *
+ * @example
+ * ```ts
+ * matchesContextRefusal('request (3245 tokens) exceeds the available context size (2048 tokens)') // true
+ * matchesContextRefusal('model not found') // false
+ * ```
+ */
+export function matchesContextRefusal(text: string): boolean {
+	return /\bcontext (?:size|length|window)\b/iu.test(text)
+}
+
+/**
+ * Renders a daemon's in-band `error` value as refusal text, bounded like an HTTP error excerpt.
+ *
+ * @param failure - The record's `error` value
+ * @returns The bounded text, with the context remedy appended when the text names the context window
+ *
+ * @example
+ * ```ts
+ * renderDaemonFailure('the runner stopped') // 'the runner stopped'
+ * ```
+ */
+export function renderDaemonFailure(failure: unknown): string {
+	const excerpt = (isString(failure) ? failure : preview(failure)).slice(0, MAX_ERROR_BODY_LENGTH)
+	return matchesContextRefusal(excerpt) ? `${excerpt}; ${OLLAMA_CONTEXT_REMEDY}` : excerpt
 }
 
 /**
@@ -304,7 +419,8 @@ export function mapMessages(messages: readonly Message[]): WireChatRequest['mess
  * Extracts the assistant text of one wire record.
  *
  * @param record - One parsed `/api/chat` NDJSON record
- * @returns The record's `message.content` when it is a string, else `''`
+ * @returns The record's `message.content`, or `''` when the record carries none
+ * @throws ProviderError Thrown with code `PROTOCOL` when `message` is present and not a record, or `content` is present and not a string
  *
  * @example
  * ```ts
@@ -312,10 +428,7 @@ export function mapMessages(messages: readonly Message[]): WireChatRequest['mess
  * ```
  */
 export function extractContent(record: Readonly<Record<string, unknown>>): string {
-	const message = Reflect.get(record, 'message')
-	if (!isRecord(message)) return ''
-	const content = Reflect.get(message, 'content')
-	return isString(content) ? content : ''
+	return readMessageText(record, 'content')
 }
 
 /**
@@ -326,7 +439,8 @@ export function extractContent(record: Readonly<Record<string, unknown>>): strin
  * flag says, because a daemon may separate reasoning on its own.
  *
  * @param record - One parsed `/api/chat` NDJSON record
- * @returns The record's `message.thinking` when it is a string, else `''`
+ * @returns The record's `message.thinking`, or `''` when the record carries none
+ * @throws ProviderError Thrown with code `PROTOCOL` when `message` is present and not a record, or `thinking` is present and not a string
  *
  * @example
  * ```ts
@@ -334,21 +448,67 @@ export function extractContent(record: Readonly<Record<string, unknown>>): strin
  * ```
  */
 export function extractThinking(record: Readonly<Record<string, unknown>>): string {
+	return readMessageText(record, 'thinking')
+}
+
+/**
+ * Reads a record's `message`, which a record may omit.
+ *
+ * @param record - One parsed `/api/chat` NDJSON record
+ * @returns The message record, or `undefined` when the record carries none
+ * @throws ProviderError Thrown with code `PROTOCOL` when `message` is present and not a record
+ *
+ * @example
+ * ```ts
+ * readMessage({ message: { content: 'ok' } }) // { content: 'ok' }
+ * readMessage({ done: true }) // undefined
+ * ```
+ */
+export function readMessage(
+	record: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> | undefined {
 	const message = Reflect.get(record, 'message')
-	if (!isRecord(message)) return ''
-	const thinking = Reflect.get(message, 'thinking')
-	return isString(thinking) ? thinking : ''
+	if (message === undefined || isRecord(message)) return message
+	throw new ProviderError(
+		'PROTOCOL',
+		`provider error: the record's message must be a record; received ${preview(message)}`,
+	)
+}
+
+/**
+ * Reads one text field of a record's `message`, which a record may omit.
+ *
+ * @param record - One parsed `/api/chat` NDJSON record
+ * @param key - The message field to read
+ * @returns The field's text, or `''` when the record carries none
+ * @throws ProviderError Thrown with code `PROTOCOL` when `message` is present and not a record, or the field is present and not a string
+ *
+ * @example
+ * ```ts
+ * readMessageText({ message: { content: 'ok' } }, 'content') // 'ok'
+ * readMessageText({ done: true }, 'content') // ''
+ * ```
+ */
+export function readMessageText(record: Readonly<Record<string, unknown>>, key: string): string {
+	const text = Reflect.get(readMessage(record) ?? {}, key)
+	if (text === undefined) return ''
+	if (isString(text)) return text
+	throw new ProviderError(
+		'PROTOCOL',
+		`provider error: message.${key} must be a string; received ${preview(text)}`,
+	)
 }
 
 /**
  * Extracts the token usage of one wire record.
  *
  * @remarks
- * Both counts must be numbers, which is true of the stream's `done: true` line. A
- * delta line carries neither, so it yields `undefined`.
+ * Both counts were seen present on every `done: true` line Ollama 0.40.14 sent, identical repeats
+ * included. A record without both yields `undefined`, and the agent bills its estimate.
  *
  * @param record - One parsed `/api/chat` NDJSON record
  * @returns The `TokenUsage` shape, or `undefined` when either count is absent
+ * @throws ProviderError Thrown with code `PROTOCOL` when a present count is not a finite nonnegative number
  *
  * @example
  * ```ts
@@ -357,10 +517,36 @@ export function extractThinking(record: Readonly<Record<string, unknown>>): stri
  * ```
  */
 export function extractUsage(record: Readonly<Record<string, unknown>>): TokenUsage | undefined {
-	const prompt = Reflect.get(record, 'prompt_eval_count')
-	const completion = Reflect.get(record, 'eval_count')
-	if (!isNumber(prompt) || !isNumber(completion)) return undefined
+	const prompt = readUsageCount(record, 'prompt_eval_count')
+	const completion = readUsageCount(record, 'eval_count')
+	if (prompt === undefined || completion === undefined) return undefined
 	return { prompt, completion, total: prompt + completion }
+}
+
+/**
+ * Reads one token count of a record, which a record may omit.
+ *
+ * @param record - One parsed `/api/chat` or `/api/generate` record
+ * @param key - The wire key of the count
+ * @returns The count, or `undefined` when the record carries none
+ * @throws ProviderError Thrown with code `PROTOCOL` when the count is present and not a finite nonnegative number
+ *
+ * @example
+ * ```ts
+ * readUsageCount({ eval_count: 4 }, 'eval_count') // 4
+ * readUsageCount({}, 'eval_count') // undefined
+ * ```
+ */
+export function readUsageCount(
+	record: Readonly<Record<string, unknown>>,
+	key: string,
+): number | undefined {
+	const count = Reflect.get(record, key)
+	if (count === undefined || isBudgetAmount(count)) return count
+	throw new ProviderError(
+		'PROTOCOL',
+		`provider error: ${key} must be a finite nonnegative number; received ${preview(count)}`,
+	)
 }
 
 /**
@@ -436,24 +622,28 @@ export function extractTiming(record: Readonly<Record<string, unknown>>): Ollama
  * Extracts the tool calls of one wire record's `message.tool_calls`.
  *
  * @remarks
- * Each entry narrows to `{ id, name, arguments }`: the entry and its `function` must be
- * records and `name` a string, else the entry is dropped. An id is minted when the wire
- * omits one.
+ * Each entry narrows to `{ id, name, arguments }`: the entry and its `function` must be records
+ * and `name` a string. A dropped call would read as a final answer, so a malformed one refuses the
+ * turn. An id is minted when the wire omits one.
  *
  * @param record - One parsed `/api/chat` NDJSON record
  * @returns The narrowed tool calls, empty when the record carries none
+ * @throws ProviderError Thrown with code `PROTOCOL` when `message` is present and not a record, `tool_calls` is present and not an array, or an entry is malformed
  *
  * @example
  * ```ts
- * extractTools({ message: { tool_calls: [{ function: { name: 'weather' } }] } })
+ * extractTools({ message: { tool_calls: [{ function: { name: 'weather', arguments: {} } }] } })
  * // [{ id: '…', name: 'weather', arguments: {} }]
  * ```
  */
 export function extractTools(record: Readonly<Record<string, unknown>>): readonly ToolCall[] {
-	const message = Reflect.get(record, 'message')
-	if (!isRecord(message)) return []
-	const calls = Reflect.get(message, 'tool_calls')
-	if (!isArray(calls)) return []
+	const calls = Reflect.get(readMessage(record) ?? {}, 'tool_calls')
+	if (calls === undefined) return []
+	if (!isArray(calls))
+		throw new ProviderError(
+			'PROTOCOL',
+			`provider error: message.tool_calls must be an array; received ${preview(calls)}`,
+		)
 	// The following iterable hands `Array.from` only the iterator protocol, as `for…of` consumed it: an
 	// array without an iterator throws instead of falling back to array-like access, and a hole is
 	// visited as `undefined`.
@@ -463,12 +653,14 @@ export function extractTools(record: Readonly<Record<string, unknown>>): readonl
 				return calls[Symbol.iterator]()
 			},
 		},
-		(entry) => {
-			if (!isRecord(entry)) return undefined
-			const callable = Reflect.get(entry, 'function')
-			if (!isRecord(callable)) return undefined
-			const name = Reflect.get(callable, 'name')
-			if (!isString(name)) return undefined
+		(entry, index) => {
+			const callable = isRecord(entry) ? Reflect.get(entry, 'function') : undefined
+			const name = isRecord(callable) ? Reflect.get(callable, 'name') : undefined
+			if (!isRecord(entry) || !isRecord(callable) || !isString(name))
+				throw new ProviderError(
+					'PROTOCOL',
+					`provider error: message.tool_calls[${index}] must be a record whose function is a record with a string name; received ${preview(entry)}`,
+				)
 			const id = Reflect.get(entry, 'id')
 			return {
 				id: isString(id) ? id : crypto.randomUUID(),
@@ -476,18 +668,19 @@ export function extractTools(record: Readonly<Record<string, unknown>>): readonl
 				arguments: extractArguments(Reflect.get(callable, 'arguments')),
 			}
 		},
-	).filter((call) => call !== undefined)
+	)
 }
 
 /**
  * Extracts a wire `arguments` value as a record.
  *
  * @remarks
- * Total: an object passes through, a JSON string is parsed when it yields a record, and
- * a malformed string yields `{}` rather than throwing.
+ * A record passes through and a string parses when it holds a JSON record. Arguments that are
+ * neither would reach a tool as a call it never received, so they refuse.
  *
  * @param value - The wire's `function.arguments` value, of unknown shape
- * @returns The argument record, or `{}` when the value carries none
+ * @returns The argument record
+ * @throws ProviderError Thrown with code `PROTOCOL` when the value is neither a record nor the JSON text of one
  *
  * @example
  * ```ts
@@ -496,6 +689,10 @@ export function extractTools(record: Readonly<Record<string, unknown>>): readonl
  */
 export function extractArguments(value: unknown): Readonly<Record<string, unknown>> {
 	if (isRecord(value)) return value
-	if (isString(value)) return parseJSONAs(value, isRecord) ?? {}
-	return {}
+	const parsed = isString(value) ? parseJSONAs(value, isRecord) : undefined
+	if (parsed !== undefined) return parsed
+	throw new ProviderError(
+		'PROTOCOL',
+		`provider error: a tool call's arguments must be a record or the JSON text of one; received ${preview(value)}`,
+	)
 }

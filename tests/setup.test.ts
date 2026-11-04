@@ -41,6 +41,7 @@ import {
 	CANNED_STREAM_DONE,
 	CASE_TIMEOUT,
 	countRequestCharacters,
+	createAllowAuthority,
 	createChallengeTools,
 	createRecordingSummarizer,
 	createThrowingSummarizer,
@@ -101,6 +102,15 @@ import {
 	withScheme,
 } from './setupServer.js'
 
+describe('createAllowAuthority', () => {
+	it('allows a call no rule names, on a fresh authority each time', () => {
+		const call = { id: '1', name: 'lookup', arguments: {} }
+
+		expect(createAllowAuthority().evaluate({ call })).toEqual({ zone: 'default', verdict: 'allow' })
+		expect(createAllowAuthority()).not.toBe(createAllowAuthority())
+	})
+})
+
 describe('createChallengeTools', () => {
 	it('returns the challenge without revealing the secret code', async () => {
 		const [lookup, secret] = createChallengeTools('opaque-challenge', '7193')
@@ -115,10 +125,12 @@ describe('createChallengeTools', () => {
 		expect(await lookup.execute({}, TOOL_CONTEXT)).toEqual({ challenge: 'opaque-challenge' })
 	})
 
-	it('rejects missing, non-string, and incorrect challenges with TypeError', () => {
+	it('refuses a missing challenge at the tool door and an incorrect one with TypeError', () => {
 		const [, secret] = createChallengeTools('opaque-challenge', '7193')
 		if (secret === undefined) throw new Error('Missing secret lookup')
-		expect(() => secret.execute({}, TOOL_CONTEXT)).toThrow(TypeError)
+		expect(() => secret.execute({}, TOOL_CONTEXT)).toThrow(
+			expect.objectContaining({ code: 'ARGUMENTS' }),
+		)
 		expect(() => secret.execute({ challenge: 7 }, TOOL_CONTEXT)).toThrow(TypeError)
 		expect(() => secret.execute({ challenge: 'incorrect' }, TOOL_CONTEXT)).toThrow(TypeError)
 	})
@@ -847,6 +859,7 @@ describe('buildFenceMessages, buildFenceBody, and buildFenceObservation', () => 
 			stream: true,
 			keep_alive: '5m',
 			think: false,
+			truncate: false,
 		})
 		expect(buildFenceBody(README_FENCE_PROMPT)).not.toEqual(buildFenceBody(GUIDE_FENCE_PROMPT))
 	})

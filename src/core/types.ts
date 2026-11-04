@@ -11,8 +11,8 @@ import type { ProviderOptions } from '@orkestrel/agent'
  * `tool_calls` only on a turn that replays them and `images` only on a multimodal
  * turn); `options` and `tools` are only present when configured. `format` carries the
  * `/api/chat` structured-output constraint, forwarded verbatim from the per-call
- * `ProviderStreamOptions.schema` and absent when no schema is supplied. `truncate` and
- * `shift` are top-level context-control switches, present only when `OllamaOptions` sets them.
+ * `ProviderStreamOptions.schema` and absent when no schema is supplied. `truncate` is a top-level
+ * context switch on every body, and `shift` is one only when `OllamaOptions` sets it.
  */
 export interface WireChatRequest {
 	readonly model: string
@@ -46,14 +46,13 @@ export interface WireChatRequest {
 	readonly format?: Readonly<Record<string, unknown>>
 	/**
 	 * Holds the `/api/chat` top-level `truncate` switch, carried verbatim from
-	 * {@link OllamaOptions.truncate}. Absent when the option is omitted, which delegates to the
-	 * daemon default; `false` requests refusal instead of truncation and requires daemon support.
+	 * {@link OllamaOptions.truncate} and `false` when the option is omitted, so the daemon refuses a
+	 * prompt over the context window instead of cutting it.
 	 */
-	readonly truncate?: boolean
+	readonly truncate: boolean
 	/**
 	 * Holds the `/api/chat` top-level `shift` switch, carried verbatim from
-	 * {@link OllamaOptions.shift}. Absent when the option is omitted, which delegates to the
-	 * daemon default; `false` requests refusal instead of shifting and requires daemon support.
+	 * {@link OllamaOptions.shift} and absent when the option is omitted.
 	 */
 	readonly shift?: boolean
 }
@@ -102,17 +101,16 @@ export interface OllamaOptions extends ProviderOptions {
 	 */
 	readonly think?: boolean
 	/**
-	 * Sets the `/api/chat` top-level `truncate` switch. Omission delegates to the daemon default.
-	 * `false` requests refusal instead of truncation when the prompt exceeds the context window and
-	 * requires daemon support; `true` requests truncation explicitly. Carried verbatim onto
-	 * {@link WireChatRequest.truncate}, never inside `options`.
+	 * Sets the `/api/chat` top-level `truncate` switch. Default: `false`. If `false`, the daemon
+	 * answers a prompt over the context window with HTTP 400; if `true`, it drops the earlier turns,
+	 * answers HTTP 200, and reports no cut. Carried verbatim onto {@link WireChatRequest.truncate},
+	 * never inside `options`.
 	 */
 	readonly truncate?: boolean
 	/**
-	 * Sets the `/api/chat` top-level `shift` switch. Omission delegates to the daemon default.
-	 * `false` requests refusal instead of shifting the context window during generation and
-	 * requires daemon support; `true` requests shifting explicitly. Carried verbatim onto
-	 * {@link WireChatRequest.shift}, never inside `options`.
+	 * Sets the `/api/chat` top-level `shift` switch, sent only when set. Ollama 0.40.14 stops at the
+	 * window with `done_reason: 'length'` whichever value is sent or none, and `shift: false` stops no
+	 * prompt cut. Carried verbatim onto {@link WireChatRequest.shift}, never inside `options`.
 	 */
 	readonly shift?: boolean
 }
@@ -133,6 +131,12 @@ export interface OllamaJudgeOptions extends Pick<ProviderOptions, 'timeout' | 'f
 	/** Mirrors the Ollama `keep_alive` duration. Default: '5m'. */
 	readonly keepAlive?: string | number
 	readonly options?: Readonly<Record<string, unknown>>
+	/**
+	 * Sets the `/api/generate` `truncate` switch. Default: `false`. If `false`, the daemon answers a
+	 * prompt over the context window with HTTP 400 and the call throws; if `true`, it cuts the prompt
+	 * and reports no cut, and the judge's identity records the switch.
+	 */
+	readonly truncate?: boolean
 }
 
 /** Carries a token and its log probability from Ollama's top logprob list. */
@@ -196,4 +200,6 @@ export interface WireGenerateRequest {
 	readonly top_logprobs: number
 	readonly keep_alive: string | number
 	readonly options: Readonly<Record<string, unknown>>
+	/** Holds the `/api/generate` `truncate` switch, `false` unless {@link OllamaJudgeOptions.truncate} sets it. */
+	readonly truncate: boolean
 }

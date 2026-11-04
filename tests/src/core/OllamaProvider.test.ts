@@ -1,6 +1,11 @@
 import type { Message } from '@orkestrel/agent'
 import { createAbort } from '@orkestrel/abort'
-import { AgentProvider, isProviderAbortError, isProviderError } from '@orkestrel/agent'
+import {
+	AgentProvider,
+	isProviderAbortError,
+	isProviderError,
+	ProviderError,
+} from '@orkestrel/agent'
 import { isNDJSONError } from '@orkestrel/ndjson'
 import { createRecorder, waitForDelay } from '@orkestrel/test'
 import { OllamaProvider } from '@src/core'
@@ -9,14 +14,21 @@ import {
 	createUserMessage,
 	DEADLINE_MS,
 	DONE_RECORD,
+	OLLAMA_CONTEXT_DEFAULT,
 	OLLAMA_CONTEXT_PREFIX,
+	OLLAMA_CONTEXT_REFUSAL,
 	OLLAMA_CONTEXT_CASES,
+	OLLAMA_INVALID_OPTIONS,
+	OLLAMA_MALFORMED_RECORDS,
+	OLLAMA_VALID_OPTIONS,
 	SETTLE_MS,
 	SHORT_OPTIONS,
 } from '../../setup.js'
 import {
 	captureAbortedRequest,
+	createErrorTransport,
 	createRecordingProxy,
+	createRecordingTransport,
 	createRefusingTransport,
 	createStreamingTransport,
 	drive,
@@ -49,6 +61,49 @@ describe('OllamaProvider (pre-aborted)', () => {
 
 		const generator = provider.stream([createUserMessage('Say hello.')], abort.signal)
 		await expect(generator.next()).rejects.toThrow(Error)
+	})
+})
+
+describe('OllamaProvider (options door)', () => {
+	it.each(OLLAMA_VALID_OPTIONS)('admits %s', (_label, options) => {
+		const provider: unknown = Reflect.construct(OllamaProvider, [
+			{ model: 'test-model', ...options },
+		])
+
+		expect(provider).toBeInstanceOf(OllamaProvider)
+	})
+
+	it.each(OLLAMA_INVALID_OPTIONS)(
+		'refuses %s at construction, naming the path',
+		(_label, options, path) => {
+			expect(() =>
+				Reflect.construct(OllamaProvider, [{ model: 'test-model', ...options }]),
+			).toThrow(
+				expect.objectContaining({
+					code: 'PROTOCOL',
+					message: expect.stringContaining(path),
+					cause: {
+						faults: expect.arrayContaining([expect.objectContaining({ path: [path] })]),
+					},
+				}),
+			)
+		},
+	)
+
+	it('refuses absent options the type requires', () => {
+		expect(() => Reflect.construct(OllamaProvider, [{}])).toThrow(
+			expect.objectContaining({ code: 'PROTOCOL', message: expect.stringContaining('model') }),
+		)
+	})
+
+	it('lists every fault in one refusal', () => {
+		expect(() =>
+			Reflect.construct(OllamaProvider, [{ model: '', timeout: 0, keepalive: '5m' }]),
+		).toThrow(
+			expect.objectContaining({
+				message: expect.stringMatching(/model[\s\S]*timeout[\s\S]*keepalive/u),
+			}),
+		)
 	})
 })
 
@@ -87,6 +142,58 @@ describe('OllamaProvider (wire seams)', () => {
 		})
 	})
 
+	it('marks only a done record as the terminal one', () => {
+		const provider = new OllamaProvider({ model: 'test-model' })
+
+		expect(provider.read({ done: true }).done).toBe(true)
+		expect(provider.read({ done: false })).not.toHaveProperty('done')
+		expect(provider.read({ message: { content: 'ok' } })).not.toHaveProperty('done')
+		expect(provider.read({ done: 'true' })).not.toHaveProperty('done')
+	})
+
+	it.each(OLLAMA_MALFORMED_RECORDS)('refuses %s in read', (_label, record, text) => {
+		const provider = new OllamaProvider({ model: 'test-model' })
+
+		expect(() => provider.read(record)).toThrow(
+			expect.objectContaining({ code: 'PROTOCOL', message: expect.stringContaining(text) }),
+		)
+		expect(() => provider.read(record)).toThrow(ProviderError)
+	})
+
+	it('admits a record that names the configured tag, and one that names none', () => {
+		const provider = new OllamaProvider({ model: 'test-model' })
+
+		expect(provider.read({ model: 'test-model', message: { content: 'ok' } }).content).toBe('ok')
+		expect(provider.read({ message: { content: 'ok' } }).content).toBe('ok')
+	})
+
+	it('admits absent counts, content, and thinking on a done record', () => {
+		const provider = new OllamaProvider({ model: 'test-model' })
+
+		expect(provider.read({ done: true })).toEqual({
+			content: '',
+			thinking: '',
+			tools: [],
+			done: true,
+		})
+	})
+
+	it('refuses empty messages when it encodes them, before any transport', async () => {
+		const transport = createRecordingTransport()
+		const provider = new OllamaProvider({ model: 'test-model', fetch: transport.fetch })
+
+		expect(() => provider.encode({ messages: [] })).toThrow(
+			expect.objectContaining({
+				code: 'PROTOCOL',
+				message: expect.stringContaining('pass at least one message'),
+			}),
+		)
+		await expect(provider.generate([], createAbort().signal)).rejects.toMatchObject({
+			code: 'PROTOCOL',
+		})
+		expect(transport.requests).toEqual([])
+	})
+
 	it('sets truncated only on a done record whose reason is length', () => {
 		const provider = new OllamaProvider({ model: 'test-model' })
 
@@ -101,7 +208,7 @@ describe('OllamaProvider (wire seams)', () => {
 		const provider = new OllamaProvider({ model: 'test-model' })
 		const schema = { type: 'object', properties: { answer: { type: 'string' } } }
 		const body = provider.encode({
-			messages: [],
+			messages: [createUserMessage('hi')],
 			tools: [{ name: 'weather' }],
 			options: { schema },
 		})
@@ -148,7 +255,7 @@ describe('OllamaProvider (wire seams)', () => {
 	it('never sends a tool title or annotations on the wire', () => {
 		const provider = new OllamaProvider({ model: 'test-model' })
 		const body = provider.encode({
-			messages: [],
+			messages: [createUserMessage('hi')],
 			tools: [
 				{
 					name: 'weather',
@@ -165,16 +272,81 @@ describe('OllamaProvider (wire seams)', () => {
 	})
 })
 
+describe('OllamaProvider (a prompt over the context window)', () => {
+	it('names the remedy on the 400 the daemon answers, keeping the code, the status, and the daemon text', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createErrorTransport(400, OLLAMA_CONTEXT_REFUSAL),
+		})
+
+		const caught: unknown = await provider
+			.generate([createUserMessage('hi')], createAbort().signal)
+			.catch((error: unknown) => error)
+
+		expect(isProviderError(caught) && caught.code === 'HTTP' && caught.status === 400).toBe(true)
+		expect(isProviderError(caught) && caught.message).toBe(
+			`provider error: 400 - ${OLLAMA_CONTEXT_REFUSAL}; the prompt exceeds the model's context window; set AgentOptions.window to fold the conversation, raise options.num_ctx, or set truncate: true to let the daemon cut it`,
+		)
+		expect(isProviderError(caught) && isProviderError(caught.cause)).toBe(true)
+	})
+
+	it('names the same remedy on the streaming path', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createErrorTransport(400, OLLAMA_CONTEXT_REFUSAL),
+		})
+
+		await expect(
+			drive(provider.stream([createUserMessage('hi')], createAbort().signal)),
+		).rejects.toThrow('set truncate: true to let the daemon cut it')
+	})
+
+	it('names the same remedy on an in-band error that names the context', () => {
+		const provider = new OllamaProvider({ model: 'test-model' })
+
+		expect(() => provider.read({ error: 'the input length exceeds the context length' })).toThrow(
+			'raise options.num_ctx',
+		)
+	})
+
+	it('leaves a 400 that names no context, and another status that does, as the daemon said them', async () => {
+		const other = new OllamaProvider({
+			model: 'test-model',
+			fetch: createErrorTransport(400, '{"error":"invalid model name"}'),
+		})
+		const status = new OllamaProvider({
+			model: 'test-model',
+			fetch: createErrorTransport(500, OLLAMA_CONTEXT_REFUSAL),
+		})
+
+		await expect(
+			other.generate([createUserMessage('hi')], createAbort().signal),
+		).rejects.toMatchObject({ message: 'provider error: 400 - {"error":"invalid model name"}' })
+		await expect(
+			status.generate([createUserMessage('hi')], createAbort().signal),
+		).rejects.toMatchObject({ message: `provider error: 500 - ${OLLAMA_CONTEXT_REFUSAL}` })
+	})
+
+	it('bounds an in-band error like an HTTP excerpt', () => {
+		const provider = new OllamaProvider({ model: 'test-model' })
+		expect(() => provider.read({ error: 'x'.repeat(4096) })).toThrow(
+			expect.objectContaining({ message: expect.stringMatching(/^.{1,2200}$/su) }),
+		)
+	})
+})
+
 describe('OllamaProvider (HTTP errors)', () => {
 	it('reports a non-OK response through the shared HTTP error taxonomy', async () => {
 		const provider = new OllamaProvider({
 			model: 'test-model',
 			fetch: () => Promise.resolve(new Response('model missing', { status: 404 })),
 		})
-		const caught: unknown = await provider.generate([], createAbort().signal).then(
-			() => undefined,
-			(error: unknown) => error,
-		)
+		const caught: unknown = await provider
+			.generate([createUserMessage('hi')], createAbort().signal)
+			.then(
+				() => undefined,
+				(error: unknown) => error,
+			)
 
 		expect(isProviderError(caught) && caught.code === 'HTTP' && caught.status === 404).toBe(true)
 	})
@@ -227,7 +399,7 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 				},
 			])
 			expect(request.text).toBe(
-				'{"model":"test-model","messages":[{"role":"user","content":"hello"}],"stream":true,"keep_alive":"9m","think":false,"options":{"num_predict":7,"temperature":0.5},"tools":[{"type":"function","function":{"name":"get_weather","description":"Get the current weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string","description":"The city name"}},"required":["city"]}}}]}',
+				'{"model":"test-model","messages":[{"role":"user","content":"hello"}],"stream":true,"keep_alive":"9m","think":false,"options":{"num_predict":7,"temperature":0.5},"tools":[{"type":"function","function":{"name":"get_weather","description":"Get the current weather for a city.","parameters":{"type":"object","properties":{"city":{"type":"string","description":"The city name"}},"required":["city"]}}}],"truncate":false}',
 			)
 		} finally {
 			await proxy.stop()
@@ -348,14 +520,20 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 		])
 	})
 
-	// Recipe: an empty messages array. The proxy records that exact provider request
-	// before the deliberately unreachable forward is aborted.
-	it('accepts an empty messages array (sends [])', async () => {
-		const request = await captureAbortedRequest({ model: 'test-model' }, (provider, signal) =>
-			provider.generate([], signal),
-		)
+	// Recipe: an empty messages array. The daemon answers it with a model load and no turn, so
+	// the proxy records nothing: the provider refuses before it sends.
+	it('sends nothing for an empty messages array', async () => {
+		const proxy = await createRecordingProxy()
+		try {
+			const provider = new OllamaProvider({ model: 'test-model', url: proxy.url })
 
-		expect(request.body.messages).toEqual([])
+			await expect(provider.generate([], createAbort().signal)).rejects.toMatchObject({
+				code: 'PROTOCOL',
+			})
+			expect(proxy.requests).toEqual([])
+		} finally {
+			await proxy.stop()
+		}
 	})
 
 	// Recipe: one user turn with base64 images, one without. The proxy records that
@@ -421,16 +599,16 @@ describe('OllamaProvider (recording proxy — request body)', () => {
 })
 
 describe('OllamaProvider (recording proxy — context controls)', () => {
-	// Recipe: 'hi' / no truncate, no shift. Assertion: provider-behavior — omission leaves
-	// the encoded body byte for byte at the default wire, with neither key present.
+	// Recipe: 'hi' / no truncate, no shift. Assertion: provider-behavior — omission sends the
+	// refusing truncate:false, so the daemon cannot cut a prompt silently, and no shift key.
 	// bounded by abort-once-recorded, no generation awaited.
-	it('omits truncate and shift when neither option is set', async () => {
+	it('sends truncate:false and omits shift when neither option is set', async () => {
 		const request = await captureAbortedRequest({ model: 'test-model' }, (provider, signal) =>
 			provider.generate([createUserMessage('hi')], signal),
 		)
 
-		expect(request.text).toBe(`${OLLAMA_CONTEXT_PREFIX}}`)
-		expect('truncate' in request.body).toBe(false)
+		expect(request.text).toBe(`${OLLAMA_CONTEXT_PREFIX}${OLLAMA_CONTEXT_DEFAULT}}`)
+		expect(request.body.truncate).toBe(false)
 		expect('shift' in request.body).toBe(false)
 	})
 
@@ -703,8 +881,10 @@ describe('OllamaProvider (streaming fold over a canned NDJSON daemon)', () => {
 			]),
 		})
 
-		expect(await unfinished.generate([], createAbort().signal)).toEqual({ content: 'answer' })
-		expect(await finished.generate([], createAbort().signal)).toEqual({
+		await expect(
+			unfinished.generate([createUserMessage('hi')], createAbort().signal),
+		).rejects.toMatchObject({ code: 'PROTOCOL' })
+		expect(await finished.generate([createUserMessage('hi')], createAbort().signal)).toEqual({
 			content: 'answer',
 			usage: { prompt: 3, completion: 4, total: 7 },
 		})
@@ -719,7 +899,7 @@ describe('OllamaProvider (streaming fold over a canned NDJSON daemon)', () => {
 			]),
 		})
 
-		expect(await provider.generate([], createAbort().signal)).toEqual({
+		expect(await provider.generate([createUserMessage('hi')], createAbort().signal)).toEqual({
 			content: 'cut',
 			usage: { prompt: 3, completion: 8, total: 11 },
 			truncated: true,
@@ -735,7 +915,7 @@ describe('OllamaProvider (streaming fold over a canned NDJSON daemon)', () => {
 			]),
 		})
 
-		expect(await provider.generate([], createAbort().signal)).toEqual({
+		expect(await provider.generate([createUserMessage('hi')], createAbort().signal)).toEqual({
 			content: 'cut',
 			truncated: true,
 		})
@@ -787,10 +967,9 @@ describe('OllamaProvider (streaming fold over a canned NDJSON daemon)', () => {
 		const provider = new OllamaProvider({
 			model: 'test-model',
 			fetch: createStreamingTransport([
-				'{"message":{"tool_calls":[{"id":"call-1","function":{"name":"weather"}}]}}\n',
-				'{"message":{"tool_calls":[{"id":"call-2","function":{"name":"clock"}}]}}\n',
+				'{"message":{"tool_calls":[{"id":"call-1","function":{"name":"weather","arguments":{}}}]}}\n',
+				'{"message":{"tool_calls":[{"id":"call-2","function":{"name":"clock","arguments":{}}}]}}\n',
 				'{"done":true,"prompt_eval_count":1,"eval_count":2}\n',
-				'{"message":{"content":"trailing"}}\n',
 			]),
 		})
 
@@ -932,9 +1111,9 @@ describe('OllamaProvider (strict framing over a canned NDJSON daemon)', () => {
 		expect(result.usage).toEqual({ prompt: 5, completion: 6, total: 11 })
 	})
 
-	// J3's first stated limit: a daemon error carried in a well-formed record is an object on its
-	// line, so the strict parser passes it and the call settles on what streamed.
-	it('reads an in-band error record as no refusal', async () => {
+	// A daemon error carried in a well-formed record is an object on its line, so the strict parser
+	// passes it and `read` is what refuses it: what streamed before it is not a settled answer.
+	it('rejects an in-band error record as a PROTOCOL provider error, with the daemon text', async () => {
 		const provider = new OllamaProvider({
 			model: 'test-model',
 			fetch: createStreamingTransport([
@@ -943,28 +1122,48 @@ describe('OllamaProvider (strict framing over a canned NDJSON daemon)', () => {
 			]),
 		})
 
-		const { deltas, result } = await drive(
-			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
-		)
-
-		expect(deltas.join('')).toBe('ok')
-		expect(result.content).toBe('ok')
+		await expect(
+			drive(provider.stream([createUserMessage('Say hello.')], createAbort().signal)),
+		).rejects.toMatchObject({
+			code: 'PROTOCOL',
+			message: 'provider error: the daemon reported the runner stopped',
+		})
 	})
 
-	// J3's second stated limit: a stream cut on a line boundary leaves nothing malformed, so the
-	// call assembles what streamed with no usage report.
-	it('assembles a stream cut on a line boundary before done', async () => {
+	// A stream cut on a line boundary leaves nothing malformed, so only the missing terminal record
+	// tells it from a whole turn.
+	it('rejects a stream cut on a line boundary before done', async () => {
 		const provider = new OllamaProvider({
 			model: 'test-model',
 			fetch: createStreamingTransport(['{"message":{"content":"ok"}}\n']),
 		})
 
-		const { deltas, result } = await drive(
-			provider.stream([createUserMessage('Say hello.')], createAbort().signal),
-		)
+		await expect(
+			drive(provider.stream([createUserMessage('Say hello.')], createAbort().signal)),
+		).rejects.toMatchObject({ code: 'PROTOCOL' })
+	})
 
-		expect(deltas.join('')).toBe('ok')
-		expect(result.content).toBe('ok')
-		expect(result.usage).toBeUndefined()
+	it('rejects a record that follows the terminal one', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([DONE_RECORD, '{"message":{"content":"trailing"}}\n']),
+		})
+
+		await expect(
+			drive(provider.stream([createUserMessage('Say hello.')], createAbort().signal)),
+		).rejects.toMatchObject({ code: 'PROTOCOL' })
+	})
+
+	it('rejects a turn the daemon answers with a model load', async () => {
+		const provider = new OllamaProvider({
+			model: 'test-model',
+			fetch: createStreamingTransport([
+				'{"model":"test-model","message":{"role":"assistant","content":""},"done":true,"done_reason":"load"}\n',
+			]),
+		})
+
+		await expect(
+			drive(provider.stream([createUserMessage('Say hello.')], createAbort().signal)),
+		).rejects.toMatchObject({ code: 'PROTOCOL' })
 	})
 })

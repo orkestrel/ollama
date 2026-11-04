@@ -1,4 +1,5 @@
 import type { ProviderOptions } from '@orkestrel/agent'
+import type { AuditFault } from '@orkestrel/contract'
 import type { EmitterErrorHandler, EmitterHooks, EmitterInterface } from '@orkestrel/emitter'
 import type { DuplexOptions } from '@orkestrel/process'
 import type { OllamaTiming } from '@src/core'
@@ -75,7 +76,8 @@ export interface OllamaMetadataOptions {
  * global `fetch` bound to `globalThis`. The collaborator must honor the supplied signal
  * and manual redirect policy and return an unread standard response body; the daemon
  * retains its byte and timer bounds when reading that body.
- * The daemon owns a snapshot of the declaration before doing I/O.
+ * The daemon owns a snapshot of the declaration before doing I/O, and an undeclared key refuses
+ * here and in `executable`, each `models` entry, `metadata`, and `termination`.
  */
 export interface OllamaDaemonOptions extends Pick<ProviderOptions, 'fetch'> {
 	readonly on?: EmitterHooks<OllamaDaemonEventMap>
@@ -256,6 +258,8 @@ export interface OllamaErrorContext {
 	readonly expected?: unknown
 	readonly received?: unknown
 	readonly evidence?: string
+	/** Holds the fault report of a refused declaration, each fault naming its path. */
+	readonly faults?: readonly AuditFault[]
 }
 
 /** Configures a daemon refusal with its category, observations, and original cause. */

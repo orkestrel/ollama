@@ -15,6 +15,24 @@ import { isOllamaError, OllamaError } from './errors.js'
 import { isOllamaModel, isOllamaOrigin } from './validators.js'
 
 /**
+ * Checks whether every key of a record is one the declaration names.
+ * @param value - The record to inspect
+ * @param keys - The keys the declaration names
+ * @returns True if the record holds no other key; false otherwise
+ * @example
+ * ```ts
+ * matchesDeclaredKeys({ grace: 1 }, ['grace', 'drain']) // true
+ * matchesDeclaredKeys({ wait: 1 }, ['grace', 'drain']) // false
+ * ```
+ */
+export function matchesDeclaredKeys(
+	value: Readonly<Record<string, unknown>>,
+	keys: readonly string[],
+): boolean {
+	return Object.keys(value).every((key) => keys.includes(key))
+}
+
+/**
  * Builds the environment with dedicated values overriding every inherited or caller casing.
  * @param inherited - The inherited environment
  * @param environment - Caller overrides and removals

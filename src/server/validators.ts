@@ -1,11 +1,13 @@
 import type { OllamaDaemonOptions, OllamaExecutable, OllamaModel } from './types.js'
 import { arrayOf, holds, isFunction, isInteger, isRecord, isString } from '@orkestrel/contract'
 import { isAbsolute } from 'node:path'
+import { OLLAMA_DAEMON_KEYS, OLLAMA_TIMER_LIMIT } from './constants.js'
+import { matchesDeclaredKeys } from './helpers.js'
 
 /**
  * Checks whether a value declares an absolute executable and its offline identity.
  * @param value - The declaration to inspect
- * @returns True if the identity and argument vector are well formed; false otherwise
+ * @returns True if the identity and argument vector are well formed and no other key is present; false otherwise
  * @example
  * ```ts
  * isOllamaExecutable({ path: 'node', digest: '', version: '' }) // false
@@ -15,6 +17,7 @@ export function isOllamaExecutable(value: unknown): value is OllamaExecutable {
 	return holds(
 		() =>
 			isRecord(value) &&
+			matchesDeclaredKeys(value, OLLAMA_DAEMON_KEYS.executable) &&
 			isString(value.path) &&
 			isAbsolute(value.path) &&
 			!value.path.includes('\0') &&
@@ -32,7 +35,7 @@ export function isOllamaExecutable(value: unknown): value is OllamaExecutable {
 /**
  * Checks whether a value declares an exact model name and inventory digest.
  * @param value - The declaration to inspect
- * @returns True if both model identity members are nonempty strings; false otherwise
+ * @returns True if both model identity members are nonempty strings and no other key is present; false otherwise
  * @example
  * ```ts
  * isOllamaModel({ name: 'cedar', digest: 'declared' }) // true
@@ -42,6 +45,7 @@ export function isOllamaModel(value: unknown): value is OllamaModel {
 	return holds(
 		() =>
 			isRecord(value) &&
+			matchesDeclaredKeys(value, OLLAMA_DAEMON_KEYS.model) &&
 			isString(value.name) &&
 			value.name.trim().length > 0 &&
 			!value.name.includes('\0') &&
@@ -78,7 +82,7 @@ export function isOllamaOrigin(value: unknown): value is string {
 /**
  * Checks whether an unknown declaration can safely reach daemon preflight.
  * @param value - The complete declaration to inspect
- * @returns True if every supplied option satisfies the daemon contract; false otherwise
+ * @returns True if every supplied option satisfies the daemon contract and no undeclared key is present; false otherwise
  * @example
  * ```ts
  * isOllamaDaemonOptions({}) // false
@@ -88,6 +92,7 @@ export function isOllamaDaemonOptions(value: unknown): value is OllamaDaemonOpti
 	return holds(() => {
 		if (
 			!isRecord(value) ||
+			!matchesDeclaredKeys(value, OLLAMA_DAEMON_KEYS.daemon) ||
 			!isOllamaExecutable(value.executable) ||
 			!isOllamaOrigin(value.url) ||
 			!isString(value.workspace) ||
@@ -105,16 +110,17 @@ export function isOllamaDaemonOptions(value: unknown): value is OllamaDaemonOpti
 			return false
 		if (
 			value.readiness !== undefined &&
-			(!isInteger(value.readiness) || value.readiness <= 0 || value.readiness > 2_147_483_647)
+			(!isInteger(value.readiness) || value.readiness <= 0 || value.readiness > OLLAMA_TIMER_LIMIT)
 		)
 			return false
 		if (
 			value.metadata !== undefined &&
 			(!isRecord(value.metadata) ||
+				!matchesDeclaredKeys(value.metadata, OLLAMA_DAEMON_KEYS.metadata) ||
 				(value.metadata.timeout !== undefined &&
 					(!isInteger(value.metadata.timeout) ||
 						value.metadata.timeout <= 0 ||
-						value.metadata.timeout > 2_147_483_647)) ||
+						value.metadata.timeout > OLLAMA_TIMER_LIMIT)) ||
 				(value.metadata.bytes !== undefined &&
 					(!isInteger(value.metadata.bytes) ||
 						value.metadata.bytes <= 0 ||
@@ -124,8 +130,9 @@ export function isOllamaDaemonOptions(value: unknown): value is OllamaDaemonOpti
 		if (
 			value.termination !== undefined &&
 			(!isRecord(value.termination) ||
+				!matchesDeclaredKeys(value.termination, OLLAMA_DAEMON_KEYS.termination) ||
 				Object.values(value.termination).some(
-					(duration) => !isInteger(duration) || duration < 0 || duration > 2_147_483_647,
+					(duration) => !isInteger(duration) || duration < 0 || duration > OLLAMA_TIMER_LIMIT,
 				))
 		)
 			return false

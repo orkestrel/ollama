@@ -7,6 +7,37 @@ export const OLLAMA_METADATA_TIMEOUT = 10_000
 /** Bounds each retained metadata or unload response to 1048576 bytes by default. */
 export const OLLAMA_METADATA_BYTES = 1_048_576
 
+/** Bounds a daemon duration to 2147483647 milliseconds, the longest a Node timer holds. */
+export const OLLAMA_TIMER_LIMIT = 2_147_483_647
+
+/** Lists the keys of a daemon declaration that hold live values, which no shape declares. */
+export const OLLAMA_DAEMON_LIVE: readonly string[] = Object.freeze([
+	'on',
+	'error',
+	'fetch',
+	'signal',
+])
+
+/** Lists the keys each record of a daemon declaration admits, live values included. */
+export const OLLAMA_DAEMON_KEYS = Object.freeze({
+	daemon: Object.freeze([
+		...OLLAMA_DAEMON_LIVE,
+		'executable',
+		'url',
+		'models',
+		'workspace',
+		'environment',
+		'store',
+		'readiness',
+		'metadata',
+		'termination',
+	]),
+	executable: Object.freeze(['path', 'digest', 'version', 'arguments']),
+	model: Object.freeze(['name', 'digest']),
+	metadata: Object.freeze(['timeout', 'bytes']),
+	termination: Object.freeze(['grace', 'drain']),
+})
+
 /** Identifies daemon errors across installations and module formats through the global symbol registry. */
 export const OLLAMA_ERROR_BRAND = Symbol.for('@orkestrel/ollama.OllamaError')
 

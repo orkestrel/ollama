@@ -1,5 +1,5 @@
 import type { OllamaErrorCode, OllamaErrorContext, OllamaErrorOptions } from './types.js'
-import { holds, INTRINSICS, isFunction, isObject, isString } from '@orkestrel/contract'
+import { arrayOf, holds, INTRINSICS, isFunction, isObject, isString } from '@orkestrel/contract'
 import { OLLAMA_ERROR_BRAND, OLLAMA_ERROR_CODES } from './constants.js'
 
 /**
@@ -63,7 +63,12 @@ export function isOllamaError(value: unknown): value is OllamaError {
 		const code: unknown = INTRINSICS.reflect.read(value, 'code')
 		const context: unknown = INTRINSICS.reflect.read(value, 'context')
 		const stack: unknown = INTRINSICS.reflect.read(value, 'stack')
+		const faults: unknown =
+			isObject(context) || isFunction(context)
+				? INTRINSICS.reflect.read(context, 'faults')
+				: undefined
 		return (
+			(faults === undefined || arrayOf(isObject)(faults)) &&
 			OLLAMA_ERROR_CODES.some((candidate) => candidate === code) &&
 			isString(INTRINSICS.reflect.read(value, 'message')) &&
 			(stack === undefined || isString(stack)) &&

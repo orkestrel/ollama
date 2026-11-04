@@ -7,15 +7,19 @@ import type {
 } from './types.js'
 import type { DuplexInterface } from '@orkestrel/process'
 import type { EmitterInterface } from '@orkestrel/emitter'
+import { attempt } from '@orkestrel/contract'
 import { Emitter } from '@orkestrel/emitter'
 import { createDuplex } from '@orkestrel/process/server'
+import { describeFaults } from '@orkestrel/tool'
+import { scanOptionFaults } from '@src/core'
 import { addAbortListener, once } from 'node:events'
 import { createServer } from 'node:net'
 import { access, readFile, stat } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { extname } from 'node:path'
 import { createHash } from 'node:crypto'
-import { OLLAMA_READINESS } from './constants.js'
+import { OLLAMA_DAEMON_LIVE, OLLAMA_READINESS } from './constants.js'
+import { ollamaDaemonContract } from './contracts.js'
 import { isOllamaDaemonOptions } from './validators.js'
 import { isOllamaError, OllamaError } from './errors.js'
 import {
@@ -60,11 +64,22 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 	/**
 	 * Captures a declaration before any filesystem, socket, or process operation.
 	 * @param options - The complete executable, endpoint, model, and lifecycle declaration
-	 * @throws OllamaError Thrown when the declaration is malformed.
+	 * @throws OllamaError Thrown with code `invalid` when the declaration is malformed, its `context.faults` naming each fault the contract finds.
 	 */
 	constructor(options: OllamaDaemonOptions) {
-		if (!isOllamaDaemonOptions(options))
-			throw new OllamaError('Invalid dedicated daemon declaration', { code: 'invalid' })
+		if (!isOllamaDaemonOptions(options)) {
+			const report = attempt(() =>
+				scanOptionFaults(ollamaDaemonContract, options, OLLAMA_DAEMON_LIVE),
+			)
+			const faults = report.success ? report.value : []
+			throw new OllamaError(
+				[
+					'Invalid dedicated daemon declaration: it needs an absolute executable path with its lowercase SHA-256 digest and version, a 127.0.0.1 url with an explicit port other than 11434 and 0, an absolute workspace, and uniquely named models',
+					...(faults.length > 0 ? [describeFaults(faults, ollamaDaemonContract.schema)] : []),
+				].join('\n'),
+				{ code: 'invalid', context: { faults } },
+			)
+		}
 		this.#options = Object.freeze({
 			...options,
 			url: options.url.replace(/\/$/, ''),

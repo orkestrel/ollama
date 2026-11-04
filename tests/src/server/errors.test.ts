@@ -86,6 +86,21 @@ describe('OllamaError', () => {
 })
 
 describe('isOllamaError', () => {
+	it.each([
+		[[{ reason: 'extra', path: ['wrokspace'] }], true],
+		[[], true],
+		[[{}], false],
+		[[{ reason: 'extra' }], false],
+		['extra', false],
+	])('holds context.faults to the audit faults it declares: %j', (faults, recognized) => {
+		const refused: unknown = Reflect.construct(OllamaError, [
+			'Refused',
+			{ code: 'invalid', context: { faults } },
+		])
+
+		expect(isOllamaError(refused)).toBe(recognized)
+	})
+
 	it('accepts every declared refusal code', () => {
 		expect(OLLAMA_ERROR_CODES.length).toBeGreaterThan(0)
 		for (const code of OLLAMA_ERROR_CODES) {

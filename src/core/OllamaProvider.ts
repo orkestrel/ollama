@@ -65,7 +65,7 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 			throw new ProviderError(
 				'PROTOCOL',
 				`provider error: refused options\n${describeFaults(faults, ollamaOptionsContract.schema)}`,
-				{ cause: { faults } },
+				{ context: { faults } },
 			)
 		super({
 			url: options.url ?? DEFAULT_OLLAMA_URL,

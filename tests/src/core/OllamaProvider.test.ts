@@ -82,7 +82,7 @@ describe('OllamaProvider (options door)', () => {
 				expect.objectContaining({
 					code: 'PROTOCOL',
 					message: expect.stringContaining(path),
-					cause: {
+					context: {
 						faults: expect.arrayContaining([expect.objectContaining({ path: [path] })]),
 					},
 				}),

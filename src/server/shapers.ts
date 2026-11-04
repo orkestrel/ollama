@@ -3,9 +3,11 @@ import {
 	integerShape,
 	objectShape,
 	optionalShape,
+	recordShape,
 	stringShape,
 } from '@orkestrel/contract'
 import { OLLAMA_TIMER_LIMIT } from './constants.js'
+import { ollamaOptionsShape } from '@src/core'
 
 /**
  * Describes the serializable part of {@link import('./types.js').OllamaDaemonOptions}, the record whose
@@ -13,8 +15,9 @@ import { OLLAMA_TIMER_LIMIT } from './constants.js'
  *
  * @remarks
  * `fetch`, `on`, `error`, and `signal` are live values, so they stay outside the shape. An
- * `environment` entry can be `undefined`, which removes a variable, so that record stays open here and
- * {@link import('./validators.js').isOllamaDaemonOptions} checks its entries. What a shape cannot state
+ * `environment` entry can be `undefined`, which removes a variable; omit those entries from the
+ * serializable record. Omit an unused `store`; an explicitly undefined store refuses in the guard
+ * and the shape. What a shape cannot state
  * stays in that guard too: an absolute path, a dedicated loopback origin, and unique model names.
  *
  * @example
@@ -39,13 +42,13 @@ export const ollamaDaemonShape = objectShape({
 		version: stringShape({ min: 1 }),
 		arguments: optionalShape(arrayShape(stringShape())),
 	}),
-	url: stringShape({ min: 1 }),
+	url: ollamaOptionsShape.properties.url.inner,
 	models: arrayShape(
 		objectShape({ name: stringShape({ min: 1 }), digest: stringShape({ min: 1 }) }),
 		{ min: 1 },
 	),
 	workspace: stringShape({ min: 1 }),
-	environment: optionalShape(objectShape({}, { additionalProperties: true })),
+	environment: optionalShape(recordShape(stringShape())),
 	store: optionalShape(stringShape({ min: 1 })),
 	readiness: optionalShape(integerShape({ min: 1, max: OLLAMA_TIMER_LIMIT })),
 	metadata: optionalShape(

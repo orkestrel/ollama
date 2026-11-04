@@ -35,7 +35,14 @@ export function buildOllamaContractCases() {
 			shape: ollamaJudgeOptionsShape,
 			positive: { model: 'mica', system: 'Judge the state.' },
 		},
-	]
+	].map((row) => ({
+		...row,
+		negatives: [
+			{ ...row.positive, url: 'not a url' },
+			{ ...row.positive, model: '' },
+			{ ...row.positive, timeout: Infinity },
+		],
+	}))
 }
 
 /**

@@ -138,7 +138,37 @@ export function buildOllamaDaemonContractCases() {
 	return [
 		{ name: 'daemon contract', wire: ollamaDaemonContract },
 		{ name: 'daemon shape', wire: createContract(ollamaDaemonShape) },
-	]
+	].map((row) => ({
+		...row,
+		positive: DAEMON_DECLARATION,
+		positives: [
+			DAEMON_DECLARATION,
+			{ ...DAEMON_DECLARATION, store: DAEMON_DECLARATION.workspace },
+			{ ...DAEMON_DECLARATION, environment: { A: '1' }, readiness: 100 },
+			{ ...DAEMON_DECLARATION, metadata: { bytes: 100 }, termination: { grace: 0 } },
+		],
+		negatives: [
+			{},
+			{ ...DAEMON_DECLARATION, environment: { A: 1 } },
+			{ ...DAEMON_DECLARATION, url: 'not a url' },
+			{ ...DAEMON_DECLARATION, extra: true },
+		],
+		semantics: [
+			{ condition: 'absolute workspace', value: { ...DAEMON_DECLARATION, workspace: 'relative' } },
+			{ condition: 'absolute store', value: { ...DAEMON_DECLARATION, store: 'relative' } },
+			{
+				condition: 'unique model names',
+				value: {
+					...DAEMON_DECLARATION,
+					models: [...DAEMON_DECLARATION.models, ...DAEMON_DECLARATION.models],
+				},
+			},
+			{
+				condition: 'workspace without NUL',
+				value: { ...DAEMON_DECLARATION, workspace: `${DAEMON_DECLARATION.workspace}\0` },
+			},
+		],
+	}))
 }
 import { createScratch, readInventory } from '@orkestrel/test/server'
 import { createToolManager } from '@orkestrel/tool'

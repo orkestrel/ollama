@@ -104,8 +104,11 @@ export function isOllamaDaemonOptions(value: unknown): value is OllamaDaemonOpti
 		)
 			return false
 		if (
-			value.store !== undefined &&
-			(!isString(value.store) || !isAbsolute(value.store) || value.store.includes('\0'))
+			Object.hasOwn(value, 'store') &&
+			(value.store === undefined ||
+				!isString(value.store) ||
+				!isAbsolute(value.store) ||
+				value.store.includes('\0'))
 		)
 			return false
 		if (

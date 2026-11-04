@@ -15,8 +15,9 @@ import {
  *
  * @remarks
  * `fetch` and `headers` are callbacks, so they stay outside the shape. `url` is an absolute URL with a
- * host, or a same-origin path a browser page resolves. `keepAlive` takes the Go duration form the
- * daemon parses, or a whole number of seconds from `-1`, which keeps the model resident, up: `0`
+ * host, or a relative URL a browser's fetch resolves; a Windows path and a host with no scheme refuse.
+ * `keepAlive` takes what the `Duration` reader of Ollama 0.40.14 reads: a Go duration string, or a
+ * finite number of seconds, fractions included. A negative value keeps the model resident, and `0`
  * unloads it after the call. `options` is the daemon's open sampling bag.
  *
  * @example
@@ -31,12 +32,15 @@ import {
 export const ollamaOptionsShape = objectShape({
 	model: stringShape({ min: 1 }),
 	url: optionalShape(
-		stringShape({ pattern: /^(?:[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s/]+\S*|\/\S*)$/ }),
+		stringShape({
+			pattern:
+				/^(?:[A-Za-z][A-Za-z0-9+.-]+:\/\/[^\s/\\?#]+(?:[/?#][^\s\\]*)?|\/[^\s\\]*|[^\s\\:/?#]+(?:[/?#][^\s\\]*)?)$/,
+		}),
 	),
 	keepAlive: optionalShape(
 		unionShape(
-			stringShape({ pattern: /^(?:0|-?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:ns|us|µs|μs|ms|s|m|h))+)$/ }),
-			integerShape({ min: -1, max: Number.MAX_SAFE_INTEGER }),
+			stringShape({ pattern: /^[-+]?(?:0|(?:(?:\d+(?:\.\d*)?|\.\d+)(?:ns|us|µs|μs|ms|s|m|h))+)$/ }),
+			numberShape(),
 		),
 	),
 	options: optionalShape(objectShape({}, { additionalProperties: true })),

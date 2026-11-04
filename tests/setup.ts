@@ -1,5 +1,6 @@
 import type {
 	AuthorityInterface,
+	JudgeQuestion,
 	Message,
 	ProviderDelta,
 	ProviderRequest,
@@ -399,12 +400,25 @@ export const OLLAMA_VALID_OPTIONS: ReadonlyArray<
 	['an absolute url', { url: 'http://127.0.0.1:11435' }],
 	['a same-origin path', { url: '/llm' }],
 	['a url with a path', { url: 'https://my-app.example.com/llm' }],
+	['a url with a port and a query', { url: 'http://[::1]:11434/llm?tenant=cedar' }],
+	['a dot-relative url', { url: './proxy' }],
+	['a parent-relative url', { url: '../proxy' }],
+	['a bare relative url', { url: 'proxy' }],
+	['a nested relative url', { url: 'api/llm' }],
+	['a scheme-relative url', { url: '//llm.example.com/proxy' }],
 	['a duration', { keepAlive: '5m' }],
 	['a compound duration', { keepAlive: '1h30m' }],
 	['a fractional duration', { keepAlive: '1.5h' }],
 	['a negative duration', { keepAlive: '-1m' }],
+	['a positive duration', { keepAlive: '+5m' }],
+	['a duration with no leading digit', { keepAlive: '.5s' }],
+	['a duration with no trailing digit', { keepAlive: '1.s' }],
+	['every duration unit', { keepAlive: '1h1m1s1ms1us1µs1μs1ns' }],
 	['a zero duration', { keepAlive: '0' }],
+	['a signed zero duration', { keepAlive: '-0' }],
 	['seconds', { keepAlive: 300 }],
+	['fractional seconds', { keepAlive: 0.5 }],
+	['seconds under -1', { keepAlive: -2 }],
 	['the unload after the call', { keepAlive: 0 }],
 	['the resident model', { keepAlive: -1 }],
 	['the smallest timeout', { timeout: 1 }],
@@ -425,6 +439,14 @@ export const OLLAMA_INVALID_OPTIONS: ReadonlyArray<
 	['a url that is not one', { url: 'not a url' }, 'url'],
 	['an empty url', { url: '' }, 'url'],
 	['a url with no host', { url: 'http://' }, 'url'],
+	['a host with no scheme', { url: 'localhost:11434' }, 'url'],
+	['a Windows path with a backslash', { url: 'C:\\ollama' }, 'url'],
+	['a Windows path with a slash', { url: 'C:/ollama' }, 'url'],
+	['a Windows path on a drive', { url: 'C:ollama' }, 'url'],
+	['a Windows path as a one-letter scheme', { url: 'C://ollama' }, 'url'],
+	['a relative Windows path', { url: '.\\proxy' }, 'url'],
+	['a Windows share', { url: '\\\\server\\share' }, 'url'],
+	['a file URL with no host', { url: 'file:///C:/ollama' }, 'url'],
 	['a zero timeout', { timeout: 0 }, 'timeout'],
 	['a negative timeout', { timeout: -1 }, 'timeout'],
 	['a fractional timeout', { timeout: 1.5 }, 'timeout'],
@@ -434,8 +456,13 @@ export const OLLAMA_INVALID_OPTIONS: ReadonlyArray<
 	['a keep-alive word', { keepAlive: 'soon' }, 'keepAlive'],
 	['a keep-alive with no unit', { keepAlive: '5' }, 'keepAlive'],
 	['an empty keep-alive', { keepAlive: '' }, 'keepAlive'],
-	['fractional keep-alive seconds', { keepAlive: 1.5 }, 'keepAlive'],
-	['keep-alive seconds under -1', { keepAlive: -2 }, 'keepAlive'],
+	['a keep-alive with an unknown unit', { keepAlive: '5d' }, 'keepAlive'],
+	['a keep-alive sign alone', { keepAlive: '+' }, 'keepAlive'],
+	['a keep-alive unit with no digit', { keepAlive: '.s' }, 'keepAlive'],
+	['a keep-alive of -1 as text', { keepAlive: '-1' }, 'keepAlive'],
+	['a NaN keep-alive', { keepAlive: Number.NaN }, 'keepAlive'],
+	['an infinite keep-alive', { keepAlive: Number.POSITIVE_INFINITY }, 'keepAlive'],
+	['a boolean keep-alive', { keepAlive: true }, 'keepAlive'],
 	['a text options bag', { options: 'fast' }, 'options'],
 	['a list options bag', { options: [] }, 'options'],
 	['a text think', { think: 'yes' }, 'think'],
@@ -521,6 +548,111 @@ export const OLLAMA_MALFORMED_RECORDS: ReadonlyArray<
 	['an in-band error with no text', { error: { code: 7 } }, 'the daemon reported'],
 	['another model', { model: 'other-model', message: { content: 'ok' } }, '"other-model"'],
 	['a model that is no tag', { model: 7, message: { content: 'ok' } }, 'answered for model'],
+])
+
+// ── Judge answer matrix ───────────────────────────────────────────────────────
+//
+// The questions and the top lists whose answers must hold what the judge write door checks: a
+// choice names every criterion, a score matches its levels, and every value sits in [0, 1]. The
+// lists reach the edges of the arithmetic, where a gap overflows or a temperature divides it away.
+
+/** Pairs a label with a question, the top logprobs a daemon could send for it, and a calibration temperature. */
+export const JUDGE_TIE_CASES: ReadonlyArray<
+	readonly [label: string, question: JudgeQuestion, top: readonly Logprob[], temperature: number]
+> = Object.freeze([
+	[
+		'a noul',
+		{ form: 'noul', instructions: 'Is it approved?' },
+		[
+			{ token: 'No', logprob: -0.1 },
+			{ token: 'Yes', logprob: -2 },
+		],
+		1,
+	],
+	[
+		'a choice of named candidates',
+		{ form: 'choice', criteria: { billing: null, bug: 'Software errors', account: null } },
+		[
+			{ token: 'A', logprob: -0.1 },
+			{ token: 'B', logprob: -2 },
+			{ token: 'C', logprob: -3 },
+		],
+		1.1244734010661372,
+	],
+	[
+		'a choice with an empty key and positional keys',
+		{ form: 'choice', criteria: { '': 'empty', c1: 'first', 0: 'zero' } },
+		[
+			{ token: 'A', logprob: -1 },
+			{ token: 'B', logprob: -1 },
+			{ token: 'C', logprob: -1 },
+		],
+		1,
+	],
+	[
+		'a choice keyed __proto__',
+		{ form: 'choice', criteria: { ['__proto__']: 'first', other: 'second' } },
+		[
+			{ token: 'A', logprob: 0 },
+			{ token: 'B', logprob: -1 },
+		],
+		1,
+	],
+	[
+		'the largest choice',
+		{
+			form: 'choice',
+			criteria: Object.fromEntries(
+				Array.from({ length: 20 }, (_, index) => [`option-${index}`, `Option ${index}`]),
+			),
+		},
+		Array.from('ABCDEFGHIJKLMNOPQRST', (token, index) => ({ token, logprob: -index })),
+		1,
+	],
+	[
+		'the largest score',
+		{ form: 'score', criteria: Array.from({ length: 10 }, (_, index) => `Level ${index}`) },
+		Array.from('ABCDEFGHIJ', (token, index) => ({ token, logprob: -index })),
+		1,
+	],
+	[
+		'tokens no candidate names',
+		{ form: 'choice', criteria: { billing: null, bug: null } },
+		[
+			{ token: 'Z', logprob: 0 },
+			{ token: 'A', logprob: -1 },
+			{ token: 'B', logprob: -2 },
+			{ token: 'No', logprob: -3 },
+		],
+		1,
+	],
+	[
+		'a gap that overflows',
+		{ form: 'score', criteria: ['Low', 'High'] },
+		[
+			{ token: 'A', logprob: 1.7e308 },
+			{ token: 'B', logprob: -1.7e308 },
+		],
+		1,
+	],
+	[
+		'a temperature that overflows the gap',
+		{ form: 'noul', instructions: 'Is it approved?' },
+		[
+			{ token: 'No', logprob: -0.1 },
+			{ token: 'Yes', logprob: -0.2 },
+		],
+		1e-308,
+	],
+	[
+		'a temperature that divides the gap away',
+		{ form: 'noul', instructions: 'Is it approved?' },
+		[
+			{ token: 'No', logprob: -0.1 },
+			{ token: 'Yes', logprob: -0.2 },
+		],
+		1e308,
+	],
 ])
 
 // ── Truncation reason matrices ────────────────────────────────────────────────

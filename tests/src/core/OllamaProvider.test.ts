@@ -96,6 +96,31 @@ describe('OllamaProvider (options door)', () => {
 		)
 	})
 
+	it.each(['+5m', '.5s', 0.5, -2, 0, -1])('sends a keepAlive of %s verbatim', (keepAlive) => {
+		const provider = new OllamaProvider({ model: 'test-model', keepAlive })
+
+		expect(provider.encode({ messages: [createUserMessage('hi')] }).keep_alive).toBe(keepAlive)
+	})
+
+	it.each(['./proxy', '../proxy', 'proxy', '/proxy'])(
+		'joins the relative url %s to the chat path, as a browser fetch resolves it',
+		async (url) => {
+			const targets = createRecorder<[input: unknown]>()
+			const provider = new OllamaProvider({
+				model: 'test-model',
+				url,
+				fetch: (input, init) => {
+					targets.handler(input)
+					return createStreamingTransport([DONE_RECORD])(input, init)
+				},
+			})
+
+			await provider.generate([createUserMessage('hi')], createAbort().signal)
+
+			expect(targets.calls).toEqual([[`${url}/api/chat`]])
+		},
+	)
+
 	it('lists every fault in one refusal', () => {
 		expect(() =>
 			Reflect.construct(OllamaProvider, [{ model: '', timeout: 0, keepalive: '5m' }]),

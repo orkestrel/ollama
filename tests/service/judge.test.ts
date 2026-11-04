@@ -59,3 +59,33 @@ it('reads Mica raw probabilities, native decision forms, and the Mica System One
 	expect(error.code).toBe('HTTP')
 	expect(error.status).toBe(400)
 })
+
+// The state runs well past the 8192-token window at any tokenization, and `num_ctx` matches the case
+// before it, so the daemon refuses from the loaded runner instead of reloading the model.
+it('refuses a Mica prompt over the context window with its remedy, and truncate: true cuts it', async () => {
+	const request = { ...JUDGE_NOUL_REQUEST, state: 'Background material. '.repeat(4096) }
+	const declaration = {
+		url: OLLAMA_CONFIG.host,
+		model: OLLAMA_JUDGE_CONFIG.model,
+		system: MICA_SYSTEM,
+		calibration: { temperature: OLLAMA_JUDGE_CONFIG.temperature },
+		options: { num_ctx: 8192 },
+		keepAlive: '30m',
+	}
+
+	await expect(
+		createOllamaJudge(declaration).ask(request, AbortSignal.timeout(120_000)),
+	).rejects.toMatchObject({
+		code: 'HTTP',
+		status: 400,
+		message: expect.stringContaining(
+			"the prompt exceeds the model's context window; shorten the state, raise options.num_ctx, or set truncate: true to let the daemon cut it",
+		),
+	})
+
+	const cut = await createOllamaJudge({ ...declaration, truncate: true }).ask(
+		request,
+		AbortSignal.timeout(120_000),
+	)
+	expect(Object.keys({ ...cut.answers, ...cut.refusals })).toEqual(['deletion'])
+})

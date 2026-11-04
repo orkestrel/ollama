@@ -42,9 +42,12 @@ describe('Agent (live) — compaction retains complete exchanges on the wire', (
 				url: proxy.url,
 				options: { num_predict: 32, temperature: 0 },
 			})
+			// A window of 20 characters forces the fold and no recap fits it, so the run passes
+			// `strict: false` to reach the wire this case reads.
 			const agent = createAgent(provider, {
 				conversations,
 				window: createBudget({ max: 20, consumer: countRequestCharacters }),
+				strict: false,
 				timeout: CASE_TIMEOUT,
 			})
 			const finalMessage = createUserMessage('Please continue.')
@@ -156,7 +159,10 @@ describe('Agent (live) — automatic compaction folds an older exchange mid-run'
 								tools,
 								authority: createAllowAuthority(),
 								conversations,
+								// The window forces the fold after the lookup and no live recap fits it, so the
+								// run passes `strict: false` to reach the requests this case reads.
 								window: createBudget({ max: 48, consumer: estimateRequestMessages }),
+								strict: false,
 								timeout: CASE_TIMEOUT,
 								limit: 4,
 							},
@@ -285,7 +291,10 @@ describe('Agent (live) — dependent lookups cause repeated mid-run compaction',
 								tools,
 								authority: createAllowAuthority(),
 								conversations,
+								// The window forces a fold after each lookup and no live recap fits it, so the
+								// run passes `strict: false` to reach the requests this case reads.
 								window: createBudget({ max: 40, consumer: estimateRequestMessages }),
+								strict: false,
 								timeout: CASE_TIMEOUT,
 								limit: 8,
 							},

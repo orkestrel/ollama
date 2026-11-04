@@ -15,9 +15,39 @@ import {
 import { createRecordingProxy, systemText } from '../setupServer.js'
 import { createLiveOllama, OLLAMA_CONFIG, RETRY_BUDGET } from '../setupService.js'
 
-describe('Agent (live) — a throwing summarizer under auto-compaction is non-fatal', () => {
+describe('Agent (live) — a throwing summarizer under auto-compaction', () => {
 	it(
-		'fault fires and the run still completes non-partial',
+		'rejects with its failure under strict, the default, after the fault and before any provider call',
+		async () => {
+			const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
+			try {
+				const conversations = createConversationManager({
+					summarize: createThrowingSummarizer(),
+					keep: 2,
+				})
+				const conversation = conversations.add()
+				conversation.add(buildTurns(12))
+				const agent = createAgent(createOllama({ model: OLLAMA_CONFIG.model, url: proxy.url }), {
+					conversations,
+					window: createBudget({ max: 20, consumer: countRequestCharacters }),
+					timeout: CASE_TIMEOUT,
+				})
+				const faults = createRecorder<[unknown]>()
+				agent.emitter.on('fault', (error) => faults.handler(error))
+				agent.context.messages.add({ role: 'user', content: 'Please continue.' })
+
+				await expect(agent.generate()).rejects.toThrow(THROWING_SUMMARIZER_MESSAGE)
+				expect(faults.calls).toEqual([[new Error(THROWING_SUMMARIZER_MESSAGE)]])
+				expect(proxy.requests).toEqual([])
+			} finally {
+				await proxy.stop()
+			}
+		},
+		CASE_TIMEOUT,
+	)
+
+	it(
+		'stays non-fatal under strict: false, where the fault fires and the run still completes non-partial',
 		async () => {
 			const best = await retryUntil(
 				'surface a fault from a throwing summarizer',
@@ -29,6 +59,7 @@ describe('Agent (live) — a throwing summarizer under auto-compaction is non-fa
 					const agent = createAgent(createLiveOllama(), {
 						conversations,
 						window: createBudget({ max: 20, consumer: countRequestCharacters }),
+						strict: false,
 						timeout: CASE_TIMEOUT,
 					})
 					const faults = createRecorder<[unknown]>()

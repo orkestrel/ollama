@@ -537,10 +537,11 @@ describe('OllamaProvider (live error status)', () => {
 		expect(caught.message).toMatch(/provider error: 404/)
 	})
 
-	// Recipe: an empty model string — a genuine 400 "model is required" from the real
-	// daemon. Assertion: structural — a typed ProviderError with status 400.
-	it('throws with the status on a non-OK response (live 400 missing model)', async () => {
-		const provider = new OllamaProvider({ model: '', url: OLLAMA_CONFIG.host })
+	// Recipe: a well-formed name for a model the daemon does not hold — a genuine 404 from the
+	// real daemon, because the constructor refuses an empty name before any request. Assertion:
+	// structural — a typed ProviderError with status 404.
+	it('throws with the status on a non-OK response (live 404 for a model the daemon does not hold)', async () => {
+		const provider = new OllamaProvider({ model: 'does-not-exist:zzz', url: OLLAMA_CONFIG.host })
 		const abort = createAbort()
 
 		const caught: unknown = await provider.generate([createUserMessage('hi')], abort.signal).then(
@@ -551,8 +552,8 @@ describe('OllamaProvider (live error status)', () => {
 		expect(isProviderError(caught)).toBe(true)
 		if (!isProviderError(caught) || caught.code !== 'HTTP')
 			throw new Error('expected HTTP ProviderError')
-		expect(caught.status).toBe(400)
-		expect(caught.message).toMatch(/provider error: 400/)
+		expect(caught.status).toBe(404)
+		expect(caught.message).toMatch(/provider error: 404/)
 	})
 
 	// Recipe: model 'does-not-exist:zzz' — streaming path, a genuine 404 before any

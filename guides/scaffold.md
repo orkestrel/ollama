@@ -19,7 +19,7 @@ the verbs write and compare.
 skills, the templates, the transport contracts, the agent roles, the bench configuration, and the
 MCP registrations — which stays in one place and is published for reading. A target carries the
 `AGENTS.md` pointer that names where a reader finds it, the catalog agent file the `catalog` verb
-rewrites, and the skill pointer set for each package-facing skill `TARGET_SKILL_NAMES` lists: the
+rewrites, and the skill pointer set for each canonical skill `TARGET_SKILL_NAMES` lists: the
 Claude bridge, the Codex sidecar, and a `SKILL.md` pointer that names the canonical skill. It
 carries nothing else at a canon path: a file found at one is a superseded copy, and `overwrite`
 deletes it.
@@ -219,7 +219,7 @@ Exported from `@orkestrel/scaffold`, and reachable from
 | `SURFACE_EDIT_LENGTH`             | const | `6`                                                                                               | Sets the shortest name length at which a one-edit neighbor counts as a near name.                                                                                                      |
 | `SURFACE_TRANSFERS`               | const | `readonly SurfaceTransfer[]`                                                                      | Lists the declared transfers of bare names to their ruled keepers, frozen.                                                                                                             |
 | `TAB_WIDTH`                       | const | `2`                                                                                               | Sets the columns one tab occupies when the formatter measures a line, matching `tabWidth`.                                                                                             |
-| `TARGET_SKILL_NAMES`              | const | `readonly string[]`                                                                               | Lists the package-facing skills a target receives pointers for, frozen and alphabetical.                                                                                               |
+| `TARGET_SKILL_NAMES`              | const | `readonly string[]`                                                                               | Lists every canonical skill a target receives pointers for, frozen and alphabetical.                                                                                                   |
 | `THEMES_BARREL_PATH`              | const | `"src/styles/themes/index.scss"`                                                                  | Names the themes stylesheet marker.                                                                                                                                                    |
 | `THEMES_ENTRY_PATH`               | const | `"src/styles/themes/sheet.ts"`                                                                    | Names the themes build entry marker.                                                                                                                                                   |
 | `TOOLCHAIN_HOLDS`                 | const | `Readonly<Record<string, ToolchainHold>>`                                                         | Holds foreign tool ranges required by selected browser frameworks, frozen.                                                                                                             |
@@ -488,6 +488,7 @@ Exported from `@orkestrel/scaffold/server`, and reachable from
 | `listCanonPaths`          | function | `(target: string, groups: readonly ArtifactGroup[]) => readonly string[]`                                           | Lists the canon paths a target holds, filtered to a plan's groups.                                |
 | `listDirectories`         | function | `(root: string) => readonly string[]`                                                                               | Lists a directory's descendant directories as sorted root-relative paths.                         |
 | `listFiles`               | function | `(root: string) => readonly string[]`                                                                               | Lists a directory's files as sorted root-relative paths.                                          |
+| `listWrapperPaths`        | function | `(target: string, groups: readonly ArtifactGroup[]) => readonly string[]`                                           | Lists the configuration wrappers a target holds, filtered to a plan's groups.                     |
 | `matchesAnchor`           | function | `(anchor: WriteAnchor) => boolean`                                                                                  | Tests whether a path still holds the captured directory identity.                                 |
 | `matchesExecutablePath`   | function | `(path: string) => boolean`                                                                                         | Tests whether a vendored path is one a target receives executable.                                |
 | `matchesExpectation`      | function | `(expectation: WriteExpectation) => boolean`                                                                        | Tests whether a destination still holds what was captured of it.                                  |
@@ -1627,7 +1628,7 @@ The configuration a surface reaches is compiled or vendored, and no package-owne
 it. `tsconfig.json`, `vite.config.ts`, every wrapper under `configs/src`, and
 `configs/app/vite.showcase.config.ts` are content-owned template artifacts, so `repair` restores a
 deleted one and replaces a stale one. `configs/app/vite.journey.config.ts` is birth-owned and keeps
-your variant list. `configs/helpers.ts`, `.oxlintrc.json`, `.prettierignore`, and
+your variant list while the plan claims it. `configs/helpers.ts`, `.oxlintrc.json`, `.prettierignore`, and
 `tests/config.test.ts` are `HOST_PATHS` members: hydration claims their bytes, so the next
 release's `repair` refreshes them, and `overwrite` adds deletions rather than a forced refresh.
 Ownership and drift states the hydration.
@@ -1768,7 +1769,7 @@ group carries the `AGENTS.md` pointer that names where each contract is read, pl
 destinations as this package's own template content. The `orchestration` group carries
 `CATALOG_AGENT_PATH`, a host-origin artifact at a canon path, because the `catalog` verb refuses a
 target that lacks the file. It also carries the skill pointer set, three host-origin artifacts for
-each name in `TARGET_SKILL_NAMES`, so every harness in a target discovers the package-facing skills
+each name in `TARGET_SKILL_NAMES`, so every harness in a target discovers the canonical skills
 while their bodies, references, and scripts stay in the installed package. Every other canon path is
 staged for reading, so no group selection copies a contract into a target, and a copy a target holds
 at one of them is foreign drift in the group `inferArtifactGroup` gives it. A scoped audit reads the canon
@@ -2045,8 +2046,9 @@ configuration must keep those edits outside a content-owned file; `repair` resto
 canonical project set.
 
 An audit reports one `ArtifactFinding` per planned path, followed by every foreign path in the groups the
-plan covers. That second list draws on a file beneath a vendored directory the plan expands and on a
-file the target holds at a canon path the plan does not claim. Every planned finding carries its
+plan covers. That second list draws on a file beneath a vendored directory the plan expands, on a
+file the target holds at a canon path the plan does not claim, and on a configuration wrapper the
+`listWrapperPaths` function names and the plan does not claim. Every planned finding carries its
 artifact's `ownership`. A foreign finding has no ownership because no artifact was planned for its
 path. `Ownership` says what scaffold claims at
 a path, not what one run did there. Counting planned findings by `content`, `presence`, and `birth`
@@ -2151,7 +2153,7 @@ extras pass through unchanged except for the selected showcase pair. Extras foll
 `ORKESTREL_RANGE_PATTERN`; foreign peers follow `FLOOR_RANGE_PATTERN`.
 
 A browser application with `showcase: true`, including its Vue face, selects exact
-`vite-plugin-singlefile: 2.3.3`, Vite `^8.3.5` from scaffold's manifest, and the npm override
+`vite-plugin-singlefile: 2.3.3`, Vite `^8.3.6` from scaffold's manifest, and the npm override
 `"vite-plugin-singlefile@2.3.3": { "micromatch": "npm:picomatch@2.3.2" }`. This policy applies
 after extras. Online resolution excludes this pair from ordinary foreign-major updates; other
 dependencies retain their usual resolution. Repair preserves each package's runtime or development
@@ -2222,13 +2224,13 @@ The dependency tables select these floors:
 | ---------------------------- | ---------- | -------------------------------------------------------------- |
 | TypeScript                   | `^7.0.2`   | Baseline without a Vue extension                               |
 | TypeScript                   | `^6.0.3`   | A selected `src/vue` or `app/vue` face                         |
-| Vitest                       | `^5.0.5`   | Every workspace                                                |
-| `@vitest/browser-playwright` | `^5.0.5`   | Browser tooling                                                |
-| `oxlint`                     | `^1.90.0`  | Every workspace                                                |
-| `oxfmt`                      | `^0.75.0`  | Every workspace                                                |
-| `@microsoft/api-extractor`   | `^7.60.0`  | Declaration builds; uses its bundled TypeScript 6.0.3 engine   |
+| Vitest                       | `^5.1.0`   | Every workspace                                                |
+| `@vitest/browser-playwright` | `^5.1.0`   | Browser tooling                                                |
+| `oxlint`                     | `^1.91.0`  | Every workspace                                                |
+| `oxfmt`                      | `^0.76.0`  | Every workspace                                                |
+| `@microsoft/api-extractor`   | `^7.60.1`  | Declaration builds; uses its bundled TypeScript 6.0.3 engine   |
 | `playwright`                 | `^1.64.1`  | Browser tooling                                                |
-| Vite                         | `^8.3.5`   | Every workspace                                                |
+| Vite                         | `^8.3.6`   | Every workspace                                                |
 | `@types/node`                | `^24.19.2` | Every workspace; generated workspaces support Node `>=22.18.0` |
 
 Node 26 types admit APIs that the supported runtime lacks. Inside the declared major the verbs
@@ -2881,18 +2883,28 @@ a `foreign` finding the same way, and `overwrite` deletes it. A maintainer who w
 server registration keeps it outside the repository, in the harness's own local or user scope,
 rather than at `.mcp.json`, where the file is drift whoever wrote it.
 
+**`overwrite` takes only the wrappers scaffold can name.** When an environment leaves a target, the
+audit reports each wrapper the `listWrapperPaths` function names and the plan no longer claims as
+`foreign`, and `overwrite` deletes a tracked one. A named styles extension's wrappers sit outside
+that population because their names form an open set, so `configs/src/vite.print.config.ts` stays
+after `src/print` leaves, with no finding; delete it by hand. Any other file under `configs/src` or
+`configs/app` is yours and draws no finding. A journey wrapper leaves with `app/browser`, and `git show`
+returns a committed variant list. `--dirty` waives the refusal for the whole tree, so an uncommitted
+edit to a tracked wrapper is lost with the file. A target whose last environment has left compiles
+no plan, so `overwrite` removes nothing from it.
+
 **A target holds no dispatchable role beyond the catalog agent.** The canon is staged for reading,
 so a target receives the `AGENTS.md` pointer, `.claude/agents/orkestrel.md`, and the skill pointer
-set for each package-facing skill `TARGET_SKILL_NAMES` lists: the Claude bridge, the Codex sidecar,
+set for each canonical skill `TARGET_SKILL_NAMES` lists: the Claude bridge, the Codex sidecar,
 and a pointer that names the canonical skill, all content-owned and restored by `repair`. It
 receives no other agent role, no bench configuration, and no MCP registration. A harness running in
 a target loads none of those from `node_modules` either, so a role, a bench, or a server that target
 needs is defined in the harness's own local or user scope — the seam the preceding registration
-entry already names. Fleet targets are not orchestration hosts: `TARGET_SKILL_NAMES` leaves out the
-dispatch, publish, scout, and align skills, which run from a scaffold checkout, and a blueprint
-carrying the `skills` fact ships its own skill canon and receives no pointer set. A session that
-dispatches roles starts on scaffold, where `.agents/orchestration.md` and the role files sit, and
-attaches the target it is working on.
+entry already names. `TARGET_SKILL_NAMES` names every canonical skill, so a target reaches each one
+through its pointer set and runs its scripts from their built twins, and a blueprint carrying the
+`skills` fact ships its own skill canon and receives no pointer set. A session that dispatches a
+role the target's harness scope does not define starts on scaffold, where
+`.agents/orchestration.md` and the role files sit, and attaches the target it is working on.
 
 **`isPath` does not prove host portability.** It proves bounded target-relative syntax and rejects
 traversal, separators, controls, and reserved syntax characters. It deliberately admits host-specific

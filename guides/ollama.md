@@ -379,7 +379,7 @@ else console.log(result.refusals?.deletion?.missing)
 
 ### Ask a native decision model
 
-For a model that Ollama serves on the System One endpoint, use the agent package's factory. A request carries the choice, noul, and score together. Ollama 0.40.0 serves the `tev1:0.8b` model on this path and refuses Mica with HTTP 400; the package makes no capability check.
+For a model that Ollama serves on the System One endpoint, use the agent package's factory. A request carries the choice, noul, and score together. The wire keys are zero-based positions in question entry order; the judge maps the positional answers back to the caller's ids. Ollama 0.40.0 serves the `tev1:0.8b` model on this path and refuses Mica with HTTP 400; the package makes no capability check.
 
 ```ts
 import { measureAnswer, createSystemOneJudge } from '@orkestrel/agent'

@@ -246,7 +246,7 @@ export const JUDGE_WIRE_SYSTEM = Object.freeze({
 	model: 'tev1:0.8b',
 	state: 'Our checkout has returned 500 errors since 9am. I want a refund for today.',
 	questions: {
-		label: {
+		'0': {
 			type: 'choice',
 			instructions: 'Which label fits this ticket?',
 			criteria: {
@@ -255,7 +255,7 @@ export const JUDGE_WIRE_SYSTEM = Object.freeze({
 				account: null,
 			},
 		},
-		refund: {
+		'1': {
 			type: 'noul',
 			instructions: 'Does the customer ask for money back?',
 			criteria: {
@@ -263,7 +263,7 @@ export const JUDGE_WIRE_SYSTEM = Object.freeze({
 				false: 'The customer does not ask for money back.',
 			},
 		},
-		severity: {
+		'2': {
 			type: 'score',
 			instructions: 'How severe is the reported issue?',
 			criteria: ['Cosmetic; no impact', 'Degraded, workaround exists', 'Blocking; no workaround'],
@@ -5039,7 +5039,7 @@ export const JUDGE_WIRE_CHOICE = Object.freeze({
 export const JUDGE_SYSTEM_ONE = Object.freeze({
 	model: 'tev1:0.8b',
 	answers: {
-		label: {
+		'0': {
 			type: 'choice',
 			choice: 'bug',
 			probabilities: {
@@ -5049,8 +5049,8 @@ export const JUDGE_SYSTEM_ONE = Object.freeze({
 			},
 			confidence: 0.8718301731972261,
 		},
-		refund: { type: 'noul', noul: 0.9978973674111222 },
-		severity: {
+		'1': { type: 'noul', noul: 0.9978973674111222 },
+		'2': {
 			type: 'score',
 			score: 0.9919248376139791,
 			legend: {

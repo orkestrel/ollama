@@ -7,15 +7,16 @@
 `parse(chunk)` appends `chunk` to an internal buffer and splits it on `\n`: every
 line before the last is `\n`-terminated, hence complete, and is parsed to a record,
 while the final segment is held back for the next call, so a line split across chunk
-boundaries is reassembled the moment its closing `\n` arrives. Each trimmed line is
+boundaries is reassembled the moment its closing `\n` arrives. Each complete line is
+trimmed with the `String.prototype.trim` method, then
 filtered — a blank or whitespace-only line (including one whose only content was a
 CRLF's trailing `\r`) is skipped — so only plain records come back, and a line the
 stream never terminates is never emitted even when the buffered text already happens
 to be valid JSON. By default the parser refuses a line it cannot return: `parse`
 throws an `NDJSONError` with code `'SYNTAX'` for a complete line that is not valid
 JSON and `'RECORD'` for a complete line that is not a plain record. The throwing call
-returns no record, discards the lines after the refused line in the same call too, and
-leaves the parser cleared, as `clear()` leaves it. With `strict: false` the parser
+returns no records, discards every held line, including earlier complete lines and
+the trailing partial line, and leaves the parser cleared, as `clear()` leaves it. With `strict: false` the parser
 skips such a line instead, for a caller that prefers the records it can read over a
 refusal. Blank lines are skipped, and lines are split and trimmed, the same way in both
 modes. A chunk that is not a string throws `'SYNTAX'` in both modes, because joining it

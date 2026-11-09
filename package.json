@@ -85,7 +85,7 @@
 		"prepack": "npm run build"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.38",
+		"@orkestrel/agent": "^0.0.39",
 		"@orkestrel/budget": "^0.0.17",
 		"@orkestrel/contract": "^0.0.22",
 		"@orkestrel/emitter": "^0.0.15",
@@ -100,17 +100,17 @@
 		"@orkestrel/guide": "^0.0.30",
 		"@orkestrel/probe": "^0.0.29",
 		"@orkestrel/router": "^0.0.20",
-		"@orkestrel/scaffold": "^0.0.125",
+		"@orkestrel/scaffold": "^0.0.126",
 		"@orkestrel/server": "^0.0.26",
 		"@orkestrel/test": "^0.0.33",
 		"@orkestrel/timeout": "^0.0.16",
-		"@orkestrel/workspace": "^0.0.15",
+		"@orkestrel/workspace": "^0.0.16",
 		"@types/node": "^24.19.2",
 		"ollama": "0.6.4",
-		"oxfmt": "^0.77.0",
-		"oxlint": "^1.92.0",
+		"oxfmt": "^0.78.0",
+		"oxlint": "^1.93.0",
 		"typescript": "^7.0.2",
-		"vite": "^8.3.6",
+		"vite": "^8.3.7",
 		"vitest": "^5.1.0"
 	},
 	"engines": {

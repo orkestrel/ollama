@@ -85,7 +85,7 @@
 		"prepack": "npm run build"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.39",
+		"@orkestrel/agent": "^0.0.40",
 		"@orkestrel/budget": "^0.0.17",
 		"@orkestrel/contract": "^0.0.22",
 		"@orkestrel/emitter": "^0.0.15",
@@ -100,7 +100,7 @@
 		"@orkestrel/guide": "^0.0.30",
 		"@orkestrel/probe": "^0.0.29",
 		"@orkestrel/router": "^0.0.20",
-		"@orkestrel/scaffold": "^0.0.126",
+		"@orkestrel/scaffold": "^0.0.130",
 		"@orkestrel/server": "^0.0.26",
 		"@orkestrel/test": "^0.0.33",
 		"@orkestrel/timeout": "^0.0.16",

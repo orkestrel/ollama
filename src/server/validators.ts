@@ -10,7 +10,7 @@ import { matchesDeclaredKeys } from './helpers.js'
  * @returns True if the identity and argument vector are well formed and no other key is present; false otherwise
  * @example
  * ```ts
- * isOllamaExecutable({ path: 'node', digest: '', version: '' }) // false
+ * isOllamaExecutable({ path: 'node', digest: '' }) // false
  * ```
  */
 export function isOllamaExecutable(value: unknown): value is OllamaExecutable {
@@ -23,9 +23,6 @@ export function isOllamaExecutable(value: unknown): value is OllamaExecutable {
 			!value.path.includes('\0') &&
 			isString(value.digest) &&
 			/^[a-f0-9]{64}$/.test(value.digest) &&
-			isString(value.version) &&
-			value.version.trim().length > 0 &&
-			!value.version.includes('\0') &&
 			(value.arguments === undefined ||
 				(arrayOf(isString)(value.arguments) &&
 					value.arguments.every((argument) => !argument.includes('\0')))),

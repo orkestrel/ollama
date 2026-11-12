@@ -26,7 +26,7 @@ import { ollamaOptionsShape } from '@src/core'
  * import { ollamaDaemonShape } from '@orkestrel/ollama/server'
  *
  * createContract(ollamaDaemonShape).audit({
- * 	executable: { path: '/opt/ollama', digest: 'a'.repeat(64), version: '0.40.14' },
+ * 	executable: { path: '/opt/ollama', digest: 'a'.repeat(64) },
  * 	url: 'http://127.0.0.1:11437',
  * 	models: [{ name: 'cedar', digest: 'declared' }],
  * 	workspace: '/srv/ollama',
@@ -39,7 +39,6 @@ export const ollamaDaemonShape = objectShape({
 	executable: objectShape({
 		path: stringShape({ min: 1 }),
 		digest: stringShape({ pattern: /^[a-f0-9]{64}$/ }),
-		version: stringShape({ min: 1 }),
 		arguments: optionalShape(arrayShape(stringShape())),
 	}),
 	url: ollamaOptionsShape.properties.url.inner,

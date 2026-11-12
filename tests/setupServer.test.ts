@@ -549,7 +549,7 @@ describe('dedicated daemon protocol infrastructure', () => {
 		expect(selected.executable.arguments?.at(-1)).toBe('silence')
 		expect(selected.readiness).toBe(3210)
 		expect(selected.models).toEqual([DAEMON_MODEL])
-		expect(selected.executable.version).toBe(DAEMON_VERSION)
+		expect(Object.keys(selected.executable).toSorted()).toEqual(['arguments', 'digest', 'path'])
 		expect(selected.executable.digest).toMatch(/^[a-f0-9]{64}$/)
 		expect(selected.url).not.toBe(ordinary.url)
 	})
@@ -2476,7 +2476,7 @@ describe('resolveDaemonDeclaration', () => {
 		).rejects.toThrow('OLLAMA_DAEMON_DECLARATION is invalid')
 	})
 
-	it('derives canonical executable bytes, the daemon version, the inventory digest, and a distinct loopback endpoint without generation', async () => {
+	it('derives canonical executable bytes, the inventory digest, and a distinct loopback endpoint without generation', async () => {
 		const peer = await createDaemonPeer()
 		try {
 			const declaration = await resolveDaemonDeclaration({
@@ -2487,7 +2487,6 @@ describe('resolveDaemonDeclaration', () => {
 			expect(declaration.executable).toEqual({
 				path: realpathSync(process.execPath),
 				digest: createHash('sha256').update(readFileSync(process.execPath)).digest('hex'),
-				version: DAEMON_VERSION,
 			})
 			expect(declaration.models).toEqual([DAEMON_MODEL])
 			expect(declaration.workspace).toBe(realpathSync(process.cwd()))
@@ -2495,10 +2494,7 @@ describe('resolveDaemonDeclaration', () => {
 			expect(dedicated.hostname).toBe('127.0.0.1')
 			expect(dedicated.port).not.toBe('11434')
 			expect(dedicated.port).not.toBe(new URL(peer.url).port)
-			expect(peer.requests).toEqual([
-				{ path: '/api/version', body: '' },
-				{ path: '/api/tags', body: '' },
-			])
+			expect(peer.requests).toEqual([{ path: '/api/tags', body: '' }])
 		} finally {
 			await peer.destroy()
 		}

@@ -73,7 +73,7 @@ if (mode === 'sentinel' || mode === 'runner') {
 		response.end(
 			JSON.stringify(
 				request.url === '/api/version'
-					? { version: mode === 'version' ? 'wrong-version' : '0.40.8' }
+					? { version: mode === 'version' ? '0.41.0' : '0.40.8' }
 					: request.url === '/api/tags'
 						? { models: inventory }
 						: {

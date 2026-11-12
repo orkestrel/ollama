@@ -2385,16 +2385,10 @@ export async function resolveDaemonDeclaration(
 	if (selected === undefined)
 		throw new Error('Set OLLAMA_DAEMON_EXECUTABLE or install ollama on PATH')
 	const executable = realpathSync.native(selected)
-	const [version, inventory] = await Promise.all(
-		['/api/version', '/api/tags'].map(async (path) => {
-			const reply = await readOllamaReply(input.host, path)
-			if (reply.error !== undefined) throw reply.error
-			if (reply.response === undefined) throw new Error(`No daemon metadata at ${path}`)
-			return readOllamaJSON(reply.response)
-		}),
-	)
-	if (!isRecord(version) || !isString(version.version) || version.version === '')
-		throw new Error('The provisioned daemon reports no version')
+	const reply = await readOllamaReply(input.host, '/api/tags')
+	if (reply.error !== undefined) throw reply.error
+	if (reply.response === undefined) throw new Error('No daemon metadata at /api/tags')
+	const inventory = readOllamaJSON(reply.response)
 	if (!isRecord(inventory) || !isArray(inventory.models))
 		throw new Error('The provisioned daemon reports no model inventory')
 	const matches = inventory.models.filter(
@@ -2415,7 +2409,6 @@ export async function resolveDaemonDeclaration(
 		executable: {
 			path: executable,
 			digest: createHash('sha256').update(readFileSync(executable)).digest('hex'),
-			version: version.version,
 		},
 		url: `http://127.0.0.1:${port}`,
 		models: [{ name: input.model, digest: model.digest }],
@@ -2430,6 +2423,9 @@ export async function resolveDaemonDeclaration(
 
 /** Names the version the dedicated protocol peer advertises. */
 export const DAEMON_VERSION = '0.40.8'
+
+/** Names the other version the fixture executable reports in its `version` mode, as after an update. */
+export const DAEMON_NEXT_VERSION = '0.41.0'
 
 /** Declares the exact model inventory entry the dedicated protocol peer advertises. */
 export const DAEMON_MODEL = Object.freeze({ name: 'fixture:雪', digest: 'fixture-digest' })
@@ -2485,7 +2481,6 @@ export const DAEMON_DECLARATION: OllamaDaemonOptions = Object.freeze({
 	executable: Object.freeze({
 		path: process.execPath,
 		digest: 'a'.repeat(64),
-		version: DAEMON_VERSION,
 	}),
 	url: 'http://127.0.0.1:31111',
 	workspace: fileURLToPath(WORKSPACE_ROOT),
@@ -2561,19 +2556,9 @@ export const INVALID_DAEMON_OVERRIDES: ReadonlyArray<
 	readonly [string, Readonly<Record<string, unknown>>]
 > = Object.freeze([
 	['missing executable', { executable: undefined }],
-	[
-		'relative executable',
-		{ executable: { path: 'node', digest: 'a'.repeat(64), version: DAEMON_VERSION } },
-	],
-	['missing digest', { executable: { path: process.execPath, version: DAEMON_VERSION } }],
-	[
-		'uppercase digest',
-		{ executable: { path: process.execPath, digest: 'A'.repeat(64), version: DAEMON_VERSION } },
-	],
-	[
-		'empty version',
-		{ executable: { path: process.execPath, digest: 'a'.repeat(64), version: '' } },
-	],
+	['relative executable', { executable: { path: 'node', digest: 'a'.repeat(64) } }],
+	['missing digest', { executable: { path: process.execPath } }],
+	['uppercase digest', { executable: { path: process.execPath, digest: 'A'.repeat(64) } }],
 	['default port', { url: 'http://127.0.0.1:11434' }],
 	['ephemeral port', { url: 'http://127.0.0.1:0' }],
 	['implicit port', { url: 'http://127.0.0.1' }],
@@ -2613,6 +2598,11 @@ export const EXTRA_DAEMON_OVERRIDES: ReadonlyArray<
 		{ executable: { ...DAEMON_DECLARATION.executable, argumnts: ['serve'] } },
 		['executable', 'argumnts'],
 	],
+	[
+		'executable version',
+		{ executable: { ...DAEMON_DECLARATION.executable, version: DAEMON_VERSION } },
+		['executable', 'version'],
+	],
 	['model key', { models: [{ ...DAEMON_MODEL, size: 7 }] }, ['models', '0', 'size']],
 	['metadata key', { metadata: { timeout: 5000, retries: 2 } }, ['metadata', 'retries']],
 	['termination key', { termination: { grace: 20, wait: 2 } }, ['termination', 'wait']],
@@ -2630,7 +2620,6 @@ export async function buildDaemonOptions(
 		executable: {
 			path: process.execPath,
 			digest: createHash('sha256').update(readFileSync(process.execPath)).digest('hex'),
-			version: DAEMON_VERSION,
 			arguments: [
 				fileURLToPath(new URL('tests/src/server/fixtures/daemon.mjs', WORKSPACE_ROOT)),
 				'normal',
@@ -2674,14 +2663,11 @@ export interface DaemonPeerOptions {
 	readonly fault?: string
 	readonly delay?: number
 	readonly unload?: string
-	readonly version?: unknown
 	readonly models?: unknown
 }
 
 /** Lists metadata refusals of an automatically derived service declaration. */
 export const DAEMON_SERVICE_REFUSALS = Object.freeze([
-	Object.freeze({ options: { version: '' }, message: 'reports no version' }),
-	Object.freeze({ options: { version: 42 }, message: 'reports no version' }),
 	Object.freeze({ options: { models: {} }, message: 'reports no model inventory' }),
 	Object.freeze({ options: { models: [] }, message: 'must report one inventory digest' }),
 	Object.freeze({
@@ -2782,7 +2768,7 @@ export class DaemonPeer {
 		response.end(
 			JSON.stringify(
 				request.url === '/api/version'
-					? { version: this.#options.version ?? DAEMON_VERSION }
+					? { version: DAEMON_VERSION }
 					: request.url === '/api/tags'
 						? this.#options.models === undefined
 							? buildDaemonInventory([DAEMON_MODEL])

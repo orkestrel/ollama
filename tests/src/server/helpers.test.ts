@@ -7,9 +7,9 @@ import {
 	readOllamaBody,
 	readOllamaJSON,
 	readOllamaTerminal,
+	readOllamaVersion,
 	retainOllamaBytes,
 	verifyOllamaModels,
-	verifyOllamaVersion,
 	isOllamaModel,
 } from '@src/server'
 import {
@@ -17,6 +17,7 @@ import {
 	createRechunkingTransport,
 	buildDaemonInventory,
 	DAEMON_MODEL,
+	DAEMON_NEXT_VERSION,
 	DAEMON_UNLOAD_REPLY,
 	DAEMON_VERSION,
 	METADATA_FAULTS,
@@ -143,14 +144,16 @@ describe('daemon protocol helpers', () => {
 		expect(Object.isFrozen(retained)).toBe(true)
 	})
 
-	it('accepts only the declared version and every exact model digest', () => {
-		expect(() => verifyOllamaVersion({ version: DAEMON_VERSION }, DAEMON_VERSION)).not.toThrow()
-		expect(() => verifyOllamaVersion({ version: 'other' }, DAEMON_VERSION)).toThrow(
-			expect.objectContaining({ code: 'version' }),
+	it('reads whatever version a reply reports and refuses a reply that reports none', () => {
+		expect(readOllamaVersion({ version: DAEMON_VERSION })).toBe(DAEMON_VERSION)
+		expect(readOllamaVersion({ version: DAEMON_NEXT_VERSION, other: true })).toBe(
+			DAEMON_NEXT_VERSION,
 		)
-		expect(() => verifyOllamaVersion({}, DAEMON_VERSION)).toThrow(
-			expect.objectContaining({ code: 'metadata' }),
-		)
+		for (const value of [{}, { version: '' }, { version: 42 }, null, 'text', [DAEMON_VERSION]])
+			expect(() => readOllamaVersion(value)).toThrow(expect.objectContaining({ code: 'metadata' }))
+	})
+
+	it('accepts only every exact model digest', () => {
 		expect(() => verifyOllamaModels({ models: [DAEMON_MODEL] }, [DAEMON_MODEL])).not.toThrow()
 		expect(() =>
 			verifyOllamaModels({ models: [{ ...DAEMON_MODEL, digest: 'other' }] }, [DAEMON_MODEL]),

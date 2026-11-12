@@ -1,4 +1,4 @@
-/** Bounds startup through version and model verification to 60000 milliseconds by default. */
+/** Bounds startup through the version probe and model verification to 60000 milliseconds by default. */
 export const OLLAMA_READINESS = 60_000
 
 /** Bounds each metadata or unload request and body read to 10000 milliseconds by default. */
@@ -32,7 +32,7 @@ export const OLLAMA_DAEMON_KEYS = Object.freeze({
 		'metadata',
 		'termination',
 	]),
-	executable: Object.freeze(['path', 'digest', 'version', 'arguments']),
+	executable: Object.freeze(['path', 'digest', 'arguments']),
 	model: Object.freeze(['name', 'digest']),
 	metadata: Object.freeze(['timeout', 'bytes']),
 	termination: Object.freeze(['grace', 'drain']),
@@ -47,11 +47,12 @@ export const OLLAMA_ERROR_BRAND = Symbol.for('@orkestrel/ollama.OllamaError')
  * @remarks
  * `invalid` refuses a declaration; `occupied` refuses a bound endpoint; `digest` reports
  * executable mismatch or unreadable identity; `spawn` reports child creation failure;
- * `readiness` reports the startup deadline; `version` and `model` report mismatched
- * declarations; `owner` reports missing child listen or liveness evidence; `metadata`
- * refuses HTTP status, redirects, malformed metadata, size, or request bounds; `unload`
- * refuses a maintenance terminal reply; `cleanup` reports unconfirmed termination;
- * `aborted` reports caller cancellation; `state` refuses an invalid lifecycle operation.
+ * `readiness` reports the startup deadline; `model` reports a mismatched model declaration;
+ * `owner` reports missing child listen or liveness evidence; `metadata` refuses HTTP status,
+ * redirects, malformed metadata such as a version reply with no version, size, or request
+ * bounds; `unload` refuses a maintenance terminal reply; `cleanup` reports unconfirmed
+ * termination; `aborted` reports caller cancellation; `state` refuses an invalid lifecycle
+ * operation.
  */
 export const OLLAMA_ERROR_CODES = Object.freeze([
 	'invalid',
@@ -59,7 +60,6 @@ export const OLLAMA_ERROR_CODES = Object.freeze([
 	'digest',
 	'spawn',
 	'readiness',
-	'version',
 	'model',
 	'owner',
 	'metadata',

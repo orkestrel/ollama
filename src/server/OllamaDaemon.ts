@@ -27,9 +27,9 @@ import {
 	readOllamaJSON,
 	readOllamaReply,
 	readOllamaTerminal,
+	readOllamaVersion,
 	retainOllamaBytes,
 	verifyOllamaModels,
-	verifyOllamaVersion,
 } from './helpers.js'
 
 /**
@@ -73,7 +73,7 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 			const faults = report.success ? report.value : []
 			throw new OllamaError(
 				[
-					'Invalid dedicated daemon declaration: it needs an absolute executable path with its lowercase SHA-256 digest and version, a 127.0.0.1 url with an explicit port other than 11434 and 0, an absolute workspace, and uniquely named models',
+					'Invalid dedicated daemon declaration: it needs an absolute executable path with its lowercase SHA-256 digest, a 127.0.0.1 url with an explicit port other than 11434 and 0, an absolute workspace, and uniquely named models',
 					...(faults.length > 0 ? [describeFaults(faults, ollamaDaemonContract.schema)] : []),
 				].join('\n'),
 				{ code: 'invalid', context: { faults } },
@@ -340,7 +340,7 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 			if (version.error !== undefined) throw version.error
 			if (version.response === undefined)
 				throw new OllamaError('Version body is absent', { code: 'metadata' })
-			verifyOllamaVersion(readOllamaJSON(version.response), this.#options.executable.version)
+			const reported = readOllamaVersion(readOllamaJSON(version.response))
 			const inventory = await readOllamaReply(
 				this.url,
 				'/api/tags',
@@ -362,6 +362,7 @@ export class OllamaDaemon implements OllamaDaemonInterface {
 				url: this.url,
 				models: this.#options.models,
 				pid: session.pid,
+				version: reported,
 			})
 			this.#emitter.emit('start', this.#identity)
 			return this.#identity

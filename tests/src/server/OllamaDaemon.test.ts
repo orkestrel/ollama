@@ -15,9 +15,11 @@ import {
 	DAEMON_LIFECYCLE_FAILURES,
 	DAEMON_MODEL,
 	DAEMON_MODELS,
+	DAEMON_NEXT_VERSION,
 	DAEMON_REFUSED_PATHS,
 	DAEMON_SENDERS,
 	DAEMON_UNLOAD_REPLY,
+	DAEMON_VERSION,
 	runWithFetch,
 } from '../../setupServer.js'
 import { describe, expect, it } from 'vitest'
@@ -181,6 +183,7 @@ describe('OllamaDaemon lifecycle', () => {
 				expect(daemon.start()).toBe(first)
 				expect(started.calls).toEqual([[identity]])
 				expect(identity.models).toEqual([DAEMON_MODEL])
+				expect(identity.version).toBe(DAEMON_VERSION)
 				expect(isRunning(identity.pid)).toBe(true)
 				expect(Object.isFrozen(identity)).toBe(true)
 				expect(readFileSync(requests, 'utf8')).toContain('/api/tags')
@@ -242,6 +245,32 @@ describe('OllamaDaemon lifecycle', () => {
 				expect(stopped.calls).toEqual([[true]])
 				expect(await daemon.stop()).toBe(true)
 				expect(stopped.calls).toEqual([[true]])
+			} finally {
+				await daemon.destroy()
+				scratch.destroy()
+			}
+		},
+		DAEMON_LIFECYCLE_BUDGET,
+	)
+
+	it(
+		'starts across a version the declaration never named and records the reported version',
+		async () => {
+			const scratch = createScratch()
+			const requests = scratch.write('requests.log', '')
+			const daemon = new OllamaDaemon(
+				await buildDaemonMode('version', { environment: { FIXTURE_REQUESTS: requests } }),
+			)
+			try {
+				const identity = await daemon.start()
+				expect(identity.version).toBe(DAEMON_NEXT_VERSION)
+				expect(daemon.identity?.version).toBe(DAEMON_NEXT_VERSION)
+				expect(Object.keys(identity.executable).toSorted()).toEqual(['arguments', 'digest', 'path'])
+				expect(readFileSync(requests, 'utf8')).toBe(
+					'{"path":"/api/version","body":""}\n{"path":"/api/tags","body":""}\n',
+				)
+				expect(await daemon.stop()).toBe(true)
+				expect(isRunning(identity.pid)).toBe(false)
 			} finally {
 				await daemon.destroy()
 				scratch.destroy()

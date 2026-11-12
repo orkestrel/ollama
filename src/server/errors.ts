@@ -57,8 +57,8 @@ export class OllamaError extends Error {
  *
  * @example
  * ```ts
- * isOllamaError(new OllamaError('Version differs', { code: 'version' })) // true
- * isOllamaError(new Error('Version differs')) // false
+ * isOllamaError(new OllamaError('Model digest differs', { code: 'model' })) // true
+ * isOllamaError(new Error('Model digest differs')) // false
  * ```
  */
 export function isOllamaError(value: unknown): value is OllamaError {

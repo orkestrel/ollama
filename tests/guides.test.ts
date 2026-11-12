@@ -840,7 +840,7 @@ await new GuideCommand({
 			expect(isOllamaOrigin('http://localhost:11437')).toBe(false)
 
 			const declaration = {
-				executable: { path: '/opt/ollama/bin/ollama', digest: 'a'.repeat(64), version: '0.40.8' },
+				executable: { path: '/opt/ollama/bin/ollama', digest: 'a'.repeat(64) },
 				url: 'http://127.0.0.1:11437',
 				models: [{ name: 'qwen3.5:2b-q4_K_M', digest: 'b'.repeat(64) }],
 				workspace: '/srv/ollama',

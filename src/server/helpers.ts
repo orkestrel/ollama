@@ -93,24 +93,21 @@ export function retainOllamaBytes(bytes: Uint8Array, complete: boolean): OllamaB
 }
 
 /**
- * Verifies a metadata reply against the declared executable version.
+ * Reads the version a metadata reply reports, whatever it is.
+ * @remarks The reply is the readiness probe's proof that an Ollama answers; the version it names is
+ * an observation the caller records and compares with nothing.
  * @param value - The parsed version reply
- * @param expected - The offline expected version
- * @returns Nothing after the version matches
- * @throws OllamaError Thrown when the metadata or version differs.
+ * @returns The reported nonempty version
+ * @throws OllamaError Thrown with code `metadata` when the reply names no nonempty string version.
  * @example
  * ```ts
- * verifyOllamaVersion({ version: '0.40.8' }, '0.40.8')
+ * readOllamaVersion({ version: '0.40.8' }) // '0.40.8'
  * ```
  */
-export function verifyOllamaVersion(value: unknown, expected: string): void {
+export function readOllamaVersion(value: unknown): string {
 	if (!isRecord(value) || !isString(value.version) || value.version.length === 0)
 		throw new OllamaError('Malformed version metadata', { code: 'metadata' })
-	if (value.version !== expected)
-		throw new OllamaError('Executable version differs', {
-			code: 'version',
-			context: { expected, received: value.version },
-		})
+	return value.version
 }
 
 /**

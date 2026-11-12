@@ -26,8 +26,8 @@ npm install @orkestrel/ollama
   `service` test project; the `src:core` and `src:server` projects are hermetic
   and pass with the daemon down
 - For the `./server` entry, Node.js and an Ollama executable at an absolute
-  path, with its SHA-256 digest, its version, and the `/api/tags` digest of each
-  declared model recorded before the run
+  path, with its SHA-256 digest and the `/api/tags` digest of each declared
+  model recorded before the run
 - ESM + CJS (dual-format build)
 
 ## Usage
@@ -88,8 +88,9 @@ The `exports` field in `package.json` publishes two entries, each a dual
 ESM + CommonJS build. The `.` entry is built from `src/core`, host-independent
 so the same build serves a server process and a browser page. The `./server`
 entry is built from `src/server` and runs in Node only: it starts a declared
-Ollama executable on a dedicated loopback port, verifies its version and model
-digests, unloads the declared models, and stops the process tree it started.
+Ollama executable on a dedicated loopback port, records the version it reports,
+verifies its model digests, unloads the declared models, and stops the process
+tree it started.
 
 ## License
 

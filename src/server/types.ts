@@ -10,8 +10,8 @@ import type { OLLAMA_ERROR_CODES } from './constants.js'
  *
  * @remarks
  * `path` is an absolute path to a regular executable file, never a PATH lookup or a shell script.
- * `digest` is its lowercase hexadecimal SHA-256 digest. `version` is the nonempty version
- * expected from `/api/version`, recorded by the caller for that digest before this invocation.
+ * `digest` is its lowercase hexadecimal SHA-256 digest. The declaration names no version: startup
+ * reads the version the live child reports and records it in the identity, comparing it with nothing.
  * `arguments` is the complete argument vector. Default: `['serve']`. A protocol fixture can
  * supply a selected Node executable and its entry arguments; the digest covers the executable
  * alone, not its arguments, runtime libraries, or files those arguments name.
@@ -19,7 +19,6 @@ import type { OLLAMA_ERROR_CODES } from './constants.js'
 export interface OllamaExecutable {
 	readonly path: string
 	readonly digest: string
-	readonly version: string
 	readonly arguments?: readonly string[]
 }
 
@@ -66,7 +65,7 @@ export interface OllamaMetadataOptions {
  * variables. An omitted `store` leaves the inherited or caller model directory in force.
  * Environment merging does not isolate the host or the model store.
  *
- * `readiness` bounds startup through version and model verification in milliseconds.
+ * `readiness` bounds startup through the version probe and model verification in milliseconds.
  * Default: {@link OLLAMA_READINESS}. It must be a positive integer that fits a Node timer.
  * `metadata` bounds individual replies. `termination` reuses the process session's POSIX
  * grace and stream-drain settings and their defaults. `signal` aborts startup or use and
@@ -98,8 +97,9 @@ export interface OllamaDaemonOptions extends Pick<ProviderOptions, 'fetch'> {
  * Records the executable, endpoint, root process, and model identities verified at startup.
  *
  * @remarks
- * The executable digest was read before spawn, its version matched `/api/version`, and
- * every model digest matched `/api/tags` while the child was live. `pid` is the spawned
+ * The executable digest was read before spawn, and every model digest matched `/api/tags`
+ * while the child was live. `version` is the nonempty version the child's `/api/version`
+ * reply reported, recorded as observed and compared with nothing. `pid` is the spawned
  * session's root process id, never supplied by an HTTP reply and never cleanup authority.
  * This immutable receipt records startup observations; it proves no later liveness,
  * native socket ownership, executable lock, or model residency.
@@ -108,6 +108,7 @@ export interface OllamaDaemonIdentity {
 	readonly executable: OllamaExecutable
 	readonly url: string
 	readonly pid: number
+	readonly version: string
 	readonly models: readonly OllamaModel[]
 }
 
@@ -174,7 +175,7 @@ export type OllamaDaemonEventMap = {
  * @remarks
  * Startup validates the declaration, hashes the executable, refuses an occupied port, and
  * spawns through a process session. Readiness wakes on the child's own stderr and requires
- * its listen announcement, a matching version reply, and every declared model digest while
+ * its listen announcement, a version reply, and every declared model digest while
  * the child lives. No model operation is admitted before verification.
  *
  * Under U22, D1's replacement refusal is detection by executable hashes before start and

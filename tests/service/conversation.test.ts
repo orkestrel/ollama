@@ -11,6 +11,7 @@ import {
 	createThrowingSummarizer,
 	HEAVY_TIMEOUT,
 	THROWING_SUMMARIZER_MESSAGE,
+	toMessageInputs,
 } from '../setup.js'
 import { createRecordingProxy, systemText } from '../setupServer.js'
 import { createLiveOllama, OLLAMA_CONFIG, RETRY_BUDGET } from '../setupService.js'
@@ -26,7 +27,7 @@ describe('Agent (live) — a throwing summarizer under auto-compaction', () => {
 					keep: 2,
 				})
 				const conversation = conversations.add()
-				conversation.add(buildTurns(12))
+				conversation.add(toMessageInputs(buildTurns(12)))
 				const agent = createAgent(createOllama({ model: OLLAMA_CONFIG.model, url: proxy.url }), {
 					conversations,
 					window: createBudget({ max: 20, consumer: countRequestCharacters }),
@@ -55,7 +56,7 @@ describe('Agent (live) — a throwing summarizer under auto-compaction', () => {
 					const summarize = createThrowingSummarizer()
 					const conversations = createConversationManager({ summarize, keep: 2 })
 					const conversation = conversations.add()
-					conversation.add(buildTurns(12))
+					conversation.add(toMessageInputs(buildTurns(12)))
 					const agent = createAgent(createLiveOllama(), {
 						conversations,
 						window: createBudget({ max: 20, consumer: countRequestCharacters }),
@@ -98,7 +99,7 @@ describe('Agent (live) — a sentinel instruction survives a long conversation',
 					try {
 						const conversations = createConversationManager()
 						const conversation = conversations.add()
-						conversation.add(buildTurns(30))
+						conversation.add(toMessageInputs(buildTurns(30)))
 						const provider = createOllama({
 							model: OLLAMA_CONFIG.model,
 							url: proxy.url,

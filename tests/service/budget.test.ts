@@ -11,6 +11,7 @@ import {
 	createUserMessage,
 	LONG_ANSWER_PROMPT,
 	SHORT_ANSWER_PROMPT,
+	toMessageInputs,
 } from '../setup.js'
 import { createLookupTool, driveAgent } from '../setupServer.js'
 import {
@@ -397,7 +398,7 @@ describe('Agent model layer (live) — the model ends an answer at its own token
 				timeout: CASE_TIMEOUT,
 				on: { abort: reasons.handler },
 			})
-			agent.context.messages.add(messages)
+			agent.context.messages.add(toMessageInputs(messages))
 			const result = await agent.generate()
 
 			expect(result.usage?.prompt).toBeGreaterThan(0)

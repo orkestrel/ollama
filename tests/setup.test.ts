@@ -77,6 +77,7 @@ import {
 	TRUNCATED_INVALID_REASONS,
 	TRUNCATED_STRING_REASONS,
 	USAGE_FENCE_ANCHOR,
+	toMessageInputs,
 } from './setup.js'
 import {
 	buildRecordedRequest,
@@ -430,6 +431,21 @@ describe('systemText', () => {
 
 	it('returns an empty string when there are no messages', () => {
 		expect(systemText(buildRecordedRequest({}))).toBe('')
+	})
+})
+
+describe('toMessageInputs', () => {
+	it('keeps each role and content in order and leaves the id behind', () => {
+		const turns = buildTurns(3)
+
+		expect(toMessageInputs(turns)).toEqual(
+			turns.map((turn) => ({ role: turn.role, content: turn.content })),
+		)
+		expect(toMessageInputs(turns).some((input) => 'id' in input)).toBe(false)
+	})
+
+	it('returns an empty array for no messages', () => {
+		expect(toMessageInputs([])).toEqual([])
 	})
 })
 

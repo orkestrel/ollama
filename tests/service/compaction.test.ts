@@ -19,6 +19,7 @@ import {
 	createChallengeTools,
 	createUserMessage,
 	estimateRequestMessages,
+	toMessageInputs,
 } from '../setup.js'
 import { createRecordingProxy, driveAgent, wireMessages } from '../setupServer.js'
 import {
@@ -36,7 +37,7 @@ describe('Agent (live) — compaction retains complete exchanges on the wire', (
 		try {
 			const conversations = createConversationManager({ summarize, keep: 2 })
 			const conversation = conversations.add()
-			const turns = conversation.add(buildTurns(12))
+			const turns = conversation.add(toMessageInputs(buildTurns(12)))
 			const provider = createOllama({
 				model: OLLAMA_CONFIG.model,
 				url: proxy.url,
@@ -133,7 +134,7 @@ describe('Agent (live) — automatic compaction folds an older exchange mid-run'
 					try {
 						const conversations = createConversationManager({ summarize, keep: 3 })
 						const conversation = conversations.add()
-						const seeded = conversation.add(buildTurns(2))
+						const seeded = conversation.add(toMessageInputs(buildTurns(2)))
 						const folds = createRecorder<[Section, number, readonly Message[]]>()
 						conversation.emitter.on('compact', (section) => {
 							folds.handler(section, proxy.requests.length, conversation.messages())
@@ -271,7 +272,7 @@ describe('Agent (live) — dependent lookups cause repeated mid-run compaction',
 					try {
 						const conversations = createConversationManager({ summarize, keep: 5 })
 						const conversation = conversations.add()
-						const seeded = conversation.add(buildTurns(4))
+						const seeded = conversation.add(toMessageInputs(buildTurns(4)))
 						const challenge = 'r7k2'
 						const folds = createRecorder<[Section, number, readonly Message[]]>()
 						conversation.emitter.on('compact', (section) => {

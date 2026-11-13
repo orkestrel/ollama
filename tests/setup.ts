@@ -2,6 +2,7 @@ import type {
 	AuthorityInterface,
 	JudgeQuestion,
 	Message,
+	MessageInput,
 	ProviderDelta,
 	ProviderRequest,
 	ProviderResult,
@@ -147,6 +148,24 @@ export function buildTurns(
 				: `Small talk turn ${index}: topic ${index} is interesting, thanks for asking.`
 		return { id: crypto.randomUUID(), role, content }
 	})
+}
+
+/**
+ * Projects stored {@link Message}s onto the inputs `Conversation.add` admits: each message's
+ * `role` and `content`, with the minted `id` left behind, since a message input is an exact
+ * record that refuses an `id`. Seeds a conversation from `buildTurns` or a request's messages.
+ *
+ * @param messages - The stored messages to project, each in a role an input carries
+ * @returns One message input per message, in order
+ * @example
+ * ```ts
+ * toMessageInputs([{ id: 'a', role: 'user', content: 'Hi.' }]) // [{ role: 'user', content: 'Hi.' }]
+ * ```
+ */
+export function toMessageInputs(
+	messages: ReadonlyArray<Message & { readonly role: MessageInput['role'] }>,
+): readonly MessageInput[] {
+	return messages.map((message) => ({ role: message.role, content: message.content }))
 }
 
 // ── Window consumers ──────────────────────────────────────────────────────────

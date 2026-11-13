@@ -89,7 +89,7 @@
 			}
 		},
 		{
-			"files": ["src/reporter/main.ts"],
+			"files": ["src/bin/*.ts"],
 			"rules": {
 				"import/no-default-export": "off"
 			}
@@ -773,62 +773,6 @@
 							{
 								"regex": "^(?:\\.\\./)+(?:src/)?server(?:[/?#]|$)",
 								"message": "src/bin must import src/server through the @src/server alias"
-							}
-						]
-					}
-				]
-			}
-		},
-		{
-			"files": ["src/reporter/**/*.{cjs,cts,js,jsx,mjs,mts,ts,tsx}"],
-			"rules": {
-				"no-restricted-imports": [
-					"error",
-					{
-						"patterns": [
-							{
-								"regex": "^(?:/|[A-Za-z]:[\\\\/])",
-								"message": "imports must not use machine-specific absolute paths"
-							},
-							{
-								"regex": "^(?:[A-Za-mo-z][A-Za-z0-9+.-]*|n(?:[A-Za-np-z0-9+.-][A-Za-z0-9+.-]*)?|no(?:[A-Za-ce-z0-9+.-][A-Za-z0-9+.-]*)?|nod(?:[A-Za-df-z0-9+.-][A-Za-z0-9+.-]*)?|node[A-Za-z0-9+.-]+):",
-								"message": "imports must not use non-Node URL schemes"
-							},
-							{
-								"regex": "(?:^|/)(?:[^/.][^/]*|\\.[^/.][^/]*|\\.\\.[^/]+)/\\.{1,2}(?:/|$)",
-								"message": "internal import paths must not contain noncanonical dot segments"
-							},
-							{
-								"regex": "^(?:(?:\\./)+\\.\\.(?:/|$)|(?:\\.\\./)+(?:\\./)+)|//",
-								"message": "relative import paths must not contain normalized traversal segments"
-							},
-							{
-								"regex": "\\\\",
-								"message": "import paths must use portable forward slashes"
-							},
-							{
-								"regex": "^typescript(?:[/?#]|$)",
-								"message": "the in-process compiler API is not a surface the fleet uses"
-							},
-							{
-								"regex": "\\.(?:css|less|sass|scss|styl|stylus|pcss|postcss|sss)(?:[?#]|$)",
-								"message": "src/reporter must not import browser stylesheets"
-							},
-							{
-								"regex": "^(?:@app(?:[/?#]|$)|(?:\\.\\./)+app(?:[/?#]|$))",
-								"message": "src/reporter must not depend on private app modules"
-							},
-							{
-								"regex": "^(?:(?:vue|vite)(?:[/?#]|$)|@(?:vue|vitejs)/|@src/(?:browser|vue)(?:[/?#]|$)|@orkestrel/[^/]+/(?:browser|vue)(?:[/?#]|$)|(?:\\.\\./)+(?:browser|vue|src/(?:browser|vue)|app/browser)(?:[/?#]|$))",
-								"message": "src/reporter must not depend on browser-only modules"
-							},
-							{
-								"regex": "^(?:\\.\\./)+(?:src/)?core(?:[/?#]|$)",
-								"message": "src/reporter must import src/core through the @src/core alias"
-							},
-							{
-								"regex": "^(?:\\.\\./)+(?:src/)?server(?:[/?#]|$)",
-								"message": "src/reporter must import src/server through the @src/server alias"
 							}
 						]
 					}

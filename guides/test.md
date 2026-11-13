@@ -30,6 +30,10 @@ at the type boundary, where a value nothing declares meets a claim its caller ow
 `flattenHeaders` is outside them on the comparison side, turning any header initializer into one
 frozen record.
 
+`ProgressReporter` and `readProgress` sit outside them on the runner side: the reporter appends
+one JSON line per Vitest run event to a file while the run is live, and the reader summarizes that
+file at any moment, so a long run's progress and its first failure are readable before it ends.
+
 The journey layer drives a real interface by role and accessible name through the installed Vitest
 provider, measures what a reader can see of the result, records the scenario and the page's own
 output as it goes, and generates the capture portfolio from the same journeys. Around it sit the
@@ -60,10 +64,12 @@ npm install --save-dev @orkestrel/test
 ```
 
 `@orkestrel/test` is the host-independent core. `@orkestrel/test/server` is the Node face — the
-filesystem helpers, the process and socket readings, the cookie jar, and the pure leaves they are
-built from. `@orkestrel/test/browser` is the
+filesystem helpers, the process and socket readings, the cookie jar, the Vitest progress reporter
+and its reader, and the pure leaves they are built from. `@orkestrel/test/browser` is the
 journey layer, which drives a real browser through the installed Vitest provider. Core touches
 neither `node:*` nor the DOM, so a browser test project imports it unchanged.
+`@orkestrel/test/reporter` is the runner entry Vitest's `--reporter` flag loads: its default
+export is `ProgressReporter`, and it ships ES only.
 
 The browser face ships ES only. It is built on `vitest/browser`, which is an ES-only module, so no
 CommonJS consumer can reach it and no `.d.cts` is emitted for it.
@@ -1012,59 +1018,104 @@ collision refusal before writing.
 Imported from `@orkestrel/test/server`.
 
 The provider command consumes the browser journey's resolved selector inside Vitest's tester frame.
+The progress reporter is a Vitest reporter a run lists beside its others.
 
-| Name          | Kind     | Signature                                                             | Summary                                                                                                  |
-| ------------- | -------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `chooseFiles` | function | `(context: ChooserContext, request: ChooserRequest) => Promise<void>` | Observes a native chooser before activating its input and supplies the verified chooser's fixture bytes. |
+| Name               | Kind     | Signature                                                             | Summary                                                                                                                                                                        |
+| ------------------ | -------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `chooseFiles`      | function | `(context: ChooserContext, request: ChooserRequest) => Promise<void>` | Observes a native chooser before activating its input and supplies the verified chooser's fixture bytes.                                                                       |
+| `ProgressReporter` | class    | `new () => Reporter`                                                  | Appends one JSON line per Vitest run event to the file `--outputFile.progress` names, so a live run's progress and each failure's first error can be read before the run ends. |
 
 #### Types
 
-| Name                 | Kind      | Signature                                                                                                                      | Summary                                                                                         |
-| -------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| `ScratchInterface`   | interface | `{ path, write(), read(), has(), names(), ensure(), link(), remove(), destroy() }`                                             | Holds a temporary directory a test owns, writes into, reads back, and removes when it is done.  |
-| `ScratchIdentity`    | interface | `{ device, inode, birth }`                                                                                                     | Represents the fields that together identify one allocated directory on its host.               |
-| `ScratchOptions`     | interface | `{ parent?, prefix?, files? }`                                                                                                 | Configures a scratch directory allocation.                                                      |
-| `LoopbackInterface`  | interface | `{ url, port, destroy() }`                                                                                                     | Holds a server a test owns, listening on an ephemeral loopback port until the test releases it. |
-| `CookieJarInterface` | interface | `{ header, read(), capture() }`                                                                                                | Holds a name-keyed cookie store a test drives one origin with, filled from real responses.      |
-| `InventoryOptions`   | interface | `{ extensions?, exclude? }`                                                                                                    | Configures a source inventory read.                                                             |
-| `UpgradeOptions`     | interface | `{ path?, protocols? }`                                                                                                        | Configures a client upgrade request.                                                            |
-| `UpgradeResult`      | type      | `{ readonly claimed: true; readonly protocol: string \| undefined; } \| { readonly claimed: false; readonly status: number; }` | Represents what one server did with a client upgrade request.                                   |
-| `ChooserContext`     | interface | `{ page, iframe }`                                                                                                             | Supplies the real Playwright page and tester frame to a native chooser command.                 |
+| Name                     | Kind      | Signature                                                                                                                                                                        | Summary                                                                                                                                                                                                                      |
+| ------------------------ | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ScratchInterface`       | interface | `{ path, write(), read(), has(), names(), ensure(), link(), remove(), destroy() }`                                                                                               | Holds a temporary directory a test owns, writes into, reads back, and removes when it is done.                                                                                                                               |
+| `ScratchIdentity`        | interface | `{ device, inode, birth }`                                                                                                                                                       | Represents the fields that together identify one allocated directory on its host.                                                                                                                                            |
+| `ScratchOptions`         | interface | `{ parent?, prefix?, files? }`                                                                                                                                                   | Configures a scratch directory allocation.                                                                                                                                                                                   |
+| `LoopbackInterface`      | interface | `{ url, port, destroy() }`                                                                                                                                                       | Holds a server a test owns, listening on an ephemeral loopback port until the test releases it.                                                                                                                              |
+| `CookieJarInterface`     | interface | `{ header, read(), capture() }`                                                                                                                                                  | Holds a name-keyed cookie store a test drives one origin with, filled from real responses.                                                                                                                                   |
+| `InventoryOptions`       | interface | `{ extensions?, exclude? }`                                                                                                                                                      | Configures a source inventory read.                                                                                                                                                                                          |
+| `UpgradeOptions`         | interface | `{ path?, protocols? }`                                                                                                                                                          | Configures a client upgrade request.                                                                                                                                                                                         |
+| `UpgradeResult`          | type      | `{ readonly claimed: true; readonly protocol: string \| undefined; } \| { readonly claimed: false; readonly status: number; }`                                                   | Represents what one server did with a client upgrade request.                                                                                                                                                                |
+| `ChooserContext`         | interface | `{ page, iframe }`                                                                                                                                                               | Supplies the real Playwright page and tester frame to a native chooser command.                                                                                                                                              |
+| `ProgressError`          | interface | `{ message, location? }`                                                                                                                                                         | Represents one error a progress line carries: its first message line and where it was thrown.                                                                                                                                |
+| `ProgressSpecification`  | interface | `{ project, module }`                                                                                                                                                            | Names one module a run starts, under the project that runs it, as one Vitest specification.                                                                                                                                  |
+| `ProgressStamp`          | interface | `{ time, pid }`                                                                                                                                                                  | Represents the stamp every progress line carries.                                                                                                                                                                            |
+| `ProgressInitEvent`      | interface | `{ event, version, wall, bail }`                                                                                                                                                 | Represents the line a reporter writes when Vitest initializes it.                                                                                                                                                            |
+| `ProgressStartEvent`     | interface | `{ event, specifications }`                                                                                                                                                      | Represents the line a reporter writes when a run starts, listing the modules it runs.                                                                                                                                        |
+| `ProgressCollectedEvent` | interface | `{ event, project, module, planned, errors }`                                                                                                                                    | Represents the line a reporter writes when Vitest collects one module's cases.                                                                                                                                               |
+| `ProgressReadyEvent`     | interface | `{ event, project, id, name }`                                                                                                                                                   | Represents the line a reporter writes when a planned case starts.                                                                                                                                                            |
+| `ProgressCaseState`      | type      | `'passed' \| 'failed' \| 'skipped' \| 'pending'`                                                                                                                                 | Names the state a case result reports, mirroring Vitest's `TestState`.                                                                                                                                                       |
+| `ProgressCaseEvent`      | interface | `{ event, project, module, id, name, state, duration?, start?, errors? }`                                                                                                        | Represents the line a reporter writes once for each planned case's result.                                                                                                                                                   |
+| `ProgressCancelEvent`    | interface | `{ event, reason, wall }`                                                                                                                                                        | Represents the line a reporter writes each time Vitest cancels the run.                                                                                                                                                      |
+| `ProgressModuleState`    | type      | `'passed' \| 'failed' \| 'skipped' \| 'pending' \| 'queued'`                                                                                                                     | Names the state a finished module reports, mirroring Vitest's `TestModuleState`.                                                                                                                                             |
+| `ProgressModuleEvent`    | interface | `{ event, project, module, state, duration }`                                                                                                                                    | Represents the line a reporter writes when a module finishes.                                                                                                                                                                |
+| `ProgressEndReason`      | type      | `'passed' \| 'interrupted' \| 'failed'`                                                                                                                                          | Names why a run ended, mirroring Vitest's `TestRunEndReason`.                                                                                                                                                                |
+| `ProgressEndEvent`       | interface | `{ event, reason, overhead, unhandled }`                                                                                                                                         | Represents the line a reporter writes when a run ends.                                                                                                                                                                       |
+| `ProgressEvent`          | type      | `ProgressInitEvent \| ProgressStartEvent \| ProgressCollectedEvent \| ProgressReadyEvent \| ProgressCaseEvent \| ProgressCancelEvent \| ProgressModuleEvent \| ProgressEndEvent` | Represents one line of a progress file, discriminated by `event`.                                                                                                                                                            |
+| `ProgressState`          | type      | `'live' \| ProgressEndReason`                                                                                                                                                    | Names a run's state as a reader sees it: `live` until its `end` line, then the end reason.                                                                                                                                   |
+| `ProgressRelation`       | type      | `'first' \| 'bail' \| 'later'`                                                                                                                                                   | Names how a failure relates to the run's bail: `first` is the earliest failure, `bail` is a failure past the bail setting whose result arrived or whose case ended after the first cancel, and `later` is any other failure. |
+| `ProgressProject`        | interface | `{ name, planned, done, passed, failed, skipped, modules, collected }`                                                                                                           | Represents one project's tallies in a progress reading.                                                                                                                                                                      |
+| `ProgressCase`           | interface | `{ project, name, duration }`                                                                                                                                                    | Represents a case that started and has not reported a result.                                                                                                                                                                |
+| `ProgressFailure`        | interface | `{ project, module, name, time, relation, error }`                                                                                                                               | Represents one failed case, or one module that failed to collect, in a progress reading.                                                                                                                                     |
+| `ProgressCancel`         | interface | `{ reason, time }`                                                                                                                                                               | Represents the first cancel a run recorded.                                                                                                                                                                                  |
+| `ProgressRun`            | interface | `{ pid, wall, state, bail, elapsed, done, planned, exact, rate, remaining, projects, running, cancel, failures, overhead, unhandled }`                                           | Represents where one run stands, read from its progress lines.                                                                                                                                                               |
 
 #### Constants
 
-| Name                          | Kind  | Signature           | Summary                                                                            |
-| ----------------------------- | ----- | ------------------- | ---------------------------------------------------------------------------------- |
-| `REMOVE_TREE_MAX_ATTEMPTS`    | const | `10`                | Caps the attempts `removeTree` makes before rethrowing a retryable removal error.  |
-| `REMOVE_TREE_RETRY_DELAY_MS`  | const | `100`               | Names the synchronous delay, in milliseconds, `removeTree` waits between attempts. |
-| `REMOVE_TREE_RETRYABLE_CODES` | const | `readonly string[]` | Names the error codes `removeTree` retries; every other code rethrows immediately. |
+| Name                          | Kind  | Signature                                    | Summary                                                                                     |
+| ----------------------------- | ----- | -------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `REMOVE_TREE_MAX_ATTEMPTS`    | const | `10`                                         | Caps the attempts `removeTree` makes before rethrowing a retryable removal error.           |
+| `REMOVE_TREE_RETRY_DELAY_MS`  | const | `100`                                        | Names the synchronous delay, in milliseconds, `removeTree` waits between attempts.          |
+| `REMOVE_TREE_RETRYABLE_CODES` | const | `readonly string[]`                          | Names the error codes `removeTree` retries; every other code rethrows immediately.          |
+| `PROGRESS_VERSION`            | const | `1`                                          | Names the format version a progress file's `init` line carries; a reader refuses any other. |
+| `PROGRESS_MESSAGE_LIMIT`      | const | `300`                                        | Caps the characters a progress error message keeps.                                         |
+| `PROGRESS_LABELS`             | const | `Readonly<Record<ProgressRelation, string>>` | Names the label a rendered progress reading prints for each failure relation.               |
+
+#### Validators
+
+| Name              | Kind  | Signature              | Summary                                                      |
+| ----------------- | ----- | ---------------------- | ------------------------------------------------------------ |
+| `isProgressError` | const | `Guard<ProgressError>` | Checks whether a value is one error a progress line carries. |
+| `isProgressEvent` | const | `Guard<ProgressEvent>` | Checks whether a value is one line of a progress file.       |
 
 #### Helpers
 
-| Name                     | Kind     | Signature                                                                                                           | Summary                                                                                              |
-| ------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `readLoopClock`          | function | `() => number`                                                                                                      | Reads the loop clock Node stamps on an armed timer, in whole milliseconds.                           |
-| `alignLoopClock`         | function | `(offset?: number) => void`                                                                                         | Spins synchronously past a loop-clock tick and an optional millisecond offset.                       |
-| `readCapture`            | function | `(path: string) => Promise<string>`                                                                                 | Reads the lowercase hexadecimal SHA-256 digest of a captured file's bytes.                           |
-| `readInventory`          | function | `(root: URL \| string, targets: readonly string[], options?: InventoryOptions) => Readonly<Record<string, string>>` | Reads files from selected targets below a root directory.                                            |
-| `resolveContained`       | function | `(root: string, target: string) => string \| undefined`                                                             | Resolves a target that stays below a root directory.                                                 |
-| `requireContained`       | function | `(root: string, target: string) => string`                                                                          | Resolves a target that stays below a root directory, refusing a path outside it.                     |
-| `hasScratchPath`         | function | `(root: string, target: string) => boolean`                                                                         | Reports whether a contained entry exists under a scratch directory without following its final link. |
-| `isExcluded`             | function | `(key: string, exclusions: readonly string[]) => boolean`                                                           | Reports whether a root-relative key matches an exclusion.                                            |
-| `readIdentity`           | function | `(status: BigIntStats) => ScratchIdentity`                                                                          | Reads the identity of one allocated directory off a host status.                                     |
-| `matchesIdentity`        | function | `(current: ScratchIdentity, allocation: ScratchIdentity) => boolean`                                                | Reports whether two directory identities name the same allocation.                                   |
-| `readErrorCode`          | function | `(error: unknown) => string \| undefined`                                                                           | Reads the `code` an unknown thrown value carries.                                                    |
-| `createLink`             | function | `(path: string, source: string) => void`                                                                            | Creates a symbolic link with a directory-junction fallback for hosts that refuse symbolic links.     |
-| `removeTree`             | function | `(path: string) => void`                                                                                            | Removes a directory tree, retrying past a transient Windows handle-release race.                     |
-| `isRunning`              | function | `(pid: number) => boolean`                                                                                          | Reports whether a process id names a live process.                                                   |
-| `waitForSocketClose`     | function | `(socket: Socket, options?: WaitOptions) => Promise<void>`                                                          | Waits for a socket to close, accepting a peer reset as a forced close.                               |
-| `destroyScratch`         | function | `(scratch: ScratchInterface, options?: WaitOptions) => Promise<void>`                                               | Destroys a scratch directory, retrying until the host releases it.                                   |
-| `requestUpgrade`         | function | `(port: number, options?: UpgradeOptions) => Promise<UpgradeResult>`                                                | Drives a real client upgrade request against a loopback port and reports what the server did.        |
-| `supportsDirectoryLinks` | function | `() => boolean`                                                                                                     | Checks whether this host links a directory, by creating one link and reading through it.             |
-| `supportsFileLinks`      | function | `() => boolean`                                                                                                     | Checks whether this host links a file, by creating one link and reading the file through it.         |
-| `supportsMode`           | function | `() => boolean`                                                                                                     | Checks whether POSIX permission bits round-trip through this host's `chmod` and `stat`.              |
-| `supportsCase`           | function | `() => boolean`                                                                                                     | Checks whether this host treats two names differing only by case as distinct files.                  |
-| `supportsBytes`          | function | `() => boolean`                                                                                                     | Checks whether this host accepts a filename carrying a raw byte no UTF-8 decoder resolves.           |
+| Name                     | Kind     | Signature                                                                                                                                                    | Summary                                                                                              |
+| ------------------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
+| `readLoopClock`          | function | `() => number`                                                                                                                                               | Reads the loop clock Node stamps on an armed timer, in whole milliseconds.                           |
+| `alignLoopClock`         | function | `(offset?: number) => void`                                                                                                                                  | Spins synchronously past a loop-clock tick and an optional millisecond offset.                       |
+| `readCapture`            | function | `(path: string) => Promise<string>`                                                                                                                          | Reads the lowercase hexadecimal SHA-256 digest of a captured file's bytes.                           |
+| `readInventory`          | function | `(root: URL \| string, targets: readonly string[], options?: InventoryOptions) => Readonly<Record<string, string>>`                                          | Reads files from selected targets below a root directory.                                            |
+| `resolveContained`       | function | `(root: string, target: string) => string \| undefined`                                                                                                      | Resolves a target that stays below a root directory.                                                 |
+| `requireContained`       | function | `(root: string, target: string) => string`                                                                                                                   | Resolves a target that stays below a root directory, refusing a path outside it.                     |
+| `hasScratchPath`         | function | `(root: string, target: string) => boolean`                                                                                                                  | Reports whether a contained entry exists under a scratch directory without following its final link. |
+| `isExcluded`             | function | `(key: string, exclusions: readonly string[]) => boolean`                                                                                                    | Reports whether a root-relative key matches an exclusion.                                            |
+| `readIdentity`           | function | `(status: BigIntStats) => ScratchIdentity`                                                                                                                   | Reads the identity of one allocated directory off a host status.                                     |
+| `matchesIdentity`        | function | `(current: ScratchIdentity, allocation: ScratchIdentity) => boolean`                                                                                         | Reports whether two directory identities name the same allocation.                                   |
+| `readErrorCode`          | function | `(error: unknown) => string \| undefined`                                                                                                                    | Reads the `code` an unknown thrown value carries.                                                    |
+| `createLink`             | function | `(path: string, source: string) => void`                                                                                                                     | Creates a symbolic link with a directory-junction fallback for hosts that refuse symbolic links.     |
+| `removeTree`             | function | `(path: string) => void`                                                                                                                                     | Removes a directory tree, retrying past a transient Windows handle-release race.                     |
+| `isRunning`              | function | `(pid: number) => boolean`                                                                                                                                   | Reports whether a process id names a live process.                                                   |
+| `waitForSocketClose`     | function | `(socket: Socket, options?: WaitOptions) => Promise<void>`                                                                                                   | Waits for a socket to close, accepting a peer reset as a forced close.                               |
+| `normalizeProgressPath`  | function | `(file: string, root: string) => string`                                                                                                                     | Normalizes a module or stack-frame path to the form a progress line carries.                         |
+| `extractProgressError`   | function | `(error: SerializedError, root: string) => ProgressError`                                                                                                    | Extracts the message line and location a progress line keeps from one Vitest error.                  |
+| `matchesPlannedCase`     | function | `(test: { readonly options: { readonly mode: string; }; }) => boolean`                                                                                       | Reports whether a collected case is one the run plans to report.                                     |
+| `readFileSnapshot`       | function | `(path: string) => Buffer`                                                                                                                                   | Reads the bytes a file holds when it is opened, leaving out every byte appended during the read.     |
+| `filterProgressEvents`   | function | `<TName extends ProgressEvent['event']>(events: readonly ProgressEvent[], name: TName) => ReadonlyArray<Extract<ProgressEvent, { readonly event: TName; }>>` | Filters the progress lines of one event.                                                             |
+| `extractProgressEvents`  | function | `(text: string) => readonly ProgressEvent[]`                                                                                                                 | Extracts the progress lines a text holds, skipping a partial last line.                              |
+| `computeProgressRun`     | function | `(events: readonly ProgressEvent[], now: number) => ProgressRun \| undefined`                                                                                | Computes where the run one process wrote stands, from its last `init` line on.                       |
+| `computeProgress`        | function | `(events: readonly ProgressEvent[], now: number) => readonly ProgressRun[]`                                                                                  | Computes where every run a progress file holds stands, one run per writing process.                  |
+| `readProgress`           | function | `(path: string, now?: number) => readonly ProgressRun[]`                                                                                                     | Reads where every run a progress file holds stands, live or finished.                                |
+| `renderDuration`         | function | `(milliseconds: number) => string`                                                                                                                           | Renders a duration as whole minutes and seconds.                                                     |
+| `renderProgress`         | function | `(runs: readonly ProgressRun[]) => string`                                                                                                                   | Renders progress runs as the text a person reads mid-run.                                            |
+| `destroyScratch`         | function | `(scratch: ScratchInterface, options?: WaitOptions) => Promise<void>`                                                                                        | Destroys a scratch directory, retrying until the host releases it.                                   |
+| `requestUpgrade`         | function | `(port: number, options?: UpgradeOptions) => Promise<UpgradeResult>`                                                                                         | Drives a real client upgrade request against a loopback port and reports what the server did.        |
+| `supportsDirectoryLinks` | function | `() => boolean`                                                                                                                                              | Checks whether this host links a directory, by creating one link and reading through it.             |
+| `supportsFileLinks`      | function | `() => boolean`                                                                                                                                              | Checks whether this host links a file, by creating one link and reading the file through it.         |
+| `supportsMode`           | function | `() => boolean`                                                                                                                                              | Checks whether POSIX permission bits round-trip through this host's `chmod` and `stat`.              |
+| `supportsCase`           | function | `() => boolean`                                                                                                                                              | Checks whether this host treats two names differing only by case as distinct files.                  |
+| `supportsBytes`          | function | `() => boolean`                                                                                                                                              | Checks whether this host accepts a filename carrying a raw byte no UTF-8 decoder resolves.           |
 
 `hasScratchPath` takes a scratch's absolute path and a relative or absolute target. It checks
 containment before inspecting the root, returns `false` for a missing root or entry, and refuses a
@@ -2997,7 +3048,7 @@ Object.keys(
 	readInventory(root, ['src'], { extensions: ['.ts'], exclude: ['src/server', 'src/browser'] }),
 )
 // ['src/core/Production.ts', 'src/core/Teardown.ts', 'src/core/constants.ts', 'src/core/factories.ts', 'src/core/helpers.ts', 'src/core/index.ts',
-//  'src/core/types.ts', 'src/core/validators.ts']
+//  'src/core/types.ts', 'src/core/validators.ts', 'src/reporter/main.ts']
 
 // An exclusion also applies to a target you name, so naming one file below an excluded directory
 // does not reinstate it.
@@ -3203,6 +3254,67 @@ there says the server selected none rather than that it refused — and no statu
 rejects with the client's own `ECONNREFUSED` rather than reporting a refusal, and a server that
 accepts the connection and answers nothing rejects on the budget, which defaults to `1000`
 milliseconds and names the port and path it was waiting on.
+
+### Read a long run while it runs
+
+This configuration lists the progress reporter beside the dot reporter and names its file the way
+`--outputFile.json` names the JSON report's file.
+
+```ts
+import { defineConfig } from 'vitest/config'
+import { ProgressReporter } from '@orkestrel/test/server'
+
+export default defineConfig({
+	test: {
+		reporters: ['dot', new ProgressReporter()],
+		outputFile: { progress: 'tmp/runs/progress.jsonl' },
+	},
+})
+```
+
+The reporter refuses to initialize when no `progress` file is named. It appends with one
+synchronous write per line, so a second process can read the file at any moment. It writes `ready`
+and `case` lines only for the cases each module plans to run, so a name filter's removed cases
+never count, and it writes one `case` line per planned case even where a bail makes Vitest report a
+case twice. It records every `cancel` Vitest delivers, registering its listener once a module
+queues, because Vitest clears cancel listeners after `onTestRunStart`.
+
+This read summarizes the file once, from another process or the same one, and renders it.
+
+```ts
+import { readProgress, renderProgress } from '@orkestrel/test/server'
+
+const runs = readProgress('tmp/runs/progress.jsonl')
+runs[0]?.state // 'live' until the run writes its end line
+runs[0]?.failures[0]?.relation // 'first'
+console.log(renderProgress(runs))
+```
+
+`readProgress` reads up to the file's length at open, decodes complete lines only, holds no timer,
+and writes nothing. It returns one run per writing process, each read from that process's last
+`init` line, and each run carries that line's `wall` time. The rendered text gives cases done
+against planned per project, with `+` on the total until every module is collected, the elapsed
+time, rate, and estimate, the running cases, the cancel, and each failure under its module and case
+with its first message line and location. A module that fails to collect, such as one that throws
+while it is imported, reads as a failure under its module alone, and as `FIRST` when its line comes
+before every other failure line. The earliest failure line reads `FIRST` even when Vitest wrote the
+cancel before its result. Only a failed case can trigger a bail, so under a bail the first failed
+case reads as a cause even after a collection failure. A later failure past the bail setting that
+arrived or ended after the cancel reads `AFTER-BAIL`, and any other reads `FAILED`. A project's
+`failed` tally counts its failed cases and its modules that failed to collect.
+
+The format reads one `vitest run` per process. The reporter appends and never truncates, so delete
+the file before each run. A file that still holds earlier runs reads as one run per process, each
+from its last `init` line, and `wall` tells them apart. A run killed before its `end` line reads
+`live` until its file is deleted. Watch mode initializes the reporter once, so its reruns pile under
+one `init` line and are outside what the format reads.
+
+Without a configuration, name the published entry and its file on the command line. Vitest
+constructs the entry's default export, `ProgressReporter`.
+
+```bash
+npx vitest run --reporter=@orkestrel/test/reporter --outputFile.progress=tmp/runs/progress.jsonl
+```
 
 ### Probe what the host supports
 

@@ -45,7 +45,7 @@ documented under [`## Methods`](#methods), and its readonly data members stay he
 | `Caret`                     | interface | `{ line, column }`                                                                                                                                                               | Locates a 1-based caret inside text.                                                                                                                                            |
 | `Range`                     | interface | `{ start, end }`                                                                                                                                                                 | Represents a half-open text span whose start is inclusive and end is exclusive.                                                                                                 |
 | `ReadResult`                | interface | `{ content, range }`                                                                                                                                                             | Carries the content and clamped span returned by a ranged read.                                                                                                                 |
-| `SearchOptions`             | interface | `{ regex?, sensitive?, limit? }`                                                                                                                                                 | Configures search and replacement behavior.                                                                                                                                     |
+| `SearchOptions`             | interface | `{ regex?, sensitive?, limit?, paths? }`                                                                                                                                         | Configures search and replacement behavior.                                                                                                                                     |
 | `SearchMatch`               | interface | `{ path, line, column, length, content }`                                                                                                                                        | Reports one 1-based search hit and the full line that contains it.                                                                                                              |
 | `ReplaceResult`             | interface | `{ occurrences, files }`                                                                                                                                                         | Carries the tallies a replacement produced: the occurrences replaced and the files changed.                                                                                     |
 | `WorkspaceEventMap`         | type      | `{ readonly write: readonly [file: FileInterface]; readonly remove: readonly [path: string]; readonly move: readonly [from: string, to: string]; readonly clear: readonly []; }` | Names the events emitted after workspace mutations complete.                                                                                                                    |
@@ -53,7 +53,7 @@ documented under [`## Methods`](#methods), and its readonly data members stay he
 | `WorkspaceSnapshot`         | interface | `{ id, files }`                                                                                                                                                                  | Represents a workspace's stored state in JSON-serializable form.                                                                                                                |
 | `WorkspaceStoreInterface`   | interface | `{ get(), set(), delete() }`                                                                                                                                                     | Persists workspace snapshots through an asynchronous point-access contract.                                                                                                     |
 | `WorkspaceSnapshotRow`      | interface | `{ id, snapshot }`                                                                                                                                                               | Represents the database row used to persist one opaque workspace snapshot.                                                                                                      |
-| `WorkspaceErrorCode`        | type      | `'MISSING' \| 'MODALITY' \| 'PATTERN' \| 'RANGE'`                                                                                                                                | Names the machine-readable failure codes raised by the workspace edit surface.                                                                                                  |
+| `WorkspaceErrorCode`        | type      | `'MISSING' \| 'MODALITY' \| 'PATHS' \| 'PATTERN' \| 'RANGE'`                                                                                                                     | Names the machine-readable failure codes raised by the workspace edit surface.                                                                                                  |
 | `WorkspaceInterface`        | interface | `{ id, emitter, count, file(), files(), read(), has(), search(), replace(), write(), prepend(), append(), move(), remove(), clear(), snapshot(), destroy() }`                    | Represents a mutable path-keyed editing surface over immutable file values.                                                                                                     |
 | `WorkspaceManagerOptions`   | interface | `{ on?, error?, store? }`                                                                                                                                                        | Configures a workspace registry at construction.                                                                                                                                |
 | `WorkspaceManagerInterface` | interface | `{ count, active, workspace(), workspaces(), add(), switch(), open(), save(), remove(), clear() }`                                                                               | Represents an insertion-ordered workspace registry with an active selection and optional durability.                                                                            |
@@ -330,6 +330,7 @@ workspace.search('const') // three matches, a.ts before b.ts, line order within 
 workspace.search('[a-z]\\d', { regex: true }) // pattern source instead of literal text
 workspace.search('const.') // [] — a literal query reads '.' as a dot, not as any character
 workspace.search('CONST', { sensitive: false, limit: 2 })
+workspace.search('const', { paths: ['b.ts'] }) // one match — a.ts sits outside the list
 workspace.replace('const', 'let') // { occurrences: 3, files: 2 }
 ```
 
@@ -340,9 +341,12 @@ that happens to spell a query is never a hit.
 
 A query is literal by default — the `escapeRegExp` function from `@orkestrel/contract` neutralizes
 its metacharacters — and `regex: true` passes it through as pattern source instead. `limit` caps
-hits for `search` and replacements for `replace`, counted across files in insertion order. A
-pattern that will not compile throws
-`PATTERN` rather than silently matching nothing. A zero-width pattern such as `a*` terminates: the
+hits for `search` and replacements for `replace`, counted across files in insertion order.
+`paths` limits `search` and `replace` to the listed paths: a file outside the list is never
+scanned and never rewritten, and `limit` counts within the listed files. An empty list reaches no
+file, a listed path the workspace does not hold is no error, and a `paths` value that is not an
+array of strings throws `PATHS`. A pattern that will not compile throws `PATTERN` rather than
+silently matching nothing, even under an empty `paths` list. A zero-width pattern such as `a*` terminates: the
 scan advances past an empty match instead of re-matching the same column.
 
 `replace` returns `{ occurrences, files }`: how many occurrences changed and how many files they
@@ -446,8 +450,9 @@ manager.remove(['scratch', 'ghost']) // false — 'ghost' was never registered, 
 manager.clear() // empty registry, no selection
 ```
 
-Only the first `add` auto-activates; after that the selection moves solely by `switch`, `open`, or
-the removal of whatever it pointed at. Adding an id that already exists replaces the registered
+An `add` activates the workspace it adds whenever none is active: the first `add`, and an `add`
+after the active workspace was removed or the registry cleared. Beside an active workspace, the
+selection moves solely by `switch`, `open`, or the removal of whatever it pointed at. Adding an id that already exists replaces the registered
 workspace, and because `active` is resolved through the map on every read, a replaced active id
 resolves to the replacement rather than to a detached instance.
 
@@ -520,12 +525,13 @@ transparent proxies, unbranded look-alikes, and plain branded objects.
 A code describes every refusal, and `WorkspaceError` carries the code plus the context the
 operation had:
 
-| Code       | Raised by                                                            |
-| ---------- | -------------------------------------------------------------------- |
-| `MISSING`  | a ranged write aimed at a path the workspace does not hold           |
-| `MODALITY` | a text-only operation aimed at binary content                        |
-| `RANGE`    | a ranged write whose range is inverted or has a coordinate below one |
-| `PATTERN`  | a search or replacement whose pattern source will not compile        |
+| Code       | Raised by                                                              |
+| ---------- | ---------------------------------------------------------------------- |
+| `MISSING`  | a ranged write aimed at a path the workspace does not hold             |
+| `MODALITY` | a text-only operation aimed at binary content                          |
+| `RANGE`    | a ranged write whose range is inverted or has a coordinate below one   |
+| `PATTERN`  | a search or replacement whose pattern source will not compile          |
+| `PATHS`    | a search or replacement whose `paths` value is not an array of strings |
 
 ```ts
 import { createWorkspace, isWorkspaceError } from '@orkestrel/workspace'
@@ -571,7 +577,8 @@ here reaches outside the process to check.
   and each factory's working instance.
 - [`Workspace.test.ts`](../tests/src/core/workspaces/Workspace.test.ts) — the edit surface end
   to end: state transitions, clamping, the modality matrix over a real binary file, search and
-  replace semantics, insertion order, events and listener isolation, and the construction seed.
+  replace semantics, the `paths` scope and its refusals, insertion order, events and listener
+  isolation, and the construction seed.
 - [`WorkspaceManager.test.ts`](../tests/src/core/workspaces/WorkspaceManager.test.ts) —
   registration, the active pointer, listener defaults and overrides, and the store round trip
   through `open` and `save`.

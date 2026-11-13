@@ -19,14 +19,18 @@ import {
 	rmSync,
 	writeFileSync,
 } from 'node:fs'
-import { dirname, isAbsolute, join, relative, resolve as resolvePath, sep } from 'node:path'
+import {
+	basename,
+	dirname,
+	isAbsolute,
+	join,
+	relative,
+	resolve as resolvePath,
+	sep,
+} from 'node:path'
 
 export function hasASCIIURLControl(value: string): boolean {
-	for (const character of value) {
-		const code = character.codePointAt(0)
-		if (code !== undefined && (code <= 0x1f || code === 0x7f)) return true
-	}
-	return false
+	return /[\p{Cc}--[\u0080-\u009f]]/v.test(value)
 }
 
 /**
@@ -372,7 +376,7 @@ export function findPackageDirectory(current: string): string | undefined {
 export function packageRootOf(packageName: string, resolvedPath: string): string | undefined {
 	const physical = physicalPath(resolvedPath)
 	const directory = findPackageDirectory(
-		existsSync(physical) && lstatSync(physical).isDirectory() ? physical : dirname(physical),
+		lstatSync(physical, { throwIfNoEntry: false })?.isDirectory() ? physical : dirname(physical),
 	)
 	return directory !== undefined && packageManifestName(directory) === packageName
 		? realpathSync.native(directory)
@@ -382,7 +386,7 @@ export function packageRootOf(packageName: string, resolvedPath: string): string
 export function packageRootForResolved(resolvedPath: string): string | undefined {
 	const physical = physicalPath(resolvedPath)
 	const directory = findPackageDirectory(
-		existsSync(physical) && lstatSync(physical).isDirectory() ? physical : dirname(physical),
+		lstatSync(physical, { throwIfNoEntry: false })?.isDirectory() ? physical : dirname(physical),
 	)
 	return directory !== undefined && packageManifestName(directory) !== undefined
 		? realpathSync.native(directory)
@@ -874,6 +878,26 @@ export function rewriteBrowserSpecifier(content: string): string {
 }
 
 /**
+ * Rewrites every server alias in a roll-up to the built server entry beside the reporter output.
+ *
+ * @param content - The finished roll-up.
+ * @returns That roll-up with each `@src/server` specifier replaced by `../src/server/index.js`.
+ *
+ * @remarks
+ * The reporter entry reaches the server class through the `@src/server` alias, and the extractor
+ * keeps it external and writes it through unchanged. `dist/reporter/main.d.ts` resolves the server
+ * declarations at the same relative path its `main.js` imports through `output.paths`.
+ *
+ * @example
+ * ```ts
+ * rewriteServerSpecifier("from '@src/server'") // "from '../src/server/index.js'"
+ * ```
+ */
+export function rewriteServerSpecifier(content: string): string {
+	return content.replaceAll('@src/server', '../src/server/index.js')
+}
+
+/**
  * Rolls one published face's declarations into the single file that face ships.
  *
  * @param options - The face's roll-up options.
@@ -883,12 +907,13 @@ export function rewriteBrowserSpecifier(content: string): string {
  * At `closeBundle`, after Vite has written every format of the face, the plugin emits the face's
  * declarations with the workspace compiler run as a process into a scratch directory made fresh
  * under the host temporary directory, hands the emitted entry to the extractor's own engine,
- * applies `rewrite`, and removes the scratch directory. Keeping the scratch outside the face's own
- * output means its unconditional removal can never take a sibling the face already published, such
- * as its own `declarations` folder. The extractor is a publishing workspace's development
- * dependency, so this vendored leaf defers loading it to that hook: a workspace that publishes no
- * library installs no extractor, never reaches the hook, and never resolves the package at build
- * or at check.
+ * applies `rewrite`, and removes the scratch directory. The roll-up takes the entry's own name, so
+ * an `index.ts` face ships `index.d.ts` and a `main.ts` entry ships `main.d.ts`. Keeping the
+ * scratch outside the face's own output means its unconditional removal can never take a sibling
+ * the face already published, such as its own `declarations` folder. The extractor is a publishing
+ * workspace's development dependency, so this vendored leaf defers loading it to that hook: a
+ * workspace that publishes no library installs no extractor, never reaches the hook, and never
+ * resolves the package at build or at check.
  */
 export function declarationRollup(options: DeclarationRollupOptions): Plugin {
 	const state = new BuildState()
@@ -917,7 +942,7 @@ export function declarationRollup(options: DeclarationRollupOptions): Plugin {
 				)
 			}
 			const scratch = mkdtempSync(join(tmpdir(), 'orkestrel-declarations-'))
-			const rollup = resolvePath(state.output, 'index.d.ts')
+			const rollup = resolvePath(state.output, basename(declaration))
 			try {
 				readCompilerOutput(compiler, [
 					'-p',

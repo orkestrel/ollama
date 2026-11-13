@@ -1049,7 +1049,7 @@ describe('AgentContext workspaces (hermetic provider behavior) — large-context
 				SCENARIO_PROVIDER,
 				(provider) => {
 					const agent = createAgent(provider, { timeout: CASE_TIMEOUT })
-					agent.context.messages.add(createUserMessage('What is in this image?'))
+					agent.context.messages.add({ role: 'user', content: 'What is in this image?' })
 					agent.context.workspaces.add({
 						seed: [
 							createFile({

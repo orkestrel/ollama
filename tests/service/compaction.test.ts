@@ -17,7 +17,6 @@ import {
 	countRequestCharacters,
 	createAllowAuthority,
 	createChallengeTools,
-	createUserMessage,
 	estimateRequestMessages,
 	toMessageInputs,
 } from '../setup.js'
@@ -51,8 +50,7 @@ describe('Agent (live) — compaction retains complete exchanges on the wire', (
 				strict: false,
 				timeout: CASE_TIMEOUT,
 			})
-			const finalMessage = createUserMessage('Please continue.')
-			agent.context.messages.add(finalMessage)
+			const finalMessage = agent.context.messages.add({ role: 'user', content: 'Please continue.' })
 			const result = await agent.generate()
 			expect(result.partial).toBe(false)
 			const section = conversation.sections[0]

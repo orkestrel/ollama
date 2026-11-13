@@ -771,7 +771,8 @@ environment's export a distinct name. The record never holds a conflict, so a co
 run that reads its owner as a candidate.
 
 A candidate refuses, naming its path, when its manifest is unreadable, when it has neither its guide
-nor `src/`, when its guide exists but is not UTF-8 text within the artifact bound, or when a
+nor `src/` (an app-only workspace, which publishes no surface and relies on its `test:policy`
+`surface` rule), when its guide exists but is not UTF-8 text within the artifact bound, or when a
 TypeScript source under `src/` cannot be read. Only `.ts` files under `src/` are read, so a binary
 asset there is ignored. A barrel holding a statement other than `export * from './module.js'`
 refuses with the statement named, because the reflection follows nothing else and an incomplete
@@ -1352,8 +1353,8 @@ The project loads `tests/setup.ts` alone. The tests import
 `tests/setupStudy.ts`, a harness module the package owns, so scaffold plans no such file and no
 project loads it as a setup file. In publishing and `private: true` workspaces, run the project on
 demand with `npm run test:studies` alone; no gate or chain runs it.
-Its longer timeouts and disabled file parallelism match the
-live-service project. The root `studies/` directory holds the adapters and declarations the study
+Its longer timeouts match the live-service project, and its files run in parallel, because its
+proofs drive seeded, replayed, or scripted runs rather than a live service. The root `studies/` directory holds the adapters and declarations the study
 tests run, and it selects nothing. A chain that carries a study step fails the configuration proof
 until the workspace removes that step during scaffold adoption.
 
@@ -2007,8 +2008,10 @@ declaration, a binding that is not an identifier, a barrel statement outside the
 A missing guide root, an empty catalog, a catalog row with no hosted guide, and a hosted guide
 carrying no `Surface` section report one the same way, so a reading the sweep could not complete
 never reports clean. A collision reads
-`surface name belongs to one package: NAME (OWNER)` and carries the declaring path and line, sorted
-by path, line, and message. Which package keeps a claimed name is the answer
+`surface name belongs to one package: NAME (OWNER)`, then the correction: delete the local declaration
+and `import { NAME } from "@orkestrel/OWNER"` (or the owner's environment entry that exports it)
+where the contracts match, and rename only where the local contract differs. It carries the
+declaring path and line, sorted by path, line, and message. Which package keeps a claimed name is the answer
 `.claude/rules/names.md` § Fleet name ownership gives; the rule carries no allowlist and no
 suppression.
 
@@ -2029,6 +2032,7 @@ set is reachable through a published specifier.
 | `POLICY_SURFACE_HOST`           | const     | Names the installed host root containing the fleet's reference guides.               |
 | `createPolicySurfaceFixture`    | function  | Creates a scratch target with a complete installed guide population.                 |
 | `createPolicySurfaceGuide`      | function  | Creates a guide whose surface claims the supplied fixture names.                     |
+| `describeSurfaceCollision`      | function  | Describes the refusal for a name that two packages claim, with the owner's import.   |
 | `inspectPolicySurface`          | function  | Inspects source and target-owned setup names against the hosted fleet guides.        |
 | `readPolicyDeclarations`        | function  | Locates parsed exports at their physical declaration lines.                          |
 | `readPolicySurface`             | function  | Reads reachable source declarations and refuses unread barrel statements or targets. |

@@ -160,6 +160,20 @@ export function createPolicySurfaceGuide(names: readonly string[]): string {
 }
 
 /**
+ * Describes the refusal for a name that two packages claim, with the owner's import.
+ *
+ * @param name - The colliding bare name.
+ * @param owner - The package that owns the name, without its scope.
+ * @returns The refusal text that names the owner's import and the reuse-before-renaming rule.
+ */
+export function describeSurfaceCollision(name: string, owner: string): string {
+	const subject = JSON.stringify(name.slice(0, 512)).slice(1, -1)
+	const label = JSON.stringify(owner.slice(0, 512)).slice(1, -1)
+	const specifier = JSON.stringify(`@orkestrel/${owner.slice(0, 512)}`)
+	return `surface name belongs to one package: ${subject} (${label}). Where the local declaration carries the owner's contract, delete it and import the owner's: import { ${subject} } from ${specifier}, or from the owner's environment entry that exports it. Rename the local declaration only when its contract differs from the owner's, and name it for the thing it is.`
+}
+
+/**
  * Writes a complete hosted reference population for a physical policy control.
  *
  * @param scratch - The owned workspace receiving the hosted references.
@@ -3856,7 +3870,7 @@ export function inspectPolicySurface(root: string): readonly PolicyViolation[] {
 				createPolicyViolation(
 					'surface',
 					declaration.path,
-					`surface name belongs to one package: ${declaration.name} (${owner})`,
+					describeSurfaceCollision(declaration.name, owner),
 					declaration.line,
 				),
 			),

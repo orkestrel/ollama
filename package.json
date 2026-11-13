@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/ollama",
-	"version": "0.0.37",
+	"version": "0.0.38",
 	"description": "A typed local-LLM provider for the @orkestrel line — a ProviderInterface over a local Ollama daemon's /api/chat with NDJSON streaming and guard-narrowed wire boundaries. Part of the @orkestrel line.",
 	"keywords": [
 		"ai",
@@ -114,6 +114,6 @@
 		"vitest": "^5.1.0"
 	},
 	"engines": {
-		"node": ">=22.18.0"
+		"node": "^22.18.0 || >=24.4.0"
 	}
 }

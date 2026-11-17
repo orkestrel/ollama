@@ -728,8 +728,8 @@ in `src/bin/*.ts` and refuses a relative import of `src/core` or `src/server` fr
 would bundle a second copy of the environment. The distribution proof reads `dist/bin` as its own
 face and reports a library source copied into it. The gate refuses a module whose `./<name>`
 subpath another planned subpath takes, such as `src/bin/server.ts` beside `src/server`, and names
-both. A consumer loads a module by its subpath, as `--reporter=@orkestrel/test/reporter` loads the
-`reporter` module of `@orkestrel/test`.
+both. A consumer loads a module by its subpath: in a package named `@orkestrel/sample`,
+`src/bin/reporter.ts` publishes `./reporter`, which `--reporter=@orkestrel/sample/reporter` loads.
 
 When an existing workspace adds a `src/bin` module, `overwrite` writes every row its manifest
 lacks: `exports["./<name>"]`, `dist/bin` in `files`, `check:src:bin`, `build:src:bin`, and
@@ -1266,7 +1266,7 @@ standard error, so a piped value is never polluted.
 | Verb        | Value                                                                                                                                                          |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `new`       | `MaterializeResult` — `target`, `written`, `skipped`, `removed` — plus `provenance`                                                                            |
-| `audit`     | `Audit` — `findings` and `questions` — plus `releases` and `provenance`; findings carry `ownership`                                                            |
+| `audit`     | `Audit` — `findings` and `questions` — plus `releases` and `provenance`, which carries `guides` when mirrors were compared; findings carry `ownership`         |
 | `surface`   | `owners` with each owner's `source`, `collisions` with each entry's `standing` (`error`, `recorded`, or `closed`), and `provenance` with `guides` and `record` |
 | `repair`    | `MaterializeResult` plus `audit`, the terminal audit taken after the write, `releases`, and `provenance`                                                       |
 | `catalog`   | `MaterializeResult` plus `mirrors`, `provenance`, optional `membership` with `entries`, `dropped`, and `releases`, and an explanatory `note` on a partial run  |
@@ -1498,13 +1498,18 @@ scaffold creates it when absent and preserves your edits during `repair`. It imp
 at 1280 × 800 and `compact` at 390 × 844 without a theme. Rename and extend those variants for
 your application; apply themes through the application's interface in your tests.
 
-The wrapper registers `journey:<name>` for each variant through the root factory. Each app-side
+The wrapper is one `buildCaptureWrapper` call from `@orkestrel/capture/server`, whose `project`
+option builds each variant's project through the root factory as `appJourney(variant, mode,
+override)`. It declares the owner `pages:arrival`, the first variant `desktop`, the final case
+`closes the run`, the evidence root `tmp/captures/states`, the integrity inputs, the shared and
+test sources, and one scoped `states` portfolio; extend the owner list with every owner path your
+journey cases carry. The wrapper registers `journey:<name>` for each variant. Each app-side
 browser face also receives `journey:<name>` as `capture journey --mode <name>` and `capture:<name>`
 as `capture frames --mode <name>`. Each project
 collects the integration suite of the application the Vite mode selects, sets the variant
-viewport, and provides `variant`
-as its name, `variants` as the declared list, and `capture` as a boolean. The root configuration
-reads `process.env.CAPTURE === '1'` for that boolean. The generated `test:journey` script runs
+viewport, and receives the values the `CaptureProvided` type of `@orkestrel/capture` declares,
+`variant`, `variants`, and `capture` among them, through the override the factory passes. The
+factory reads the `CAPTURE` variable, and the root configuration reads none. The generated `test:journey` script runs
 `vitest run --config configs/app/vite.journey.config.ts --no-cache --reporter=dot`, and the generated
 `test` chain runs it after the application projects only in a private workspace. In a publishing
 workspace, application and journey suites run on demand outside release gates and chains.
@@ -1519,9 +1524,11 @@ or a colon-delimited owner path declared by the wrapper. Narrow with `--variant 
 `--case <exact-full-name>`; frames also accept `--state <name>`. Replace the selector with
 `--changed <ref>` and inspect `--plan` before executing the changed set. The package refuses
 shared changes that cannot be narrowed and prints the explicit whole-suite command.
-The application wires the wrapper's discovery, tags, portfolios, registry, selection request,
-and final-case records to the capture protocol before running these commands. Scaffold seeds
-the dependency and scripts; it defines no application owner or state registry.
+The wrapper factory answers discovery, reads the selection request, derives the owner tags, and
+mounts the progress plugin of `@orkestrel/test`, and the seeded arrival journey writes each run
+record in its final case, so `capture registry` and `npm run capture -- all` run on a workspace
+as `new` creates it. Each further screen adds its owner to the wrapper and its states to the
+journey that places them.
 
 The generated browser resolver and gate cover Chromium alone. The emitted `configs/browsers.ts` doc
 block states the condition that reopens engine selection, and is that condition's one home.
@@ -1741,12 +1748,12 @@ page carrying a repeated or malformed stamp, and a page whose head does not clos
 
 The journey follows the same modes. The birth-owned `configs/app/vite.journey.config.ts` wrapper
 keeps your variant list and passes the Vite mode to the root
-`appJourney(variant, variants, mode?, override?)` factory, which selects the application through
+`appJourney(variant, mode?, override?)` factory, which selects the application through
 `resolveApplication` as well. Each variant project collects
-`tests/app/<application>/integration.test.ts` alone, sets the variant viewport, and provides
-`variant`, `variants`, and `capture`. The factory merges an optional `UserConfig` override last,
-through `mergeOverride`, so a wrapper changes only the fields it names and the project keeps its
-include and exclude replacement, viewport, commands, and plugin rules. The manifest runs `test:journey` for the base
+`tests/app/<application>/integration.test.ts` alone and sets the variant viewport. The factory
+merges an optional `UserConfig` override last, through `mergeOverride`, so the capture wrapper
+factory's override adds its owner tags, its provided values, and its `readCaptureFrames` command,
+and the project keeps its include and exclude replacement, viewport, commands, and plugin rules. The manifest runs `test:journey` for the base
 application and `test:journey:<framework>`, the same command with `--mode <framework>`, for each
 app-side browser extension. A private workspace runs them after `npm run test:app` in `test`.
 A publishing workspace keeps those scripts available on demand and invokes neither application
@@ -1758,9 +1765,13 @@ Scaffold seeds one birth-owned arrival journey per application at
 the Vue journey mounts `App.vue`. Each resolves the level-1 heading by its role and the workspace
 name, then proves the Journey, Refusal, and Matrix families the `orkestrel-journey` skill names,
 and proves Capture as well when `CAPTURE=1` sets the `capture` value. The seeded wrapper declares
-two variants, which is what makes the journey owe Matrix. A journey workspace's
-`tests/setupBrowser.ts` seed carries the `ProvidedContext` augmentation that types the three
-provided values.
+two variants, which is what makes the journey owe Matrix. The arrival case owns `pages:arrival`
+and places the `<application>-arrival` state in the scoped `pages` directory, and a final
+`closes the run` case writes the run record and its journey artifact through the
+`collectCaptureCases`, `buildCaptureDestinations`, `buildCaptureRun`, and `renderCaptureArtifact`
+helpers of `@orkestrel/capture`. A journey workspace's `tests/setupBrowser.ts` seed extends
+`ProvidedContext` with `CaptureProvided` and `TaskMeta` with `CaptureMeta`, and declares the
+`readCaptureFrames` browser command.
 
 ### Vendored files and their refresh
 
@@ -2249,12 +2260,17 @@ target holds. The refusal is deliberate at `0.0.x` and there is no migration pat
 
 ## Fleet catalog
 
-During `audit`, a present foreign guide whose bytes differ from the hosted guide produces a
-non-blocking question whose `field` is `guides`. Its message names the mirror path and `catalog`
-as the refresh action. The message says
-"differs from the hosted guide": byte inequality establishes no chronology. The question sits
-outside repair findings, so `repair` preserves a present mirror. The target's own guide and its
-guide index are excluded, and the comparison follows the `guides` group selection.
+During an online `audit` that selects the `guides` group, each present `guides/*.md` mirror is
+compared with the guide on its package's `main` branch, the read `catalog` performs. A mirror
+differing from that guide produces a non-blocking question whose `field` is `guides`. Its message
+names the mirror path and `catalog` as the refresh action, or `catalog --all` when the target does
+not declare the package. The message says "differs from the guide on" the package's `main` branch:
+byte inequality establishes no chronology. A mirror that cannot be read from its repository
+produces a non-blocking `guides` question that names the cause and states that the mirror was not
+compared. The comparison covers a mirror only when the hosted catalog lists its package. The
+target's own guide, the guide index, and nested paths are excluded. Offline, `audit` reads no
+repository and raises no `guides` question. The question sits outside repair findings, so `repair`
+preserves a present mirror, and the `Materializer` audit raises no guide question.
 
 `catalog` rewrites one marker-bounded region in `CATALOG_AGENT_PATH` and nothing else in that file.
 The region holds a table with these columns:
@@ -2339,17 +2355,21 @@ the baseline toolchain a generated workspace receives is the toolchain scaffold 
 browser framework can override a floor through `TOOLCHAIN_HOLDS`. The rows scaffold does
 not install are seeds — `@orkestrel/capture`, `@vitejs/plugin-vue`, `vue`, `vue-tsc`, `vite-plugin-singlefile`, and the
 application-server fleet packages — and each carries the highest triple its supported major served
-when it was written.
+when it was written. The three application-server fleet seeds (`@orkestrel/middleware`,
+`@orkestrel/router`, and `@orkestrel/server`) carry the version the committed catalog in
+`.claude/agents/orkestrel.md` lists, and the constants proof holds them there and checks that the
+catalog's runtime and peer edges among the three admit the seeded versions.
 [`tests/src/core/constants.test.ts`](../tests/src/core/constants.test.ts) names that seeded set, so a
 row entering or leaving the manifest moves a test rather than passing unnoticed. `sass`, the one row
 of `STYLES_DEV_DEPENDENCIES`, is a seed as well: it carries the `^1.105.1` range the
 `@orkestrel/veneer` checkout declared on 2026-09-30, and that test names it in the seeded set.
 
-`CAPTURE_DEV_DEPENDENCIES` seeds `@orkestrel/capture` at `^0.0.5`, the first release whose commands
-take `--mode`, only when the blueprint plans a journey: the `journey` axis with the base entry or
-an app-side browser face. `CAPTURE_UPSTREAM` withholds that
+`CAPTURE_DEV_DEPENDENCIES` seeds `@orkestrel/capture` at `^0.0.10`, which exports the
+`buildCaptureWrapper` factory the seeded journey wrapper calls, only when the blueprint plans a
+journey: the `journey` axis with the base entry or an app-side browser face. `CAPTURE_UPSTREAM` withholds that
 seed from capture itself and its fleet runtime closure: `@orkestrel/contract`,
-`@orkestrel/emitter`, `@orkestrel/process`, and `@orkestrel/timeout`. The frozen, sorted list
+`@orkestrel/emitter`, `@orkestrel/process`, `@orkestrel/test`, which capture takes as a peer, and
+`@orkestrel/timeout`. The frozen, sorted list
 follows dependencies and peers from capture's installed manifests and moves with the capture
 pin. Scaffold does not install capture; planning proofs cover every listed exclusion and an
 unlisted journey workspace. The installed closure-equality proof lands when scaffold installs
@@ -2385,8 +2405,8 @@ The dependency tables select these floors:
 | TypeScript                   | `^6.0.3`   | A selected `src/vue` or `app/vue` face                         |
 | Vitest                       | `^5.1.0`   | Every workspace                                                |
 | `@vitest/browser-playwright` | `^5.1.0`   | Browser tooling                                                |
-| `oxlint`                     | `^1.93.0`  | Every workspace                                                |
-| `oxfmt`                      | `^0.78.0`  | Every workspace                                                |
+| `oxlint`                     | `^1.94.0`  | Every workspace                                                |
+| `oxfmt`                      | `^0.79.0`  | Every workspace                                                |
 | `@microsoft/api-extractor`   | `^7.60.1`  | Declaration builds; uses its bundled TypeScript 6.0.3 engine   |
 | `playwright`                 | `^1.64.1`  | Browser tooling                                                |
 | Vite                         | `^8.3.8`   | Every workspace                                                |
@@ -2405,7 +2425,8 @@ alike.
 
 ### What each verb reads
 
-`new`, `audit`, and `repair` read declared versions and the vendored host. `catalog` reads
+`new`, `audit`, and `repair` read declared versions and the vendored host. `audit` also reads the
+upstream guide of each present guide mirror when the `guides` group is selected. `catalog` reads
 organization membership, its packuments, and the selected guides. `overwrite` reads every surface
 that `repair` and `catalog` read. A network-forced floor is drift except for a successful `new` run;
 an explicit `--offline` floor is intentional, and the verb's result decides its exit. `catalog` has
@@ -2415,13 +2436,13 @@ Each verb resolves a surface's complete answer before it opens that surface's wr
 a partial answer never becomes a partial pin set. `overwrite` keeps the repair and removal work it
 committed before a later catalog refusal and records that refusal in `note`.
 
-| Verb        | Reads live                                                       | When the network forces a floor                                                                                                                             | With `--offline`                                                                                            |
-| ----------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `new`       | Declared versions and the vendored host                          | Writes the distributed version and host floors; exits `0` after creating the workspace                                                                      | Reads no upstream surface, writes the same floors, and exits `0` after creating the workspace               |
-| `audit`     | Declared versions and the vendored host                          | Compares through the distributed floors and exits `1`                                                                                                       | Compares through the floors; exits `0` for an aligned target or `1` for drift                               |
-| `repair`    | Declared versions and the vendored host                          | Repairs from the distributed floors and exits `1`, even when the terminal audit is aligned                                                                  | Repairs from the floors; the terminal audit decides exit `0` or `1`                                         |
-| `catalog`   | Organization membership, its packuments, and the selected guides | Refreshes guides alone on a membership outage; refuses version failure; preserves present mirrors or fills absent mirrors from the verified host; exits `1` | Is a usage error; exits `2` and writes nothing                                                              |
-| `overwrite` | Everything `repair` and `catalog` read                           | Keeps completed repair and deletion work, names each floor or refused catalog step in `note`, and exits `1`                                                 | Repairs, deletes, and writes version floors; skips `catalog`, records that refusal in `note`, and exits `1` |
+| Verb        | Reads live                                                          | When the network forces a floor                                                                                                                             | With `--offline`                                                                                            |
+| ----------- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `new`       | Declared versions and the vendored host                             | Writes the distributed version and host floors; exits `0` after creating the workspace                                                                      | Reads no upstream surface, writes the same floors, and exits `0` after creating the workspace               |
+| `audit`     | Declared versions, the vendored host, and the present guide mirrors | Compares through the distributed floors, or reports `provenance.guides` as `floor` after an unread guide, and exits `1`                                     | Compares through the floors and reads no guide; exits `0` for an aligned target or `1` for drift            |
+| `repair`    | Declared versions and the vendored host                             | Repairs from the distributed floors and exits `1`, even when the terminal audit is aligned                                                                  | Repairs from the floors; the terminal audit decides exit `0` or `1`                                         |
+| `catalog`   | Organization membership, its packuments, and the selected guides    | Refreshes guides alone on a membership outage; refuses version failure; preserves present mirrors or fills absent mirrors from the verified host; exits `1` | Is a usage error; exits `2` and writes nothing                                                              |
+| `overwrite` | Everything `repair` and `catalog` read                              | Keeps completed repair and deletion work, names each floor or refused catalog step in `note`, and exits `1`                                                 | Repairs, deletes, and writes version floors; skips `catalog`, records that refusal in `note`, and exits `1` |
 
 A fleet row is compared exactly — `^0.1.0` is stale the moment the registry serves `0.1.2` — and
 that inequality alone raises `audit` to exit `1`. A foreign row is compared inside its declared

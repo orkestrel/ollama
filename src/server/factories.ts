@@ -1,5 +1,11 @@
-import type { OllamaDaemonInterface, OllamaDaemonOptions } from './types.js'
+import type {
+	OllamaDaemonInterface,
+	OllamaDaemonOptions,
+	OllamaFixtureInterface,
+	OllamaFixtureOptions,
+} from './types.js'
 import { OllamaDaemon } from './OllamaDaemon.js'
+import { OllamaFixture } from './OllamaFixture.js'
 
 /**
  * Creates an unstarted daemon with a snapshot of the caller's declaration and lifecycle hooks.
@@ -15,4 +21,17 @@ import { OllamaDaemon } from './OllamaDaemon.js'
  */
 export function createOllamaDaemon(options: OllamaDaemonOptions): OllamaDaemonInterface {
 	return new OllamaDaemon(options)
+}
+
+export async function createOllamaFixture(
+	options: OllamaFixtureOptions,
+): Promise<OllamaFixtureInterface> {
+	const fixture = new OllamaFixture(options)
+	try {
+		await fixture.start()
+	} catch (error) {
+		await fixture.destroy()
+		throw error
+	}
+	return fixture
 }

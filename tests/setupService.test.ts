@@ -10,9 +10,9 @@
 // environment normalization, the readiness verdict, the warmup recipe, the wire options
 // each factory carries, the summarizer's message shaping, and the tables' invariants.
 //
-// The daemon those contracts are driven against is the protocol-faithful `FixtureDaemon`
-// `tests/setupServer.ts` declares, which this file starts on a loopback ephemeral port; it
-// is not a stand-in for anything this workspace owns.
+// The daemon those contracts are driven against is the protocol-faithful Ollama fixture under the
+// `DaemonPolicy` `tests/setupServer.ts` declares, which this file starts on a loopback ephemeral
+// port; it is not a stand-in for anything this workspace owns.
 // It must be listening before `tests/setupService.ts` is evaluated, because that module
 // runs its readiness gate at import; that is why the import is deferred until the
 // environment points at the fixture.
@@ -23,19 +23,24 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { service } from '../vite.config.js'
 import { buildTurns, createUserMessage } from './setup.js'
 import {
+	createDaemonFixture,
+	DAEMON_MODEL,
+	DaemonPolicy,
 	FIXTURE_CONTENT,
 	FIXTURE_MODEL,
-	FixtureDaemon,
 	isPositiveInteger,
 	readChatMessages,
+	readChats,
 	readLatestChat,
-	READY_CHAT,
-	READY_TAGS,
+	readPreflights,
 	SUMMARY_INSTRUCTION,
 } from './setupServer.js'
 
-const daemon = new FixtureDaemon()
-await daemon.start()
+const policy = new DaemonPolicy()
+const daemon = await createDaemonFixture({
+	policy,
+	models: [{ name: FIXTURE_MODEL, digest: DAEMON_MODEL.digest }],
+})
 const { port } = new URL(daemon.url)
 
 /** The host the environment selects, written without a scheme so the module must add one. */
@@ -60,7 +65,7 @@ const {
 } = await import('./setupService.js')
 
 afterAll(async () => {
-	await daemon.stop()
+	await daemon.destroy()
 })
 
 // The cases share one fixture daemon and one evaluation of the service module, and the last group takes
@@ -69,10 +74,13 @@ afterAll(async () => {
 describe('the service setup against a fixture daemon', { shuffle: false }, () => {
 	describe('the module load gate', () => {
 		it('lists the daemon and then warms the selected model, before any suite runs', () => {
-			expect(daemon.calls.slice(0, 2)).toEqual(['/api/tags', '/api/chat'])
+			expect(daemon.requests.slice(0, 2).map(({ path }) => path)).toEqual([
+				'/api/tags',
+				'/api/chat',
+			])
 
-			const warmup = daemon.chats[0]
-			if (warmup === undefined) throw new Error('the fixture daemon recorded no warmup call')
+			const warmup = readChats(daemon)[0]
+			if (warmup === undefined) throw new Error('the fixture recorded no warmup call')
 			expect(warmup.model).toBe(FIXTURE_MODEL)
 			expect(warmup.stream).toBe(false)
 			expect(warmup.think).toBe(false)
@@ -92,44 +100,44 @@ describe('the service setup against a fixture daemon', { shuffle: false }, () =>
 
 	describe('isOllamaReady', () => {
 		it('reports ready when the listing names the model, under either wire field', async () => {
-			daemon.tags({ status: 200, models: [{ model: FIXTURE_MODEL }] })
+			policy.tags({ status: 200, models: [{ model: FIXTURE_MODEL }] })
 			expect(await isOllamaReady()).toBe(true)
 
-			daemon.tags({ status: 200, models: [{ name: FIXTURE_MODEL }] })
+			policy.tags({ status: 200, models: [{ name: FIXTURE_MODEL }] })
 			expect(await isOllamaReady()).toBe(true)
 
-			daemon.tags(READY_TAGS)
+			policy.clear()
 		})
 
 		it('reports not ready when the listing omits the model', async () => {
-			daemon.tags({ status: 200, models: [{ model: 'some-other-model:latest' }] })
+			policy.tags({ status: 200, models: [{ model: 'some-other-model:latest' }] })
 			try {
 				expect(await isOllamaReady()).toBe(false)
 			} finally {
-				daemon.tags(READY_TAGS)
+				policy.clear()
 			}
 		})
 
 		it('reports not ready when the listing answers a non-OK status', async () => {
-			daemon.tags({ status: 503, models: [{ model: FIXTURE_MODEL }] })
+			policy.tags({ status: 503, models: [{ model: FIXTURE_MODEL }] })
 			try {
 				expect(await isOllamaReady()).toBe(false)
 			} finally {
-				daemon.tags(READY_TAGS)
+				policy.clear()
 			}
 		})
 	})
 
 	describe('fetchDaemon', () => {
 		it('answers the daemon response of a reachable route, whatever its status', async () => {
-			daemon.tags({ status: 503, models: [] })
+			policy.tags({ status: 503, models: [] })
 			try {
 				const response = await fetchDaemon(`${daemon.url}/api/tags`, {}, 5000, (reason) => reason)
 
 				expect(response.status).toBe(503)
 				expect(await response.json()).toEqual({ models: [] })
 			} finally {
-				daemon.tags(READY_TAGS)
+				policy.clear()
 			}
 		})
 
@@ -162,13 +170,13 @@ describe('the service setup against a fixture daemon', { shuffle: false }, () =>
 		})
 
 		it('throws naming the status, the model, and the host when the daemon rejects it', async () => {
-			daemon.chat({ status: 503, content: FIXTURE_CONTENT, park: false })
+			policy.chat({ status: 503, content: FIXTURE_CONTENT, park: false })
 			try {
 				await expect(warmOllama()).rejects.toThrow(
 					`Ollama warmup failed (503) for model ${FIXTURE_MODEL} at http://${FIXTURE_HOST}`,
 				)
 			} finally {
-				daemon.chat(READY_CHAT)
+				policy.clear()
 			}
 		})
 	})
@@ -216,7 +224,7 @@ describe('the service setup against a fixture daemon', { shuffle: false }, () =>
 		})
 
 		it('ends a turn the daemon never answers at the requested deadline, before the caller signal', async () => {
-			daemon.chat({ status: 200, content: FIXTURE_CONTENT, park: true })
+			policy.chat({ status: 200, content: FIXTURE_CONTENT, park: true })
 			try {
 				const provider = createLiveOllama({ turn: 30 })
 				const started = performance.now()
@@ -227,7 +235,7 @@ describe('the service setup against a fixture daemon', { shuffle: false }, () =>
 
 				expect(performance.now() - started).toBeLessThan(1500)
 			} finally {
-				daemon.chat(READY_CHAT)
+				policy.clear()
 			}
 		})
 	})
@@ -256,11 +264,11 @@ describe('the service setup against a fixture daemon', { shuffle: false }, () =>
 		})
 
 		it('bounds the generation by the deadline it was built with', async () => {
-			daemon.chat({ status: 200, content: FIXTURE_CONTENT, park: true })
+			policy.chat({ status: 200, content: FIXTURE_CONTENT, park: true })
 			try {
 				await expect(createLiveSummarizer(50)(buildTurns(2))).rejects.toThrow(Error)
 			} finally {
-				daemon.chat(READY_CHAT)
+				policy.clear()
 			}
 		})
 	})
@@ -335,8 +343,8 @@ describe('the service setup against a fixture daemon', { shuffle: false }, () =>
 		it('accepts an origin the daemon permits and throws naming OLLAMA_ORIGINS for one it refuses', async () => {
 			const permitted = 'http://127.0.0.1:54321'
 			const refused = 'http://refused.example.com'
-			daemon.origins([permitted])
-			const seen = daemon.preflights.length
+			policy.origins([permitted])
+			const seen = readPreflights(daemon).length
 
 			await expect(requireDaemonOrigin(permitted)).resolves.toBeUndefined()
 			await expect(requireDaemonOrigin(refused)).rejects.toThrow(
@@ -346,14 +354,14 @@ describe('the service setup against a fixture daemon', { shuffle: false }, () =>
 				'set OLLAMA_ORIGINS to include that origin',
 			)
 
-			expect(daemon.preflights.slice(seen)).toEqual([permitted, refused, refused])
+			expect(readPreflights(daemon).slice(seen)).toEqual([permitted, refused, refused])
 		})
 	})
 
 	// Last, because it takes the fixture daemon down and nothing can reach it afterwards.
 	describe('warmOllama (daemon down)', () => {
 		it('throws naming the host and the model when the daemon cannot be reached', async () => {
-			await daemon.stop()
+			await daemon.destroy()
 
 			await expect(warmOllama()).rejects.toThrow(
 				`Ollama warmup could not reach http://${FIXTURE_HOST} for model ${FIXTURE_MODEL}`,

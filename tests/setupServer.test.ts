@@ -100,15 +100,22 @@ import {
 	PageFrames,
 	BROWSER_DRIVER,
 	buildImportMap,
+	buildDaemonChat,
+	buildDaemonFault,
 	buildDaemonMode,
 	buildDaemonOptions,
-	createDaemonPeer,
+	buildDaemonPreflight,
+	buildDaemonReply,
+	createDaemonFixture,
 	createRechunkingTransport,
+	DAEMON_CONTEXT,
+	DAEMON_INVENTORY,
 	DAEMON_MODEL,
 	DAEMON_UNLOAD_REPLY,
 	DAEMON_VERSION,
 	DAEMON_DECLARATION,
 	DAEMON_SERVICE_REFUSALS,
+	DaemonPolicy,
 	resolveDaemonDeclaration,
 	buildModuleFixture,
 	buildRecordedRequest,
@@ -147,7 +154,6 @@ import {
 	collectTargets,
 	computeDeclaration,
 	CONTROL_PATH,
-	createChatUpstream,
 	createPingRegistry,
 	declaresCommonJS,
 	decodeSegment,
@@ -215,7 +221,6 @@ import {
 	FIXTURE_CONTENT,
 	FIXTURE_HOSTED_IMPORTER,
 	FIXTURE_MODEL,
-	FixtureDaemon,
 	HERMETIC_WITNESSES,
 	isAgentOutcome,
 	IMPORT_ONLY_ENTRY,
@@ -261,8 +266,10 @@ import {
 	INSATIABLE_TOOL_CHUNKS,
 	insatiableResult,
 	readChatMessages,
+	readChats,
 	readFirstRequest,
 	readLatestChat,
+	readPreflights,
 	readModuleEntry,
 	readModuleReferences,
 	readOutcome,
@@ -271,12 +278,12 @@ import {
 	readRequest,
 	readSpecifierText,
 	READY_CHAT,
-	READY_TAGS,
 	RecordingServer,
 	releasePageAttempt,
 	RequestLog,
 	requireBuild,
 	requirePageBrowser,
+	readListening,
 	reservePort,
 	resolveModuleFiles,
 	rootToPath,
@@ -493,7 +500,7 @@ import {
 	wireTools,
 } from './setupServer.js'
 // The Node-resource half of `tests/setupServer.ts`: the loopback recording proxy, the
-// relay server, the fixture daemon, the capture wait, the provider-stream driver, the
+// relay server, the daemon policy, the capture wait, the provider-stream driver, the
 // transport fixtures, the shared wire tables, the loop-clock reader and its aligner, the live
 // page proof's browser and build gates, and the guard that keeps every hermetic project from
 // importing `tests/setupService.ts`, which contacts the daemon when it loads.
@@ -501,7 +508,7 @@ import {
 // exports are asserted by `tests/setup.test.ts`, so this proof does not re-assert them.
 //
 // The proxy and relay-server cases run against real sockets on 127.0.0.1 ephemeral
-// ports: a pass-through case forwards to a fixture upstream this file starts, and
+// ports: a pass-through case forwards to an Ollama fixture this file starts, and
 // `createRecordingProxy`'s own default upstream is deliberately unreachable. The
 // transport fixtures drive in-memory responses instead. The loop-clock cases run real
 // host timers measured on `performance.now()`. No Ollama daemon takes part in any of
@@ -509,7 +516,7 @@ import {
 
 describe('dedicated daemon protocol infrastructure', () => {
 	it('re-chunks response bytes without decoding and records before the real send', async () => {
-		const peer = await createDaemonPeer()
+		const fixture = await createDaemonFixture()
 		const original = globalThis.fetch.bind(globalThis)
 		const sent = createRecorder<readonly [string]>()
 		const requests = createRecorder<readonly [Request]>()
@@ -524,7 +531,11 @@ describe('dedicated daemon protocol infrastructure', () => {
 					requests.handler(request)
 				},
 			)
-			const response = await transport(`${peer.url}/api/generate`, { method: 'POST', body: '雪' })
+			const unload = '{"model":"fixture:雪","keep_alive":0}'
+			const response = await transport(`${fixture.url}/api/generate`, {
+				method: 'POST',
+				body: unload,
+			})
 			expect(response.status).toBe(200)
 			expect(response.headers.get('content-type')).toBe('application/json')
 			if (response.body === null) throw new Error('Missing re-chunked body')
@@ -532,13 +543,13 @@ describe('dedicated daemon protocol infrastructure', () => {
 			expect(chunks.every((chunk) => chunk.byteLength === 1)).toBe(true)
 			expect(Buffer.concat(chunks).toString()).toBe(DAEMON_UNLOAD_REPLY)
 			expect(sent.calls).toEqual([['record'], ['send']])
-			expect(await requests.calls[0]?.[0].text()).toBe('雪')
+			expect(await requests.calls[0]?.[0].text()).toBe(unload)
 			const empty = await createRechunkingTransport(() => Promise.resolve(new Response(null)))(
 				'http://fixture.invalid',
 			)
 			expect(empty.body).toBeNull()
 		} finally {
-			await peer.destroy()
+			await fixture.destroy()
 		}
 	})
 
@@ -555,12 +566,14 @@ describe('dedicated daemon protocol infrastructure', () => {
 	})
 
 	it('serves metadata and a controlled unload reply while recording exact request bytes', async () => {
-		const peer = await createDaemonPeer({ unload: 'selected-control' })
+		const fixture = await createDaemonFixture({
+			policy: new DaemonPolicy({ unload: 'selected-control' }),
+		})
 		try {
-			await expect((await fetch(`${peer.url}/api/version`)).json()).resolves.toEqual({
+			await expect((await fetch(`${fixture.url}/api/version`)).json()).resolves.toEqual({
 				version: DAEMON_VERSION,
 			})
-			await expect((await fetch(`${peer.url}/api/tags`)).json()).resolves.toEqual({
+			await expect((await fetch(`${fixture.url}/api/tags`)).json()).resolves.toEqual({
 				models: [
 					expect.objectContaining({
 						...DAEMON_MODEL,
@@ -572,7 +585,9 @@ describe('dedicated daemon protocol infrastructure', () => {
 				],
 			})
 			await expect(
-				(await fetch(`${peer.url}/api/generate`, { method: 'POST', body: 'exact-request' })).json(),
+				(
+					await fetch(`${fixture.url}/api/generate`, { method: 'POST', body: 'exact-request' })
+				).json(),
 			).resolves.toEqual({
 				model: 'selected-control',
 				created_at: expect.any(String),
@@ -580,15 +595,36 @@ describe('dedicated daemon protocol infrastructure', () => {
 				done: true,
 				done_reason: 'unload',
 			})
-			expect(peer.requests).toEqual([
+			expect(fixture.requests.map(({ path, body }) => ({ path, body }))).toEqual([
 				{ path: '/api/version', body: '' },
 				{ path: '/api/tags', body: '' },
 				{ path: '/api/generate', body: 'exact-request' },
 			])
 		} finally {
-			await peer.destroy()
+			await fixture.destroy()
 		}
-		await peer.destroy()
+		await fixture.destroy()
+	})
+
+	it('starts the dedicated fixture over the declared model, version, and context, declining every request by default', async () => {
+		const fixture = await createDaemonFixture()
+		try {
+			const show = await fetch(`${fixture.url}/api/show`, {
+				method: 'POST',
+				body: JSON.stringify({ model: DAEMON_MODEL.name }),
+			})
+
+			expect(await (await fetch(`${fixture.url}/api/version`)).text()).toBe(
+				`{"version":"${DAEMON_VERSION}"}`,
+			)
+			expect(await (await fetch(`${fixture.url}/api/tags`)).text()).toBe(DAEMON_INVENTORY)
+			expect(await show.json()).toEqual({
+				model_info: { 'general.architecture': 'fixture', 'fixture.context_length': DAEMON_CONTEXT },
+			})
+			expect(DAEMON_CONTEXT).toBe(32768)
+		} finally {
+			await fixture.destroy()
+		}
 	})
 })
 
@@ -808,10 +844,9 @@ describe('createRecordingProxy', () => {
 	})
 
 	it('forwards the body to a reachable upstream and returns its status and body verbatim', async () => {
-		const answer = '{"message":{"content":"pong"}}'
-		const upstream = await createChatUpstream(() =>
-			Promise.resolve(new Response(answer, { status: 202 })),
-		)
+		const upstream = await createDaemonFixture({
+			policy: new DaemonPolicy({ chat: { status: 202, content: 'pong', park: false } }),
+		})
 		const proxy = await createRecordingProxy(upstream.url)
 		try {
 			const body = JSON.stringify({ model: 'fixture-model', stream: false })
@@ -823,19 +858,19 @@ describe('createRecordingProxy', () => {
 			})
 
 			expect(response.status).toBe(202)
-			expect(await response.text()).toBe(answer)
-			expect(upstream.requests.map((request) => request.text)).toEqual([body])
+			expect(await response.text()).toBe(
+				'{"model":"fixture-model:latest","message":{"role":"assistant","content":"pong"},"done":true,"done_reason":"stop"}\n',
+			)
+			expect(upstream.requests.map((request) => request.body)).toEqual([body])
 		} finally {
 			await proxy.stop()
-			await upstream.stop()
+			await upstream.destroy()
 		}
 	})
 
 	it('answers 499 when stop cancels a call still waiting on the upstream', async () => {
-		const park = new AbortController()
-		const upstream = await createChatUpstream(async (signal) => {
-			await waitForAbort(AbortSignal.any([signal, park.signal]))
-			return new Response(undefined, { status: 204 })
+		const upstream = await createDaemonFixture({
+			policy: new DaemonPolicy({ chat: { status: 200, content: '', park: true } }),
 		})
 		const proxy = await createRecordingProxy(upstream.url)
 		try {
@@ -851,8 +886,7 @@ describe('createRecordingProxy', () => {
 			expect((await pending).status).toBe(499)
 			await stopped
 		} finally {
-			park.abort()
-			await upstream.stop()
+			await upstream.destroy()
 		}
 	})
 
@@ -2398,6 +2432,25 @@ describe('reservePort', () => {
 	})
 })
 
+describe('readListening', () => {
+	it('reads true while a listener holds the port, false once the port is freed, and rejects a malformed origin', async () => {
+		const held = createNetServer()
+		await new Promise<void>((resolve, reject) => {
+			held.on('error', reject)
+			held.listen(0, '127.0.0.1', resolve)
+		})
+		const address = held.address()
+		if (address === null || typeof address === 'string') throw new Error('Missing listener port')
+		const url = `http://127.0.0.1:${address.port}`
+
+		expect(await readListening(url)).toBe(true)
+		await new Promise<void>((resolve) => held.close(() => resolve()))
+
+		expect(await readListening(url)).toBe(false)
+		await expect(readListening('not-a-url')).rejects.toThrow(TypeError)
+	})
+})
+
 describe('the page outcome guards', () => {
 	it('narrow a settled run, a failed run, the receipts, the control, and the generation', () => {
 		const call = { id: 'call-1', name: PAGE_TOOL.name, arguments: { note: 'kyoto' } }
@@ -2477,10 +2530,10 @@ describe('resolveDaemonDeclaration', () => {
 	})
 
 	it('derives canonical executable bytes, the inventory digest, and a distinct loopback endpoint without generation', async () => {
-		const peer = await createDaemonPeer()
+		const fixture = await createDaemonFixture()
 		try {
 			const declaration = await resolveDaemonDeclaration({
-				host: peer.url,
+				host: fixture.url,
 				model: DAEMON_MODEL.name,
 				executable: process.execPath,
 			})
@@ -2493,16 +2546,18 @@ describe('resolveDaemonDeclaration', () => {
 			const dedicated = new URL(declaration.url)
 			expect(dedicated.hostname).toBe('127.0.0.1')
 			expect(dedicated.port).not.toBe('11434')
-			expect(dedicated.port).not.toBe(new URL(peer.url).port)
-			expect(peer.requests).toEqual([{ path: '/api/tags', body: '' }])
+			expect(dedicated.port).not.toBe(new URL(fixture.url).port)
+			expect(fixture.requests.map(({ path, body }) => ({ path, body }))).toEqual([
+				{ path: '/api/tags', body: '' },
+			])
 		} finally {
-			await peer.destroy()
+			await fixture.destroy()
 		}
 	})
 
 	it('resolves the PATH executable without spawning it', async () => {
 		const scratch = createScratch()
-		const peer = await createDaemonPeer()
+		const fixture = await createDaemonFixture()
 		try {
 			const path = scratch.write(
 				process.platform === 'win32' ? 'ollama.exe' : 'ollama',
@@ -2510,7 +2565,7 @@ describe('resolveDaemonDeclaration', () => {
 			)
 			chmodSync(path, 0o755)
 			const declaration = await resolveDaemonDeclaration({
-				host: peer.url,
+				host: fixture.url,
 				model: DAEMON_MODEL.name,
 				environment: { PATH: scratch.path, PATHEXT: '.EXE' },
 			})
@@ -2519,7 +2574,7 @@ describe('resolveDaemonDeclaration', () => {
 				createHash('sha256').update('MZ inert executable identity fixture').digest('hex'),
 			)
 		} finally {
-			await peer.destroy()
+			await fixture.destroy()
 			scratch.destroy()
 		}
 	})
@@ -2536,17 +2591,17 @@ describe('resolveDaemonDeclaration', () => {
 
 	for (const row of DAEMON_SERVICE_REFUSALS) {
 		it(`refuses provisioned metadata: ${JSON.stringify(row.options)}`, async () => {
-			const peer = await createDaemonPeer(row.options)
+			const fixture = await createDaemonFixture({ policy: new DaemonPolicy(row.options) })
 			try {
 				await expect(
 					resolveDaemonDeclaration({
-						host: peer.url,
+						host: fixture.url,
 						model: DAEMON_MODEL.name,
 						executable: process.execPath,
 					}),
 				).rejects.toThrow(row.message)
 			} finally {
-				await peer.destroy()
+				await fixture.destroy()
 			}
 		})
 	}
@@ -2692,9 +2747,9 @@ describe('findFileText', () => {
 
 describe('fetchUpstream', () => {
 	it('forwards the body and headers, returns the upstream response, and reports an abort as undefined', async () => {
-		const upstream = await createChatUpstream(() =>
-			Promise.resolve(new Response('pong', { status: 202 })),
-		)
+		const upstream = await createDaemonFixture({
+			policy: new DaemonPolicy({ chat: { status: 202, content: 'pong', park: false } }),
+		})
 		try {
 			const request = new Request('http://127.0.0.1/api/chat', {
 				method: 'POST',
@@ -2710,9 +2765,11 @@ describe('fetchUpstream', () => {
 			)
 
 			expect(answered?.status).toBe(202)
-			expect(await answered?.text()).toBe('pong')
+			expect(await answered?.text()).toBe(
+				'{"model":"fixture-model:latest","message":{"role":"assistant","content":"pong"},"done":true,"done_reason":"stop"}\n',
+			)
 			expect(upstream.requests).toMatchObject([
-				{ headers: { 'x-trace': 'forward-case' }, text: '{"n":1}' },
+				{ headers: { 'x-trace': 'forward-case' }, body: '{"n":1}' },
 			])
 			// The proxy stopping and the inbound request cancelling both end the call as an abort,
 			// and neither reaches the upstream.
@@ -2729,7 +2786,7 @@ describe('fetchUpstream', () => {
 			).toBeUndefined()
 			expect(upstream.requests).toHaveLength(1)
 		} finally {
-			await upstream.stop()
+			await upstream.destroy()
 		}
 	})
 
@@ -2739,36 +2796,6 @@ describe('fetchUpstream', () => {
 		await expect(
 			fetchUpstream('http://127.0.0.1:1', request, '{}', new AbortController().signal),
 		).rejects.toThrow('fetch failed')
-	})
-})
-
-describe('createChatUpstream', () => {
-	it('records each chat body, hands the reply the request signal, and releases its port on stop', async () => {
-		const signals = createRecorder<readonly [AbortSignal]>()
-		const upstream = await createChatUpstream((signal) => {
-			signals.handler(signal)
-			return Promise.resolve(new Response('pong', { status: 201 }))
-		})
-		const first = await fetch(`${upstream.url}/api/chat`, { method: 'POST', body: '{"n":1}' })
-		const second = await fetch(`${upstream.url}/api/chat`, { method: 'POST', body: '{"n":2}' })
-
-		expect(first.status).toBe(201)
-		expect(await first.text()).toBe('pong')
-		expect(await second.text()).toBe('pong')
-		expect(
-			upstream.requests.map((request) => [request.method, request.path, request.text]),
-		).toEqual([
-			['POST', '/api/chat', '{"n":1}'],
-			['POST', '/api/chat', '{"n":2}'],
-		])
-		expect(signals.calls).toEqual([[expect.any(AbortSignal)], [expect.any(AbortSignal)]])
-
-		const { url } = upstream
-		await upstream.stop()
-
-		await expect(fetch(`${url}/api/chat`, { method: 'POST', body: '{}' })).rejects.toThrow(
-			'fetch failed',
-		)
 	})
 })
 
@@ -3186,23 +3213,30 @@ describe('createPageSessionOptions', () => {
 	})
 })
 
-describe('the fixture daemon constants', () => {
-	it('advertise one model and answer with one content, which the ordinary answers carry', () => {
-		expect(READY_TAGS).toEqual({ status: 200, models: [{ model: FIXTURE_MODEL }] })
+describe('the daemon policy constants', () => {
+	it('chat with one content under one model, which the ordinary chat answer carries', () => {
+		expect(FIXTURE_MODEL).toBe('fixture-model:latest')
 		expect(READY_CHAT).toEqual({ status: 200, content: FIXTURE_CONTENT, park: false })
 	})
 })
 
-describe('FixtureDaemon', () => {
-	it('answers the ordinary listing and chat, and records each route, chat body, and preflight origin in call order', async () => {
-		const daemon = new FixtureDaemon()
-		await daemon.start()
+describe('DaemonPolicy', () => {
+	it('answers chat and preflights, declines the listing to the fixture, and leaves each request in the fixture log', async () => {
+		const policy = new DaemonPolicy()
+		const fixture = await createDaemonFixture({
+			policy,
+			models: [{ name: FIXTURE_MODEL, digest: DAEMON_MODEL.digest }],
+		})
 		try {
-			const tags = await fetch(`${daemon.url}/api/tags`)
+			const tags = await fetch(`${fixture.url}/api/tags`)
 			expect(tags.status).toBe(200)
-			expect(await tags.json()).toEqual({ models: [{ model: 'fixture-model:latest' }] })
+			expect(await tags.json()).toEqual({
+				models: [
+					expect.objectContaining({ name: 'fixture-model:latest', model: 'fixture-model:latest' }),
+				],
+			})
 
-			const chat = await fetch(`${daemon.url}/api/chat`, {
+			const chat = await fetch(`${fixture.url}/api/chat`, {
 				method: 'POST',
 				body: JSON.stringify({ model: 'fixture-model:latest', stream: false }),
 			})
@@ -3211,140 +3245,259 @@ describe('FixtureDaemon', () => {
 				model: 'fixture-model:latest',
 				message: { role: 'assistant', content: 'The conversation covered two small-talk topics.' },
 				done: true,
+				done_reason: 'stop',
 			})
-			// A body that is not a JSON record is served, and its route is recorded, but no body is.
-			await fetch(`${daemon.url}/api/chat`, { method: 'POST', body: '[1]' })
+			// A body that is not a JSON record is answered and logged, and the chat reader skips it.
+			await fetch(`${fixture.url}/api/chat`, { method: 'POST', body: '[1]' })
 
-			const refused = await fetch(`${daemon.url}/api/chat`, {
+			const refused = await fetch(`${fixture.url}/api/chat`, {
 				method: 'OPTIONS',
 				headers: { origin: 'http://page.example' },
 			})
 			expect(refused.status).toBe(403)
-			daemon.origins(['http://page.example'])
-			const allowed = await fetch(`${daemon.url}/api/chat`, {
+			policy.origins(['http://page.example'])
+			const allowed = await fetch(`${fixture.url}/api/chat`, {
 				method: 'OPTIONS',
 				headers: { origin: 'http://page.example' },
 			})
 			expect(allowed.status).toBe(204)
 			expect(allowed.headers.get('access-control-allow-origin')).toBe('http://page.example')
 			expect(allowed.headers.get('access-control-allow-methods')).toBe('POST,OPTIONS')
-			// A preflight carrying no origin is recorded as the empty origin and refused.
-			expect((await fetch(`${daemon.url}/api/chat`, { method: 'OPTIONS' })).status).toBe(403)
+			// A preflight carrying no origin is read as the empty origin and refused.
+			expect((await fetch(`${fixture.url}/api/chat`, { method: 'OPTIONS' })).status).toBe(403)
 
-			expect(daemon.calls).toEqual(['/api/tags', '/api/chat', '/api/chat'])
-			expect(daemon.chats).toEqual([{ model: 'fixture-model:latest', stream: false }])
-			expect(daemon.preflights).toEqual(['http://page.example', 'http://page.example', ''])
+			expect(
+				fixture.requests.filter(({ method }) => method !== 'OPTIONS').map(({ path }) => path),
+			).toEqual(['/api/tags', '/api/chat', '/api/chat'])
+			expect(readChats(fixture)).toEqual([{ model: 'fixture-model:latest', stream: false }])
+			expect(readPreflights(fixture)).toEqual(['http://page.example', 'http://page.example', ''])
 		} finally {
-			await daemon.stop()
+			await fixture.destroy()
 		}
 	})
 
-	it('serves a replaced listing and chat answer until the ordinary one is restored', async () => {
-		const daemon = new FixtureDaemon()
-		await daemon.start()
+	it('serves a replaced listing and chat answer until clear restores the options answers', async () => {
+		const policy = new DaemonPolicy()
+		const fixture = await createDaemonFixture({ policy })
 		try {
-			daemon.tags({ status: 503, models: [] })
-			const unavailable = await fetch(`${daemon.url}/api/tags`)
+			policy.tags({ status: 503, models: [] })
+			const unavailable = await fetch(`${fixture.url}/api/tags`)
 			expect(unavailable.status).toBe(503)
 			expect(await unavailable.json()).toEqual({ models: [] })
 
-			daemon.chat({ status: 502, content: 'replaced', park: false })
-			const replaced = await fetch(`${daemon.url}/api/chat`, { method: 'POST', body: '{}' })
+			policy.chat({ status: 502, content: 'replaced', park: false })
+			const replaced = await fetch(`${fixture.url}/api/chat`, { method: 'POST', body: '{}' })
 			expect(replaced.status).toBe(502)
 			expect(await replaced.json()).toMatchObject({ message: { content: 'replaced' } })
 
-			daemon.tags(READY_TAGS)
-			daemon.chat(READY_CHAT)
-			expect((await fetch(`${daemon.url}/api/tags`)).status).toBe(200)
-			expect((await fetch(`${daemon.url}/api/chat`, { method: 'POST', body: '{}' })).status).toBe(
-				200,
-			)
+			policy.clear()
+			expect(await (await fetch(`${fixture.url}/api/tags`)).text()).toBe(DAEMON_INVENTORY)
+			const restored = await fetch(`${fixture.url}/api/chat`, { method: 'POST', body: '{}' })
+			expect(restored.status).toBe(200)
+			expect(await restored.json()).toMatchObject({ message: { content: FIXTURE_CONTENT } })
 		} finally {
-			await daemon.stop()
+			await fixture.destroy()
 		}
 	})
 
-	it('parks a chat the answer marks parked and releases it as 499 when stop aborts it', async () => {
-		const daemon = new FixtureDaemon()
-		await daemon.start()
-		const { url } = daemon
-		daemon.chat({ status: 200, content: 'unused', park: true })
-		const pending = fetch(`${url}/api/chat`, { method: 'POST', body: '{}' })
-		await waitForCondition('the parked chat to reach the daemon', () => daemon.chats.length === 1)
-
-		const stopped = daemon.stop()
-
-		expect((await pending).status).toBe(499)
-		await stopped
-		await expect(fetch(`${url}/api/tags`)).rejects.toThrow('fetch failed')
-	})
-
-	it('hands out copies of its histories and refuses a url before it listens', async () => {
-		expect(() => new FixtureDaemon().url).toThrow('the fixture daemon is not listening')
-
-		const daemon = new FixtureDaemon()
-		await daemon.start()
+	it('holds a parked chat before its head until the caller gives up, and keeps serving', async () => {
+		const fixture = await createDaemonFixture({
+			policy: new DaemonPolicy({ chat: { status: 200, content: 'unused', park: true } }),
+		})
+		const caller = new AbortController()
 		try {
-			daemon.origins(['http://page.example'])
-			const before = { calls: daemon.calls, chats: daemon.chats, preflights: daemon.preflights }
-			await fetch(`${daemon.url}/api/tags`)
-			await fetch(`${daemon.url}/api/chat`, { method: 'POST', body: '{"n":1}' })
-			await fetch(`${daemon.url}/api/chat`, {
-				method: 'OPTIONS',
-				headers: { origin: 'http://page.example' },
-			})
+			const pending = fetch(`${fixture.url}/api/chat`, {
+				method: 'POST',
+				body: '{}',
+				signal: caller.signal,
+			}).then(
+				() => 'answered',
+				() => 'gave up',
+			)
+			await waitForCondition(
+				'the parked chat to reach the fixture',
+				() => readChats(fixture).length === 1,
+			)
+			expect(await Promise.race([pending, waitForDelay(50).then(() => 'held')])).toBe('held')
 
-			expect(before).toEqual({ calls: [], chats: [], preflights: [] })
-			expect(daemon.calls).toEqual(['/api/tags', '/api/chat'])
-			expect(daemon.chats).toEqual([{ n: 1 }])
-			expect(daemon.preflights).toEqual(['http://page.example'])
-			expect(daemon.calls).not.toBe(daemon.calls)
-			expect(daemon.chats).not.toBe(daemon.chats)
-			expect(daemon.preflights).not.toBe(daemon.preflights)
+			caller.abort()
+
+			expect(await pending).toBe('gave up')
+			expect((await fetch(`${fixture.url}/api/version`)).status).toBe(200)
 		} finally {
-			await daemon.stop()
+			await fixture.destroy()
 		}
 	})
 
-	it('keeps its address readable after stop and stops a second time without error', async () => {
-		const daemon = new FixtureDaemon()
-		await daemon.start()
-		const { url } = daemon
-		await daemon.stop()
+	it('answers every request with its fault, ahead of every other answer', async () => {
+		const policy = new DaemonPolicy({
+			fault: 'status',
+			chat: { status: 200, content: 'unused', park: false },
+		})
+		const reply = await policy.reply({ method: 'POST', path: '/api/chat', headers: {}, body: '{}' })
 
-		expect(daemon.url).toBe(url)
-		await expect(daemon.stop()).resolves.toBeUndefined()
-		expect(daemon.url).toBe(url)
-		await expect(fetch(`${url}/api/tags`)).rejects.toThrow('fetch failed')
+		expect([reply?.status, await reply?.text()]).toEqual([500, 'refused'])
 	})
 
-	it('returns from a second stop at once, before the first has finished stopping the server', async () => {
-		const daemon = new FixtureDaemon()
-		await daemon.start()
-		const order = createRecorder<[label: string]>()
+	it('waits its delay before declining a request to the fixture', async () => {
+		const started = performance.now()
+		const reply = await new DaemonPolicy({ delay: 50 }).reply({
+			method: 'GET',
+			path: '/api/version',
+			headers: {},
+			body: '',
+		})
 
-		await Promise.all([
-			daemon.stop().then(() => order.handler('first')),
-			daemon.stop().then(() => order.handler('second')),
-		])
+		expect(reply).toBeUndefined()
+		expect(performance.now() - started).toBeGreaterThanOrEqual(45)
+	})
 
-		expect(order.calls).toEqual([['second'], ['first']])
+	it('claims the script head only when it names the path, consults standing answers after it, and rewinds on clear', async () => {
+		const policy = new DaemonPolicy({
+			script: [
+				{ path: '/api/chat', chunks: ['first'] },
+				{ path: '/api/show', chunks: ['second'] },
+			],
+			answers: [{ path: '/api/show', chunks: ['standing'] }],
+		})
+		const chat = { method: 'POST', path: '/api/chat', headers: {}, body: '{}' }
+		const show = { method: 'POST', path: '/api/show', headers: {}, body: '{}' }
+		const texts: Array<string | undefined> = []
+		for (const request of [show, chat, show, show])
+			texts.push(await (await policy.reply(request))?.text())
+
+		expect(texts).toEqual(['standing', 'first', 'second', 'standing'])
+		policy.clear()
+		expect(await (await policy.reply(chat))?.text()).toBe('first')
+	})
+
+	it('names its unload model in every unload reply, and declines an unload when it names none', async () => {
+		const unload = { method: 'POST', path: '/api/generate', headers: {}, body: 'exact-request' }
+		const reply = await new DaemonPolicy({ unload: 'selected-control' }).reply(unload)
+
+		expect(await reply?.json()).toEqual({
+			model: 'selected-control',
+			created_at: '2026-10-23T14:08:45.7014834Z',
+			response: '',
+			done: true,
+			done_reason: 'unload',
+		})
+		expect(await new DaemonPolicy().reply(unload)).toBeUndefined()
 	})
 })
 
-describe('readLatestChat', () => {
-	it('returns the newest recorded chat body and throws when the daemon recorded none', async () => {
-		const daemon = new FixtureDaemon()
-		await daemon.start()
+describe('the daemon policy reply builders', () => {
+	it('build each fault reply: a reset, a redirect, a refused status, an oversized body, a held partial body, and a held head', async () => {
+		await expect(buildDaemonFault('disconnect').text()).rejects.toThrow(
+			'the daemon policy disconnects',
+		)
+		const redirect = buildDaemonFault('redirect')
+		expect([redirect.status, redirect.headers.get('location'), await redirect.text()]).toEqual([
+			302,
+			'/api/generate',
+			'redirect',
+		])
+		const refused = buildDaemonFault('status')
+		expect([refused.status, await refused.text()]).toEqual([500, 'refused'])
+		expect(await buildDaemonFault('oversized').text()).toBe('x'.repeat(1024))
+		const partial = buildDaemonFault('partial').body?.getReader()
+		if (partial === undefined) throw new Error('Missing partial body')
+		expect(new TextDecoder().decode((await partial.read()).value)).toBe('{"version":')
+		expect(
+			await Promise.race([partial.read().then(() => 'read'), waitForDelay(20).then(() => 'held')]),
+		).toBe('held')
+		await partial.cancel()
+		const slow = buildDaemonFault('slow').body?.getReader()
+		if (slow === undefined) throw new Error('Missing held body')
+		expect(
+			await Promise.race([slow.read().then(() => 'read'), waitForDelay(20).then(() => 'held')]),
+		).toBe('held')
+		await slow.cancel()
+	})
+
+	it('build a scripted reply that writes each chunk as its own read, in order, under its status or 200', async () => {
+		const reply = buildDaemonReply({ path: '/api/chat', chunks: ['a', 'b'] })
+		if (reply.body === null) throw new Error('Missing scripted body')
+
+		expect(reply.status).toBe(200)
+		expect(
+			(await collectStream(reply.body)).map((chunk) => new TextDecoder().decode(chunk)),
+		).toEqual(['a', 'b'])
+		expect(buildDaemonReply({ path: '/api/chat', status: 201, chunks: [] }).status).toBe(201)
+		expect(await buildDaemonReply({ path: '/api/chat', chunks: [] }).text()).toBe('')
+	})
+
+	it('build one terminal chat row naming the fixture model, or a head held back for a parked answer', async () => {
+		const chat = buildDaemonChat({ status: 503, content: 'down', park: false })
+		expect([chat.status, chat.headers.get('content-type'), await chat.text()]).toEqual([
+			503,
+			'application/x-ndjson',
+			'{"model":"fixture-model:latest","message":{"role":"assistant","content":"down"},"done":true,"done_reason":"stop"}\n',
+		])
+		const parked = buildDaemonChat({ status: 200, content: 'unused', park: true }).body?.getReader()
+		if (parked === undefined) throw new Error('Missing parked body')
+		expect(
+			await Promise.race([parked.read().then(() => 'read'), waitForDelay(20).then(() => 'held')]),
+		).toBe('held')
+		await parked.cancel()
+	})
+
+	it('build the preflight grant for a permitted origin, and a refusal for any other origin or none', () => {
+		const granted = buildDaemonPreflight(
+			{
+				method: 'OPTIONS',
+				path: '/api/chat',
+				headers: { origin: 'http://page.example' },
+				body: '',
+			},
+			['http://page.example'],
+		)
+		expect([
+			granted.status,
+			granted.headers.get('access-control-allow-origin'),
+			granted.headers.get('access-control-allow-methods'),
+			granted.headers.get('access-control-allow-headers'),
+		]).toEqual([204, 'http://page.example', 'POST,OPTIONS', 'Content-Type'])
+		expect(
+			buildDaemonPreflight(
+				{
+					method: 'OPTIONS',
+					path: '/api/chat',
+					headers: { origin: 'http://other.example' },
+					body: '',
+				},
+				['http://page.example'],
+			).status,
+		).toBe(403)
+		expect(
+			buildDaemonPreflight({ method: 'OPTIONS', path: '/api/chat', headers: {}, body: '' }, [
+				'http://page.example',
+			]).status,
+		).toBe(403)
+	})
+})
+
+describe('readChats, readLatestChat, and readPreflights', () => {
+	it('read the chat bodies that are records and the preflight origins in arrival order, and refuse a log with no chat', async () => {
+		const fixture = await createDaemonFixture()
 		try {
-			expect(() => readLatestChat(daemon)).toThrow('the fixture daemon recorded no chat call')
+			expect(() => readLatestChat(fixture)).toThrow('the fixture recorded no chat call')
 
-			await fetch(`${daemon.url}/api/chat`, { method: 'POST', body: '{"n":1}' })
-			await fetch(`${daemon.url}/api/chat`, { method: 'POST', body: '{"n":2}' })
+			await fetch(`${fixture.url}/api/chat`, { method: 'POST', body: '{"n":1}' })
+			await fetch(`${fixture.url}/api/chat`, { method: 'POST', body: '[1]' })
+			await fetch(`${fixture.url}/api/chat`, { method: 'POST', body: '{"n":2}' })
+			await fetch(`${fixture.url}/api/chat`, {
+				method: 'OPTIONS',
+				headers: { origin: 'http://page.example' },
+			})
+			await fetch(`${fixture.url}/api/chat`, { method: 'OPTIONS' })
+			await fetch(`${fixture.url}/api/tags`)
 
-			expect(readLatestChat(daemon)).toEqual({ n: 2 })
+			expect(readChats(fixture)).toEqual([{ n: 1 }, { n: 2 }])
+			expect(readLatestChat(fixture)).toEqual({ n: 2 })
+			expect(readPreflights(fixture)).toEqual(['http://page.example', ''])
 		} finally {
-			await daemon.stop()
+			await fixture.destroy()
 		}
 	})
 })

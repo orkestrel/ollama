@@ -19,10 +19,14 @@ import type { TokenUsage } from '@orkestrel/budget'
 import type { RecorderInterface } from '@orkestrel/test'
 import type { FenceError, FenceObservation, StreamFenceCase } from './setup.js'
 import type { DistributionResolution } from './setupDistribution.js'
-import type { ModelResponse } from 'ollama'
 import type { OllamaOptions } from '@src/core'
-import type { OllamaDaemonOptions, OllamaModel } from '@src/server'
-import type { IncomingMessage, ServerResponse } from 'node:http'
+import type {
+	OllamaDaemonOptions,
+	OllamaFixtureInterface,
+	OllamaFixtureOptions,
+	OllamaFixtureRequest,
+	OllamaModel,
+} from '@src/server'
 import type { RouteInput } from '@orkestrel/router'
 import type { ServerInterface } from '@orkestrel/server'
 import type {
@@ -38,9 +42,7 @@ import type { AgentContextInterface, Message, ScopeInterface } from '@orkestrel/
 import type { BrowserJourney, BrowserJourneyStep, BrowserRun } from '@orkestrel/browser'
 import type { BrowserInterface } from '@orkestrel/browser/server'
 import type { ToolContext, ToolManagerInterface } from '@orkestrel/tool'
-import { Emitter } from '@orkestrel/emitter'
 import { createHash } from 'node:crypto'
-import { createServer as createHTTPServer } from 'node:http'
 import { createBrowser, findSystemBrowsers } from '@orkestrel/browser/server'
 import { createAbort } from '@orkestrel/abort'
 import {
@@ -54,7 +56,7 @@ import {
 	waitForDelay,
 	retryUntil,
 } from '@orkestrel/test'
-import { createLoopback, resolveContained } from '@orkestrel/test/server'
+import { createLoopback, readErrorCode, resolveContained } from '@orkestrel/test/server'
 import {
 	arrayOf,
 	attempt as attemptAccess,
@@ -72,11 +74,17 @@ import { createServer } from '@orkestrel/server'
 import { createTool, isToolCall } from '@orkestrel/tool'
 import { createRelay, isProviderAbortError } from '@orkestrel/agent'
 import { createOllama, OllamaProvider } from '@src/core'
-import { isOllamaDaemonOptions, readOllamaJSON, readOllamaReply } from '@src/server'
+import {
+	buildOllamaReply,
+	createOllamaFixture,
+	isOllamaDaemonOptions,
+	readOllamaJSON,
+	readOllamaReply,
+} from '@src/server'
 import { resolveExecutable } from '@orkestrel/process/server'
 import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
-import { createServer as createNetServer } from 'node:net'
+import { connect as connectSocket, createServer as createNetServer } from 'node:net'
 import {
 	accessSync,
 	constants,
@@ -935,81 +943,33 @@ export async function createRecordingProxy(
 	return new RecordingServer(log, server, await server.start(), parked)
 }
 
-/**
- * Starts a loopback upstream that records each chat body and answers it through `reply`.
- *
- * @param reply - Produces the response for one `POST /api/chat`, given that request's own abort
- * signal so a case can park the route until the caller gives up on it
- * @returns The ephemeral loopback server, every request it received, and its shutdown operation
- */
-export async function createChatUpstream(
-	reply: (signal: AbortSignal) => Promise<Response>,
-): Promise<RecordingServerInterface> {
-	const log = new RequestLog()
-	const dispatcher = createDispatcher<Record<string, never>>()
-	dispatcher.add({
-		method: 'POST',
-		path: '/api/chat',
-		async handler(request) {
-			log.add(await readRequest(request))
-			return await reply(request.signal)
-		},
-	})
-	const server = createServer({ dispatcher, state: () => ({}), host: '127.0.0.1' })
-	return new RecordingServer(log, server, await server.start())
-}
-
 /** Represents one model entry in a fixture `/api/tags` listing. */
 export type TagEntry = Readonly<Record<string, unknown>>
 
-/** Represents one `/api/chat` request body the fixture daemon recorded. */
+/** Represents one `/api/chat` request body the fixture recorded. */
 export type ChatBody = Record<string, unknown>
 
-/** Represents how the fixture daemon answers `GET /api/tags`. */
+/** Represents how the daemon policy answers `GET /api/tags`; `models` may be any value, so a case can send a malformed inventory. */
 export interface TagsAnswer {
 	readonly status: number
-	readonly models: readonly TagEntry[]
+	readonly models: unknown
 }
 
-/** Represents how the fixture daemon answers `POST /api/chat`. */
+/** Represents how the daemon policy answers `POST /api/chat`. */
 export interface ChatAnswer {
 	readonly status: number
 	readonly content: string
-	/** `true` parks the route until the call aborts, instead of answering it. */
+	/** `true` holds the reply before its head until the call ends, instead of answering it. */
 	readonly park: boolean
 }
 
-/** Represents a protocol-faithful Ollama daemon fixture on a loopback ephemeral port. */
-export interface DaemonInterface {
-	/** The absolute base URL the fixture listens on. */
-	readonly url: string
-	/** Every route the fixture served, in call order. */
-	readonly calls: readonly string[]
-	/** Every `/api/chat` body the fixture received, in call order. */
-	readonly chats: readonly ChatBody[]
-	/** Every origin the fixture was asked to preflight `/api/chat` for, in call order. */
-	readonly preflights: readonly string[]
-	/** Begin listening on an ephemeral loopback port. */
-	start(): Promise<void>
-	/** Replace the `/api/tags` answer. */
-	tags(answer: TagsAnswer): void
-	/** Replace the `/api/chat` answer. */
-	chat(answer: ChatAnswer): void
-	/** Replace the origins the fixture permits on an `/api/chat` preflight. */
-	origins(allowed: readonly string[]): void
-	stop(): Promise<void>
-}
-
-/** Names the model the fixture daemon advertises and a hermetic environment selects. */
+/** Names the model the fixture lists for the service setup and the content the daemon policy chats with. */
 export const FIXTURE_MODEL = 'fixture-model:latest'
 
-/** Names the assistant content the fixture daemon returns from `/api/chat`. */
+/** Names the assistant content the daemon policy returns from `/api/chat`. */
 export const FIXTURE_CONTENT = 'The conversation covered two small-talk topics.'
 
-/** Defines the fixture daemon's ordinary `/api/tags` answer, restored by any case that replaces it. */
-export const READY_TAGS: TagsAnswer = { status: 200, models: [{ model: FIXTURE_MODEL }] }
-
-/** Defines the fixture daemon's ordinary `/api/chat` answer, restored by any case that replaces it. */
+/** Defines the daemon policy's ordinary `/api/chat` answer, restored by `clear`. */
 export const READY_CHAT: ChatAnswer = { status: 200, content: FIXTURE_CONTENT, park: false }
 
 /**
@@ -1022,145 +982,43 @@ export const READY_CHAT: ChatAnswer = { status: 200, content: FIXTURE_CONTENT, p
 export const SUMMARY_INSTRUCTION = 'Summarize the conversation so far concisely in one sentence.'
 
 /**
- * Answers `/api/tags` and `/api/chat` as Ollama does.
+ * Reads every `/api/chat` body a fixture recorded that is a JSON record, in arrival order.
  *
- * @remarks
- * The answers and the origins are replaced, and the three request histories are appended to, by
- * this entity alone; its getters return copies. `start` captures the address once, so `url`
- * stays readable after `stop`, which a test reads to prove the port was released. `stop` aborts a
- * parked chat before it closes the server, so the server stops without waiting on a call it holds
- * open, and a second `stop` returns without touching either.
+ * @param fixture - The fixture whose request log is read
+ * @returns The parsed bodies
  */
-export class FixtureDaemon implements DaemonInterface {
-	readonly #calls: string[] = []
-	readonly #chats: ChatBody[] = []
-	readonly #preflights: string[] = []
-	readonly #park = new AbortController()
-	readonly #server: ServerInterface<Record<string, never>>
-	#url: string | undefined
-	#tags: TagsAnswer = READY_TAGS
-	#chat: ChatAnswer = READY_CHAT
-	#origins: readonly string[] = []
-
-	/** Creates the daemon fixture with its three routes mounted and no port bound. */
-	constructor() {
-		const dispatcher = createDispatcher<Record<string, never>>()
-		dispatcher.add({ method: 'GET', path: '/api/tags', handler: () => this.#serveTags() })
-		dispatcher.add({
-			method: 'POST',
-			path: '/api/chat',
-			handler: (request) => this.#serveChat(request),
+export function readChats(fixture: OllamaFixtureInterface): readonly ChatBody[] {
+	return fixture.requests
+		.filter((request) => request.method === 'POST' && request.path === '/api/chat')
+		.flatMap((request) => {
+			const body = parseJSONAs(request.body, isRecord)
+			return body === undefined ? [] : [{ ...body }]
 		})
-		dispatcher.add({
-			method: 'OPTIONS',
-			path: '/api/chat',
-			handler: (request) => this.#servePreflight(request),
-		})
-		this.#server = createServer({ dispatcher, state: () => ({}), host: '127.0.0.1' })
-	}
-
-	/**
-	 * Holds the absolute base URL the fixture listens on, which stays readable after `stop`.
-	 *
-	 * @throws Thrown when the fixture has not started.
-	 */
-	get url(): string {
-		if (this.#url === undefined) throw new Error('the fixture daemon is not listening')
-		return this.#url
-	}
-
-	/** Holds a copy of every route the fixture served, in call order. */
-	get calls(): readonly string[] {
-		return [...this.#calls]
-	}
-
-	/** Holds a copy of every `/api/chat` body the fixture received, in call order. */
-	get chats(): readonly ChatBody[] {
-		return [...this.#chats]
-	}
-
-	/** Holds a copy of every origin the fixture was asked to preflight, in call order. */
-	get preflights(): readonly string[] {
-		return [...this.#preflights]
-	}
-
-	/** Begins listening on an ephemeral loopback port and keeps the address it was given. */
-	async start(): Promise<void> {
-		const port = await this.#server.start()
-		this.#url ??= `http://127.0.0.1:${port}`
-	}
-
-	/** Replaces the `/api/tags` answer. */
-	tags(answer: TagsAnswer): void {
-		this.#tags = answer
-	}
-
-	/** Replaces the `/api/chat` answer. */
-	chat(answer: ChatAnswer): void {
-		this.#chat = answer
-	}
-
-	/** Replaces the origins the fixture permits on an `/api/chat` preflight. */
-	origins(allowed: readonly string[]): void {
-		this.#origins = allowed
-	}
-
-	/** Aborts a parked chat, then stops the server; a second call returns without doing either. */
-	async stop(): Promise<void> {
-		if (this.#park.signal.aborted) return
-		this.#park.abort()
-		await this.#server.stop()
-	}
-
-	#serveTags(): Response {
-		this.#calls.push('/api/tags')
-		return Response.json({ models: this.#tags.models }, { status: this.#tags.status })
-	}
-
-	async #serveChat(request: Request): Promise<Response> {
-		this.#calls.push('/api/chat')
-		const body: unknown = JSON.parse(await request.text())
-		if (isRecord(body)) this.#chats.push(body)
-		if (this.#chat.park) {
-			await waitForAbort(AbortSignal.any([request.signal, this.#park.signal]))
-			return new Response(undefined, { status: 499 })
-		}
-		return Response.json(
-			{
-				model: FIXTURE_MODEL,
-				message: { role: 'assistant', content: this.#chat.content },
-				done: true,
-			},
-			{ status: this.#chat.status },
-		)
-	}
-
-	#servePreflight(request: Request): Response {
-		const origin = request.headers.get('origin') ?? ''
-		this.#preflights.push(origin)
-		if (!this.#origins.includes(origin)) return new Response(undefined, { status: 403 })
-		return new Response(undefined, {
-			status: 204,
-			headers: {
-				'access-control-allow-origin': origin,
-				'access-control-allow-methods': 'POST,OPTIONS',
-				'access-control-allow-headers': 'Content-Type',
-			},
-		})
-	}
 }
 
 /**
- * Reads the newest `/api/chat` body a fixture daemon recorded.
+ * Reads the newest `/api/chat` body a fixture recorded.
  *
- * @param daemon - The fixture daemon whose chat history is read
+ * @param fixture - The fixture whose request log is read
  * @returns The newest recorded body
- * @throws Thrown when the daemon recorded no chat call.
+ * @throws Thrown when the fixture recorded no chat call.
  */
-export function readLatestChat(daemon: DaemonInterface): ChatBody {
-	const body = daemon.chats.at(-1)
-	if (body === undefined) throw new Error('the fixture daemon recorded no chat call')
+export function readLatestChat(fixture: OllamaFixtureInterface): ChatBody {
+	const body = readChats(fixture).at(-1)
+	if (body === undefined) throw new Error('the fixture recorded no chat call')
 	return body
+}
+
+/**
+ * Reads the origin of every `/api/chat` preflight a fixture recorded, the empty origin for one that carried none.
+ *
+ * @param fixture - The fixture whose request log is read
+ * @returns The origins in arrival order
+ */
+export function readPreflights(fixture: OllamaFixtureInterface): readonly string[] {
+	return fixture.requests
+		.filter((request) => request.method === 'OPTIONS' && request.path === '/api/chat')
+		.map((request) => request.headers.origin ?? '')
 }
 
 /**
@@ -2339,6 +2197,27 @@ export async function reservePort(): Promise<number> {
 	return loopback.port
 }
 
+/**
+ * Reads whether anything accepts a TCP connection at a URL's host and port.
+ *
+ * @param url - The origin to connect to
+ * @returns True if the connection opened; false if the host refused it
+ * @throws Rethrown from the connection when it failed for a reason other than a refusal.
+ */
+export async function readListening(url: string): Promise<boolean> {
+	const { hostname, port } = new URL(url)
+	const socket = connectSocket({ host: hostname, port: Number(port) })
+	try {
+		await once(socket, 'connect')
+		return true
+	} catch (error) {
+		if (readErrorCode(error) === 'ECONNREFUSED') return false
+		throw error
+	} finally {
+		socket.destroy()
+	}
+}
+
 /** Declares the provisioned metadata and optional executable or complete service override. */
 export interface DaemonServiceInput {
 	readonly host: string
@@ -2421,54 +2300,17 @@ export async function resolveDaemonDeclaration(
 
 // Dedicated daemon protocol fixtures stay hermetic and bind only ephemeral loopback ports.
 
-/** Names the version the dedicated protocol peer advertises. */
+/** Names the version the dedicated protocol fixture reports. */
 export const DAEMON_VERSION = '0.40.8'
 
 /** Names the other version the fixture executable reports in its `version` mode, as after an update. */
 export const DAEMON_NEXT_VERSION = '0.41.0'
 
-/** Declares the exact model inventory entry the dedicated protocol peer advertises. */
+/** Declares the exact model inventory entry the dedicated protocol fixture lists. */
 export const DAEMON_MODEL = Object.freeze({ name: 'fixture:雪', digest: 'fixture-digest' })
 
-/** Represents one `/api/tags` entry on the wire: the official client's `ModelResponse`, whose `Date` fields JSON carries as text, without the `/api/ps` fields. */
-export type DaemonInventoryEntry = Omit<
-	ModelResponse,
-	'modified_at' | 'expires_at' | 'size_vram'
-> & {
-	readonly modified_at: string
-}
-
-/**
- * Builds a `/api/tags` reply as a real daemon sends it, so a proof reads every field a reader must leave alone.
- *
- * @param models - The name and digest of each entry
- * @returns The reply, each entry carrying `model`, `modified_at`, `size`, and `details` beside those two
- * @example
- * ```ts
- * buildDaemonInventory([DAEMON_MODEL]).models[0]?.size // 2147483648
- * ```
- */
-export function buildDaemonInventory(models: readonly OllamaModel[]): {
-	readonly models: readonly DaemonInventoryEntry[]
-} {
-	return {
-		models: models.map(({ name, digest }) => ({
-			name,
-			model: name,
-			modified_at: '2026-10-23T14:08:45.7014834Z',
-			size: 2147483648,
-			digest,
-			details: {
-				parent_model: '',
-				format: 'gguf',
-				family: 'qwen3',
-				families: ['qwen3'],
-				parameter_size: '2B',
-				quantization_level: 'Q4_K_M',
-			},
-		})),
-	}
-}
+/** Names the context length the dedicated protocol fixture reports from `/api/show`. */
+export const DAEMON_CONTEXT = 32768
 
 /** Declares distinct fixture identities for ordered maintenance proofs. */
 export const DAEMON_MODELS = Object.freeze([
@@ -2658,142 +2500,488 @@ export async function buildDaemonMode(
 	}
 }
 
-/** Configures an in-process protocol peer's independent refusal controls. */
-export interface DaemonPeerOptions {
-	readonly fault?: string
+/** Names a fault the daemon policy answers every request with instead of a reply. */
+export type DaemonFault = 'disconnect' | 'redirect' | 'status' | 'oversized' | 'partial' | 'slow'
+
+/** Represents one reply the daemon policy writes for a path: its status and its body chunks in order. */
+export interface DaemonAnswer {
+	readonly path: string
+	readonly status?: number
+	readonly chunks: readonly string[]
+}
+
+/**
+ * Configures the daemon policy.
+ *
+ * @remarks
+ * `fault` answers every request. `delay` waits before every other answer. `script` is a
+ * head-of-line queue: a request claims its head only when the head names the request's path.
+ * `answers` are standing replies by path, consulted after the queue. `tags` and `chat` replace the
+ * listing and the chat reply, `origins` lists the origins a chat preflight permits, and `unload`
+ * names the model every unload reply names. A request no member answers is declined to the fixture.
+ */
+export interface DaemonPolicyOptions {
+	readonly fault?: DaemonFault
 	readonly delay?: number
+	readonly script?: readonly DaemonAnswer[]
+	readonly answers?: readonly DaemonAnswer[]
+	readonly tags?: TagsAnswer
+	readonly chat?: ChatAnswer
+	readonly origins?: readonly string[]
 	readonly unload?: string
-	readonly models?: unknown
+}
+
+/** Configures the dedicated protocol fixture a proof starts over a daemon policy. */
+export interface DaemonFixtureOptions {
+	readonly policy?: DaemonPolicy
+	readonly models?: readonly OllamaModel[]
 }
 
 /** Lists metadata refusals of an automatically derived service declaration. */
-export const DAEMON_SERVICE_REFUSALS = Object.freeze([
-	Object.freeze({ options: { models: {} }, message: 'reports no model inventory' }),
-	Object.freeze({ options: { models: [] }, message: 'must report one inventory digest' }),
-	Object.freeze({
-		options: { models: [DAEMON_MODEL, DAEMON_MODEL] },
+export const DAEMON_SERVICE_REFUSALS: ReadonlyArray<{
+	readonly options: DaemonPolicyOptions
+	readonly message: string
+}> = Object.freeze([
+	{ options: { tags: { status: 200, models: {} } }, message: 'reports no model inventory' },
+	{ options: { tags: { status: 200, models: [] } }, message: 'must report one inventory digest' },
+	{
+		options: { tags: { status: 200, models: [DAEMON_MODEL, DAEMON_MODEL] } },
 		message: 'must report one inventory digest',
-	}),
-	Object.freeze({
-		options: { models: [{ name: DAEMON_MODEL.name, digest: '' }] },
+	},
+	{
+		options: { tags: { status: 200, models: [{ name: DAEMON_MODEL.name, digest: '' }] } },
 		message: 'must report one inventory digest',
-	}),
-	Object.freeze({ options: { fault: 'status' }, message: 'Metadata status or redirect refused' }),
-	Object.freeze({ options: { fault: 'oversized' }, message: 'Incomplete or malformed' }),
+	},
+	{ options: { fault: 'status' }, message: 'Metadata status or redirect refused' },
+	{ options: { fault: 'oversized' }, message: 'Incomplete or malformed' },
 ])
 
-/** Serves deterministic Ollama metadata and unload replies over a real loopback socket. */
-export class DaemonPeer {
-	readonly #options: DaemonPeerOptions
-	readonly #requests: Array<{ readonly path: string; readonly body: string }> = []
-	readonly #emitter = new Emitter<{ readonly request: readonly [] }>()
-	readonly #controller = new AbortController()
-	readonly #server
-	#loopback: Awaited<ReturnType<typeof createLoopback>> | undefined
+/** Preserves the listing a fixture over {@link DAEMON_MODEL} sends, written apart from the builder that sends it. */
+export const DAEMON_INVENTORY =
+	'{"models":[{"name":"fixture:雪","model":"fixture:雪","modified_at":"2026-10-23T14:08:45.7014834Z","size":2147483648,"digest":"fixture-digest","details":{"parent_model":"","format":"gguf","family":"qwen3","families":["qwen3"],"parameter_size":"2B","quantization_level":"Q4_K_M"}}]}'
 
-	/** Creates a protocol peer without binding a socket. */
-	constructor(options: DaemonPeerOptions = {}) {
-		this.#options = options
-		this.#server = createHTTPServer((request, response) => {
-			void this.#answer(request, response)
-		})
-	}
+/** Represents one row of the fixture's route table: a request and the status and body it receives. */
+export interface FixtureRouteCase {
+	readonly label: string
+	readonly method: string
+	readonly path: string
+	readonly body: string
+	readonly status: number
+	readonly text: string
+}
 
-	/** Holds the dedicated origin after listening. */
-	get url(): string {
-		if (this.#loopback === undefined) throw new Error('Peer has not started')
-		return this.#loopback.url
-	}
+/** Lists the fixture's own answers over {@link DAEMON_FIXTURE_OPTIONS}, each body written apart from the code that sends it. */
+export const FIXTURE_ROUTE_CASES: readonly FixtureRouteCase[] = Object.freeze([
+	{
+		label: 'the version',
+		method: 'GET',
+		path: '/api/version',
+		body: '',
+		status: 200,
+		text: '{"version":"0.40.8"}',
+	},
+	{
+		label: 'the listing',
+		method: 'GET',
+		path: '/api/tags',
+		body: '',
+		status: 200,
+		text: DAEMON_INVENTORY,
+	},
+	{
+		label: 'a pinned model shown',
+		method: 'POST',
+		path: '/api/show',
+		body: '{"model":"fixture:雪"}',
+		status: 200,
+		text: '{"model_info":{"general.architecture":"fixture","fixture.context_length":32768}}',
+	},
+	{
+		label: 'an unpinned model shown',
+		method: 'POST',
+		path: '/api/show',
+		body: '{"model":"absent"}',
+		status: 404,
+		text: '{"error":"model \'absent\' not found"}',
+	},
+	{
+		label: 'an unload with no prompt',
+		method: 'POST',
+		path: '/api/generate',
+		body: '{"model":"fixture:雪","keep_alive":0}',
+		status: 200,
+		text: '{"model":"fixture:雪","created_at":"2026-10-23T14:08:45.7014834Z","response":"","done":true,"done_reason":"unload"}',
+	},
+	{
+		label: 'an unload with an empty prompt',
+		method: 'POST',
+		path: '/api/generate',
+		body: '{"model":"fixture:雪","prompt":"","keep_alive":0}',
+		status: 200,
+		text: '{"model":"fixture:雪","created_at":"2026-10-23T14:08:45.7014834Z","response":"","done":true,"done_reason":"unload"}',
+	},
+	{
+		label: 'an unload of an unpinned model',
+		method: 'POST',
+		path: '/api/generate',
+		body: '{"model":"absent","keep_alive":0}',
+		status: 404,
+		text: '{"error":"model \'absent\' not found"}',
+	},
+	{
+		label: 'a declined readout',
+		method: 'POST',
+		path: '/api/generate',
+		body: '{"model":"fixture:雪","prompt":"A","raw":true}',
+		status: 500,
+		text: '{"error":"no reply policy answers /api/generate"}',
+	},
+	{
+		label: 'a prompted generate that keeps no model resident',
+		method: 'POST',
+		path: '/api/generate',
+		body: '{"model":"fixture:雪","prompt":"A","keep_alive":0}',
+		status: 500,
+		text: '{"error":"no reply policy answers /api/generate"}',
+	},
+	{
+		label: 'a generate whose keep_alive is text',
+		method: 'POST',
+		path: '/api/generate',
+		body: '{"model":"fixture:雪","keep_alive":"0"}',
+		status: 500,
+		text: '{"error":"no reply policy answers /api/generate"}',
+	},
+	{
+		label: 'a declined chat',
+		method: 'POST',
+		path: '/api/chat',
+		body: '{"model":"fixture:雪","messages":[]}',
+		status: 500,
+		text: '{"error":"no reply policy answers /api/chat"}',
+	},
+	{
+		label: 'malformed JSON shown',
+		method: 'POST',
+		path: '/api/show',
+		body: 'not json',
+		status: 400,
+		text: '{"error":"the fixture refuses /api/show: its body is not a JSON object"}',
+	},
+	{
+		label: 'a generate body that is no record',
+		method: 'POST',
+		path: '/api/generate',
+		body: '[]',
+		status: 400,
+		text: '{"error":"the fixture refuses /api/generate: its body is not a JSON object"}',
+	},
+	{
+		label: 'an empty chat body',
+		method: 'POST',
+		path: '/api/chat',
+		body: '',
+		status: 500,
+		text: '{"error":"no reply policy answers /api/chat"}',
+	},
+	{
+		label: 'a chat body that is no record',
+		method: 'POST',
+		path: '/api/chat',
+		body: '[]',
+		status: 500,
+		text: '{"error":"no reply policy answers /api/chat"}',
+	},
+	{
+		label: 'a show naming no model',
+		method: 'POST',
+		path: '/api/show',
+		body: '{}',
+		status: 400,
+		text: '{"error":"the fixture refuses /api/show: its body names no model"}',
+	},
+	{
+		label: 'an unload naming no model',
+		method: 'POST',
+		path: '/api/generate',
+		body: '{"keep_alive":0}',
+		status: 400,
+		text: '{"error":"the fixture refuses /api/generate: its body names no model"}',
+	},
+	{ label: 'a GET of show', method: 'GET', path: '/api/show', body: '', status: 404, text: '' },
+	{
+		label: 'a POST of the version',
+		method: 'POST',
+		path: '/api/version',
+		body: '',
+		status: 404,
+		text: '',
+	},
+	{
+		label: 'a listing with a query',
+		method: 'GET',
+		path: '/api/tags?all=1',
+		body: '',
+		status: 404,
+		text: '',
+	},
+	{
+		label: 'a path Ollama does not serve',
+		method: 'POST',
+		path: '/v1/systemone',
+		body: '{}',
+		status: 404,
+		text: '',
+	},
+	{
+		label: 'a DELETE of chat',
+		method: 'DELETE',
+		path: '/api/chat',
+		body: '',
+		status: 404,
+		text: '',
+	},
+])
 
-	/** Holds each request after its body arrives. */
-	get requests(): ReadonlyArray<{ readonly path: string; readonly body: string }> {
-		return [...this.#requests]
-	}
+/** Names the judge model the fixture lists beside {@link FIXTURE_MODEL} for the reply-policy proofs. */
+export const FIXTURE_JUDGE = 'judge'
 
-	/** Holds the protocol request observation surface. */
-	get emitter() {
-		return this.#emitter
-	}
+/** Declares the models the reply-policy proofs' fixture lists. */
+export const FIXTURE_MODELS: readonly OllamaModel[] = Object.freeze([
+	Object.freeze({ name: FIXTURE_MODEL, digest: 'a'.repeat(64) }),
+	Object.freeze({ name: FIXTURE_JUDGE, digest: 'b'.repeat(64) }),
+])
 
-	/** Binds the peer to an ephemeral loopback port. */
-	async start(): Promise<void> {
-		this.#loopback = await createLoopback(this.#server)
-	}
+/** Supplies an `/api/show` reply widening the context past the fixture's own, so a proof can tell whose answer arrived. */
+export const WIDE_SHOW = JSON.stringify({
+	model_info: { 'general.architecture': 'fixture', 'fixture.context_length': 65536 },
+})
 
-	/** Releases pending replies, connections, and the listening port. */
-	async destroy(): Promise<void> {
-		this.#controller.abort()
-		await this.#loopback?.destroy()
-		this.#emitter.destroy()
-	}
+/** Supplies valid fixture options with no reply policy, the control every refused override departs from. */
+export const DAEMON_FIXTURE_OPTIONS: OllamaFixtureOptions = Object.freeze({
+	models: Object.freeze([DAEMON_MODEL]),
+	version: DAEMON_VERSION,
+	context: DAEMON_CONTEXT,
+})
 
-	async #answer(request: IncomingMessage, response: ServerResponse): Promise<void> {
-		const chunks: Buffer[] = []
-		for await (const chunk of request)
-			chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)))
-		this.#requests.push({ path: request.url ?? '/', body: Buffer.concat(chunks).toString() })
-		this.#emitter.emit('request')
-		if (this.#options.fault === 'disconnect') {
-			response.destroy()
-			return
-		}
-		if (this.#options.fault === 'redirect') {
-			response.writeHead(302, { location: '/api/generate' }).end('redirect')
-			return
-		}
-		if (this.#options.fault === 'status') {
-			response.writeHead(500).end('refused')
-			return
-		}
-		if (this.#options.fault === 'oversized') {
-			response.end('x'.repeat(1024))
-			return
-		}
-		if (this.#options.fault === 'partial') {
-			response.write('{"version":')
-			response.flushHeaders()
-			await waitForAbort(this.#controller.signal)
-			response.end()
-			return
-		}
-		if (this.#options.fault === 'slow') {
-			await waitForAbort(this.#controller.signal)
-			response.end()
-			return
-		}
-		if (this.#options.delay !== undefined) {
-			await waitForDelay(this.#options.delay)
-		}
-		response.setHeader('content-type', 'application/json')
-		response.end(
-			JSON.stringify(
-				request.url === '/api/version'
-					? { version: DAEMON_VERSION }
-					: request.url === '/api/tags'
-						? this.#options.models === undefined
-							? buildDaemonInventory([DAEMON_MODEL])
-							: { models: this.#options.models }
-						: {
-								model: this.#options.unload ?? DAEMON_MODEL.name,
-								created_at: '2026-10-23T14:08:45.7014834Z',
-								response: '',
-								done: true,
-								done_reason: 'unload',
-							},
-			),
+/** Lists fixture option overrides the fixture must refuse before it listens. */
+export const INVALID_FIXTURE_OVERRIDES: ReadonlyArray<
+	readonly [string, Readonly<Record<string, unknown>>]
+> = Object.freeze([
+	['missing models', { models: undefined }],
+	['models that are no list', { models: {} }],
+	['duplicate model names', { models: [DAEMON_MODEL, DAEMON_MODEL] }],
+	['an empty model name', { models: [{ name: '', digest: 'fixture-digest' }] }],
+	['a blank model name', { models: [{ name: '  ', digest: 'fixture-digest' }] }],
+	['an empty model digest', { models: [{ name: 'fixture', digest: '' }] }],
+	['an undeclared model key', { models: [{ ...DAEMON_MODEL, size: 7 }] }],
+	['missing version', { version: undefined }],
+	['an empty version', { version: '' }],
+	['a numeric version', { version: 1 }],
+	['missing context', { context: undefined }],
+	['zero context', { context: 0 }],
+	['negative zero context', { context: -0 }],
+	['negative context', { context: -1 }],
+	['fractional context', { context: 1.5 }],
+	['NaN context', { context: Number.NaN }],
+	['infinite context', { context: Number.POSITIVE_INFINITY }],
+	['unsafe context', { context: 2 ** 53 }],
+	['text context', { context: '8192' }],
+	['a non-callable reply', { reply: {} }],
+	['a non-callable error handler', { error: 'log' }],
+	['hooks that are no record', { on: 'request' }],
+	['a non-callable hook', { on: { request: 1 } }],
+	['an undeclared key', { modles: [] }],
+])
+
+/**
+ * Builds the reply a daemon fault sends: a reset before the head, a redirect, a refused status, an
+ * oversized body, a partial body held open, or a head held back.
+ *
+ * @param fault - The fault to send
+ * @returns The response the fixture writes
+ */
+export function buildDaemonFault(fault: DaemonFault): Response {
+	if (fault === 'disconnect')
+		return new Response(
+			new ReadableStream<Uint8Array>({
+				start: (controller) => {
+					controller.error(new Error('the daemon policy disconnects'))
+				},
+			}),
 		)
+	if (fault === 'redirect')
+		return new Response('redirect', { status: 302, headers: { location: '/api/generate' } })
+	if (fault === 'status') return new Response('refused', { status: 500 })
+	if (fault === 'oversized') return new Response('x'.repeat(1024))
+	if (fault === 'partial')
+		return new Response(
+			new ReadableStream<Uint8Array>({
+				start: (controller) => {
+					controller.enqueue(new TextEncoder().encode('{"version":'))
+				},
+			}),
+		)
+	return new Response(new ReadableStream<Uint8Array>())
+}
+
+/**
+ * Builds the reply a scripted or standing answer sends, yielding before each chunk so each one
+ * leaves as its own write.
+ *
+ * @param answer - The status and the chunks to send
+ * @returns The response the fixture writes
+ */
+export function buildDaemonReply(answer: DaemonAnswer): Response {
+	const chunks = answer.chunks.values()
+	return new Response(
+		new ReadableStream<Uint8Array>({
+			pull: async (controller) => {
+				await waitForDelay(1)
+				const next = chunks.next()
+				if (next.done) controller.close()
+				else controller.enqueue(new TextEncoder().encode(next.value))
+			},
+		}),
+		{ status: answer.status ?? 200 },
+	)
+}
+
+/**
+ * Builds the reply a chat answer sends: one terminal row naming the fixture model, or a head held
+ * back until the call ends.
+ *
+ * @param answer - The status, content, and hold of the chat answer
+ * @returns The response the fixture writes
+ */
+export function buildDaemonChat(answer: ChatAnswer): Response {
+	return answer.park
+		? new Response(new ReadableStream<Uint8Array>(), { status: answer.status })
+		: new Response(buildOllamaReply({ model: FIXTURE_MODEL, content: answer.content }), {
+				status: answer.status,
+				headers: { 'content-type': 'application/x-ndjson' },
+			})
+}
+
+/**
+ * Builds the reply to an `/api/chat` preflight: the cross-origin grant for a permitted origin, and a
+ * refusal for any other origin or none.
+ *
+ * @param request - The recorded preflight
+ * @param allowed - The origins the daemon permits
+ * @returns The response the fixture writes
+ */
+export function buildDaemonPreflight(
+	request: OllamaFixtureRequest,
+	allowed: readonly string[],
+): Response {
+	const origin = request.headers.origin ?? ''
+	return allowed.includes(origin)
+		? new Response(null, {
+				status: 204,
+				headers: {
+					'access-control-allow-origin': origin,
+					'access-control-allow-methods': 'POST,OPTIONS',
+					'access-control-allow-headers': 'Content-Type',
+				},
+			})
+		: new Response(null, { status: 403 })
+}
+
+/**
+ * Answers the dedicated protocol fixture's requests with the faults and per-case answers its
+ * options hold, and declines every other request to the fixture's own answers.
+ *
+ * @remarks
+ * `tags`, `chat`, and `origins` replace their answers until `clear` restores the options' answers
+ * and rewinds the script.
+ */
+export class DaemonPolicy {
+	readonly #options: DaemonPolicyOptions
+	#tags: TagsAnswer | undefined = undefined
+	#chat: ChatAnswer = READY_CHAT
+	#origins: readonly string[] = []
+	#served = 0
+
+	/** Creates the policy with its options' answers in force. */
+	constructor(options: DaemonPolicyOptions = {}) {
+		this.#options = options
+		this.clear()
+	}
+
+	/** Replaces the `/api/tags` answer. */
+	tags(answer: TagsAnswer): void {
+		this.#tags = answer
+	}
+
+	/** Replaces the `/api/chat` answer. */
+	chat(answer: ChatAnswer): void {
+		this.#chat = answer
+	}
+
+	/** Replaces the origins a chat preflight permits. */
+	origins(allowed: readonly string[]): void {
+		this.#origins = allowed
+	}
+
+	/** Restores the options' answers and rewinds the script. */
+	clear(): void {
+		this.#tags = this.#options.tags
+		this.#chat = this.#options.chat ?? READY_CHAT
+		this.#origins = this.#options.origins ?? []
+		this.#served = 0
+	}
+
+	/**
+	 * Answers one request, or declines it to the fixture.
+	 *
+	 * @param request - The recorded request
+	 * @returns The response, or `undefined` to decline
+	 */
+	async reply(request: OllamaFixtureRequest): Promise<Response | undefined> {
+		if (this.#options.fault !== undefined) return buildDaemonFault(this.#options.fault)
+		if (this.#options.delay !== undefined) await waitForDelay(this.#options.delay)
+		const head = this.#options.script?.[this.#served]
+		if (head?.path === request.path) {
+			this.#served += 1
+			return buildDaemonReply(head)
+		}
+		const standing = this.#options.answers?.find((answer) => answer.path === request.path)
+		if (standing !== undefined) return buildDaemonReply(standing)
+		const route = `${request.method} ${request.path}`
+		if (route === 'OPTIONS /api/chat') return buildDaemonPreflight(request, this.#origins)
+		if (route === 'GET /api/tags' && this.#tags !== undefined)
+			return Response.json({ models: this.#tags.models }, { status: this.#tags.status })
+		if (route === 'POST /api/chat') return buildDaemonChat(this.#chat)
+		if (route === 'POST /api/generate' && this.#options.unload !== undefined)
+			return Response.json({
+				model: this.#options.unload,
+				created_at: '2026-10-23T14:08:45.7014834Z',
+				response: '',
+				done: true,
+				done_reason: 'unload',
+			})
+		return undefined
 	}
 }
 
 /**
- * Creates a listening in-process peer with no child executable.
- * @param options - Protocol refusal controls
- * @returns The listening peer and its request log
+ * Starts the dedicated protocol fixture over a daemon policy.
+ *
+ * @param options - The policy, by default one that declines every metadata request, and the models
+ * the fixture lists, by default {@link DAEMON_MODEL}
+ * @returns The listening fixture; the caller destroys it
  */
-export async function createDaemonPeer(options?: DaemonPeerOptions): Promise<DaemonPeer> {
-	const peer = new DaemonPeer(options)
-	await peer.start()
-	return peer
+export function createDaemonFixture(
+	options: DaemonFixtureOptions = {},
+): Promise<OllamaFixtureInterface> {
+	const policy = options.policy ?? new DaemonPolicy()
+	return createOllamaFixture({
+		models: options.models ?? [DAEMON_MODEL],
+		version: DAEMON_VERSION,
+		context: DAEMON_CONTEXT,
+		reply: (request) => policy.reply(request),
+	})
 }
 
 // ── Live page proof gates ─────────────────────────────────────────────────────

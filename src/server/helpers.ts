@@ -1,16 +1,20 @@
 import type {
 	OllamaBytes,
 	OllamaDaemonOptions,
+	OllamaFixtureOptions,
+	OllamaFixtureRequest,
 	OllamaMaintenance,
 	OllamaMetadataOptions,
 	OllamaModel,
+	OllamaReadoutOptions,
+	OllamaReplyOptions,
 } from './types.js'
-import type { OllamaTiming } from '@src/core'
+import type { OllamaCounts, OllamaDurations, OllamaTiming } from '@src/core'
 import { arrayOf, isRecord, isString, objectOf, parseJSONAs } from '@orkestrel/contract'
 import { mergePlatformEnvironment } from '@orkestrel/process/server'
 import { createHash } from 'node:crypto'
 import { extractTiming } from '@src/core'
-import { OLLAMA_METADATA_BYTES, OLLAMA_METADATA_TIMEOUT } from './constants.js'
+import { OLLAMA_FIXTURE_TIME, OLLAMA_METADATA_BYTES, OLLAMA_METADATA_TIMEOUT } from './constants.js'
 import { isOllamaError, OllamaError } from './errors.js'
 import { isOllamaOrigin } from './validators.js'
 
@@ -346,4 +350,140 @@ export async function readOllamaReply(
 	} finally {
 		clearTimeout(timer)
 	}
+}
+
+export function buildOllamaTiming(
+	durations: Partial<OllamaDurations> = {},
+	counts: Partial<OllamaCounts> = {},
+): Readonly<Record<string, number>> {
+	const fields: ReadonlyArray<readonly [string, number | undefined]> = [
+		['total_duration', durations.total],
+		['load_duration', durations.load],
+		['prompt_eval_duration', durations.prompt],
+		['eval_duration', durations.decode],
+		['prompt_eval_count', counts.prompt],
+		['eval_count', counts.decode],
+		['prompt_eval_cached_count', counts.cached],
+	]
+	return Object.freeze(
+		Object.fromEntries(
+			fields.filter((field): field is readonly [string, number] => field[1] !== undefined),
+		),
+	)
+}
+
+export function buildOllamaReply(options: OllamaReplyOptions = {}): string {
+	const model = options.model === undefined ? {} : { model: options.model }
+	const deltas = (options.parts ?? []).map(
+		(content) =>
+			`${JSON.stringify({ ...model, message: { role: 'assistant', content }, done: false })}\n`,
+	)
+	const terminal = JSON.stringify({
+		...model,
+		message: {
+			role: 'assistant',
+			content: options.content ?? '',
+			...(options.thinking === undefined ? {} : { thinking: options.thinking }),
+			...(options.calls === undefined
+				? {}
+				: {
+						tool_calls: options.calls.map((call) => ({
+							id: call.id,
+							function: { name: call.name, arguments: call.arguments },
+						})),
+					}),
+		},
+		done: true,
+		done_reason: options.reason ?? 'stop',
+		...buildOllamaTiming(options.durations, options.counts),
+	})
+	return [...deltas, `${terminal}\n`].join('')
+}
+
+export function buildOllamaReadout(options: OllamaReadoutOptions): string {
+	const chosen = options.top.find((entry) => entry.token === options.token)
+	return JSON.stringify({
+		...(options.model === undefined ? {} : { model: options.model }),
+		response: options.token,
+		done: true,
+		done_reason: 'length',
+		...buildOllamaTiming(undefined, options.counts),
+		logprobs: [
+			{
+				token: options.token,
+				...(chosen === undefined ? {} : { logprob: chosen.logprob }),
+				top_logprobs: options.top.map((entry) => ({ token: entry.token, logprob: entry.logprob })),
+			},
+		],
+	})
+}
+
+export function buildOllamaInventory(models: readonly OllamaModel[]): string {
+	return JSON.stringify({
+		models: models.map((model) => ({
+			name: model.name,
+			model: model.name,
+			modified_at: OLLAMA_FIXTURE_TIME,
+			size: 2147483648,
+			digest: model.digest,
+			details: {
+				parent_model: '',
+				format: 'gguf',
+				family: 'qwen3',
+				families: ['qwen3'],
+				parameter_size: '2B',
+				quantization_level: 'Q4_K_M',
+			},
+		})),
+	})
+}
+
+export function buildOllamaAnswer(
+	request: OllamaFixtureRequest,
+	options: Pick<OllamaFixtureOptions, 'models' | 'version' | 'context'>,
+): Response {
+	const route = `${request.method} ${request.path}`
+	if (route === 'GET /api/version') return Response.json({ version: options.version })
+	if (route === 'GET /api/tags')
+		return new Response(buildOllamaInventory(options.models), {
+			headers: { 'content-type': 'application/json' },
+		})
+	if (route === 'POST /api/chat')
+		return Response.json({ error: 'no reply policy answers /api/chat' }, { status: 500 })
+	if (!['POST /api/show', 'POST /api/generate'].includes(route))
+		return new Response(null, { status: 404 })
+	const body = parseJSONAs(request.body, isRecord)
+	if (body === undefined)
+		return Response.json(
+			{ error: `the fixture refuses ${request.path}: its body is not a JSON object` },
+			{ status: 400 },
+		)
+	if (
+		request.path === '/api/generate' &&
+		(body.keep_alive !== 0 || (body.prompt !== undefined && body.prompt !== ''))
+	)
+		return Response.json({ error: 'no reply policy answers /api/generate' }, { status: 500 })
+	const name = body.model
+	if (!isString(name))
+		return Response.json(
+			{ error: `the fixture refuses ${request.path}: its body names no model` },
+			{ status: 400 },
+		)
+	const model = options.models.find((entry) => entry.name === name)
+	if (model === undefined)
+		return Response.json({ error: `model '${name}' not found` }, { status: 404 })
+	return request.path === '/api/show'
+		? Response.json({
+				model_info: {
+					'general.architecture': 'fixture',
+					'fixture.context_length': options.context,
+				},
+			})
+		: Response.json({
+				model: model.name,
+				created_at: OLLAMA_FIXTURE_TIME,
+				response: '',
+				done: true,
+				done_reason: 'unload',
+			})
 }

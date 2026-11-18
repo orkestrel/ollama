@@ -2,7 +2,8 @@ import type { ProviderOptions } from '@orkestrel/agent'
 import type { AuditFault } from '@orkestrel/contract'
 import type { EmitterErrorHandler, EmitterHooks, EmitterInterface } from '@orkestrel/emitter'
 import type { DuplexOptions } from '@orkestrel/process'
-import type { OllamaTiming } from '@src/core'
+import type { ToolCall } from '@orkestrel/tool'
+import type { Logprob, OllamaCounts, OllamaDurations, OllamaTiming } from '@src/core'
 import type { OLLAMA_ERROR_CODES } from './constants.js'
 
 /**
@@ -268,4 +269,56 @@ export interface OllamaErrorOptions {
 	readonly code: OllamaErrorCode
 	readonly context?: OllamaErrorContext
 	readonly cause?: unknown
+}
+
+export interface OllamaFixtureRequest {
+	readonly method: string
+	readonly path: string
+	readonly headers: Readonly<Record<string, string>>
+	readonly body: string
+}
+
+export type OllamaFixtureHandler = (
+	request: OllamaFixtureRequest,
+	signal: AbortSignal,
+) => Response | undefined | Promise<Response | undefined>
+
+export interface OllamaFixtureOptions {
+	readonly on?: EmitterHooks<OllamaFixtureEventMap>
+	readonly error?: EmitterErrorHandler
+	readonly models: readonly OllamaModel[]
+	readonly version: string
+	readonly context: number
+	readonly reply?: OllamaFixtureHandler
+}
+
+export type OllamaFixtureEventMap = {
+	readonly request: readonly [request: OllamaFixtureRequest]
+	readonly error: readonly [error: unknown]
+}
+
+export interface OllamaFixtureInterface {
+	readonly url: string
+	readonly requests: readonly OllamaFixtureRequest[]
+	readonly emitter: EmitterInterface<OllamaFixtureEventMap>
+	start(): Promise<void>
+	destroy(): Promise<void>
+}
+
+export interface OllamaReplyOptions {
+	readonly model?: string
+	readonly content?: string
+	readonly parts?: readonly string[]
+	readonly thinking?: string
+	readonly calls?: readonly ToolCall[]
+	readonly reason?: string
+	readonly counts?: Partial<OllamaCounts>
+	readonly durations?: Partial<OllamaDurations>
+}
+
+export interface OllamaReadoutOptions {
+	readonly model?: string
+	readonly token: string
+	readonly top: readonly Logprob[]
+	readonly counts?: Partial<OllamaCounts>
 }

@@ -4,6 +4,7 @@ import {
 	isOllamaDaemonOptions,
 	isOllamaError,
 	isOllamaExecutable,
+	isOllamaFixtureOptions,
 	isOllamaModel,
 	OLLAMA_DAEMON_KEYS,
 	OLLAMA_DAEMON_LIVE,
@@ -14,10 +15,37 @@ import {
 import { scanOptionFaults } from '@src/core'
 import {
 	DAEMON_DECLARATION,
+	DAEMON_FIXTURE_OPTIONS,
 	EXTRA_DAEMON_OVERRIDES,
 	INVALID_DAEMON_OVERRIDES,
+	INVALID_FIXTURE_OVERRIDES,
 } from '../../setupServer.js'
 import { describe, expect, it } from 'vitest'
+
+describe('fixture options guard', () => {
+	it('accepts the control options, an empty listing, and every live member a caller may give', () => {
+		expect(isOllamaFixtureOptions(DAEMON_FIXTURE_OPTIONS)).toBe(true)
+		expect(isOllamaFixtureOptions({ ...DAEMON_FIXTURE_OPTIONS, models: [] })).toBe(true)
+		expect(
+			isOllamaFixtureOptions({
+				...DAEMON_FIXTURE_OPTIONS,
+				reply: () => undefined,
+				error: () => undefined,
+				on: { request: () => undefined, error: () => undefined },
+			}),
+		).toBe(true)
+	})
+
+	it.each(INVALID_FIXTURE_OVERRIDES)('refuses %s', (_label, override) => {
+		expect(isOllamaFixtureOptions({ ...DAEMON_FIXTURE_OPTIONS, ...override })).toBe(false)
+	})
+
+	it('returns false for exotic values, including throwing accessors and revoked proxies', () => {
+		const hostile = createHostileValues()
+		expect(hostile.length).toBeGreaterThan(0)
+		expect(hostile.map((value) => isOllamaFixtureOptions(value))).toEqual(hostile.map(() => false))
+	})
+})
 
 describe('daemon declaration validators', () => {
 	it('refuses a relative workspace as a semantic condition', () => {

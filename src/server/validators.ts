@@ -1,7 +1,12 @@
-import type { OllamaDaemonOptions, OllamaExecutable, OllamaModel } from './types.js'
+import type {
+	OllamaDaemonOptions,
+	OllamaExecutable,
+	OllamaFixtureOptions,
+	OllamaModel,
+} from './types.js'
 import { arrayOf, holds, isFunction, isInteger, isRecord, isString } from '@orkestrel/contract'
 import { isAbsolute } from 'node:path'
-import { OLLAMA_DAEMON_KEYS, OLLAMA_TIMER_LIMIT } from './constants.js'
+import { OLLAMA_DAEMON_KEYS, OLLAMA_FIXTURE_KEYS, OLLAMA_TIMER_LIMIT } from './constants.js'
 import { matchesDeclaredKeys } from './helpers.js'
 
 /**
@@ -155,4 +160,22 @@ export function isOllamaDaemonOptions(value: unknown): value is OllamaDaemonOpti
 			(value.on === undefined || (isRecord(value.on) && Object.values(value.on).every(isFunction)))
 		)
 	})
+}
+
+export function isOllamaFixtureOptions(value: unknown): value is OllamaFixtureOptions {
+	return holds(
+		() =>
+			isRecord(value) &&
+			matchesDeclaredKeys(value, OLLAMA_FIXTURE_KEYS) &&
+			arrayOf(isOllamaModel)(value.models) &&
+			new Set(value.models.map((model) => model.name)).size === value.models.length &&
+			isString(value.version) &&
+			value.version.length > 0 &&
+			isInteger(value.context) &&
+			Number.isSafeInteger(value.context) &&
+			value.context > 0 &&
+			(value.reply === undefined || isFunction(value.reply)) &&
+			(value.error === undefined || isFunction(value.error)) &&
+			(value.on === undefined || (isRecord(value.on) && Object.values(value.on).every(isFunction))),
+	)
 }

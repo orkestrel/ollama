@@ -1,7 +1,24 @@
-import { createOllamaDaemon, OllamaDaemon } from '@src/server'
-import { buildDaemonOptions, DAEMON_DECLARATION } from '../../setupServer.js'
+import { createOllamaDaemon, createOllamaFixture, OllamaDaemon, OllamaFixture } from '@src/server'
+import {
+	buildDaemonOptions,
+	DAEMON_DECLARATION,
+	DAEMON_FIXTURE_OPTIONS,
+} from '../../setupServer.js'
 import { createScratch } from '@orkestrel/test/server'
 import { expect, it } from 'vitest'
+
+it('creates a started fixture whose url answers, and refuses invalid options before listening', async () => {
+	const fixture = await createOllamaFixture(DAEMON_FIXTURE_OPTIONS)
+	try {
+		expect(fixture).toBeInstanceOf(OllamaFixture)
+		expect(await (await fetch(`${fixture.url}/api/version`)).json()).toEqual({ version: '0.40.8' })
+	} finally {
+		await fixture.destroy()
+	}
+	await expect(
+		createOllamaFixture({ ...DAEMON_FIXTURE_OPTIONS, context: 0 }),
+	).rejects.toMatchObject({ code: 'invalid' })
+})
 
 it('constructs an unstarted dedicated daemon and releases it without spawning', async () => {
 	const options = await buildDaemonOptions()

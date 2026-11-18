@@ -38,6 +38,17 @@ export const OLLAMA_DAEMON_KEYS = Object.freeze({
 	termination: Object.freeze(['grace', 'drain']),
 })
 
+export const OLLAMA_FIXTURE_KEYS: readonly string[] = Object.freeze([
+	'on',
+	'error',
+	'models',
+	'version',
+	'context',
+	'reply',
+])
+
+export const OLLAMA_FIXTURE_TIME = '2026-10-23T14:08:45.7014834Z'
+
 /** Identifies daemon errors across installations and module formats through the global symbol registry. */
 export const OLLAMA_ERROR_BRAND = Symbol.for('@orkestrel/ollama.OllamaError')
 

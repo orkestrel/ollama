@@ -257,9 +257,19 @@ describe('Mica label readout', () => {
 		expect(() => extractTopLogprobs({ logprobs: [] })).toThrow(JudgeError)
 		expect(() =>
 			extractTopLogprobs({ logprobs: [{ top_logprobs: [{ token: 'No', logprob: NaN }] }] }),
-		).toThrow(JudgeError)
-		expect(() => extractTopLogprobs({ logprobs: [{ top_logprobs: [entry, entry] }] })).toThrow(
-			JudgeError,
+		).toThrow(
+			expect.objectContaining({
+				code: 'PROTOCOL',
+				message: 'judge error: invalid top logprob token',
+			}),
+		)
+		expect(() =>
+			extractTopLogprobs({ logprobs: [{ top_logprobs: [{ token: 7, logprob: 0 }] }] }),
+		).toThrow(
+			expect.objectContaining({
+				code: 'PROTOCOL',
+				message: 'judge error: invalid top logprob token',
+			}),
 		)
 	})
 	it('refuses a hole in the top list as an invalid entry', () => {
@@ -270,7 +280,7 @@ describe('Mica label readout', () => {
 		expect(top).toHaveLength(3)
 		expect(() => extractTopLogprobs({ logprobs: [{ top_logprobs: top }] })).toThrow(JudgeError)
 	})
-	it('refuses the first duplicate token before it reads the entries after it', () => {
+	it('keeps a repeated token and reads every entry after it', () => {
 		const reads = createRecorder<[index: number]>()
 		const top = Object.defineProperty(
 			[
@@ -286,13 +296,46 @@ describe('Mica label readout', () => {
 				},
 			},
 		)
-		expect(() => extractTopLogprobs({ logprobs: [{ top_logprobs: top }] })).toThrow(JudgeError)
-		expect(reads.calls).toEqual([])
+		expect(extractTopLogprobs({ logprobs: [{ top_logprobs: top }] })).toEqual([
+			{ token: 'No', logprob: 0 },
+			{ token: 'No', logprob: -1 },
+			{ token: 'Yes', logprob: 0 },
+		])
+		expect(reads.calls).toEqual([[2]])
 	})
-	it('refuses a token repeated after another token as it refuses an adjacent repeat', () => {
-		expect(() =>
+	it('keeps a token repeated after another token in wire order', () => {
+		expect(
 			extractTopLogprobs({ logprobs: [{ top_logprobs: NON_ADJACENT_DUPLICATE_TOP }] }),
-		).toThrow(JudgeError)
+		).toEqual([
+			{ token: 'No', logprob: 0 },
+			{ token: 'Yes', logprob: -1 },
+			{ token: 'No', logprob: -2 },
+		])
+	})
+	it('throws for a malformed entry before or after a repeated token', () => {
+		for (const top of [
+			[
+				{ token: 'No', logprob: 0 },
+				{ token: 'No', logprob: -1 },
+				{ token: 'Yes', logprob: NaN },
+			],
+			[
+				{ token: 'No', logprob: 0 },
+				{ token: 'No', logprob: -1 },
+				{ token: null, logprob: 0 },
+			],
+			[
+				{ token: 'Yes', logprob: Infinity },
+				{ token: 'No', logprob: 0 },
+				{ token: 'No', logprob: -1 },
+			],
+		])
+			expect(() => extractTopLogprobs({ logprobs: [{ top_logprobs: top }] })).toThrow(
+				expect.objectContaining({
+					code: 'PROTOCOL',
+					message: 'judge error: invalid top logprob token',
+				}),
+			)
 	})
 	it('normalizes equal candidates uniformly and flattens gaps with calibration', () => {
 		const question: JudgeQuestion = {
@@ -377,24 +420,83 @@ describe('Mica label readout', () => {
 		).toEqual({ missing: ['0'] })
 		expect(() => computeAnswer({ form: 'noul' }, [], 0)).toThrow(JudgeError)
 		expect(() => computeAnswer({ form: 'noul' }, [{ token: 'No', logprob: Infinity }])).toThrow(
-			JudgeError,
+			expect.objectContaining({
+				code: 'PROTOCOL',
+				message: 'judge error: invalid top logprob token',
+			}),
 		)
 	})
+	it('refuses every candidate key when any token repeats, a candidate or not', () => {
+		expect(
+			computeAnswer({ form: 'noul' }, [
+				{ token: 'No', logprob: 0 },
+				{ token: 'No', logprob: -1 },
+				{ token: 'Yes', logprob: -2 },
+			]),
+		).toEqual({ missing: ['false', 'true'] })
+		expect(
+			computeAnswer({ form: 'noul' }, [
+				{ token: 'No', logprob: 0 },
+				{ token: 'Yes', logprob: -1 },
+				{ token: 'Maybe', logprob: -2 },
+				{ token: 'Maybe', logprob: -3 },
+			]),
+		).toEqual({ missing: ['false', 'true'] })
+		expect(
+			computeAnswer({ form: 'choice', criteria: { billing: null, technical: null, sales: null } }, [
+				{ token: 'A', logprob: 0 },
+				{ token: 'B', logprob: 0 },
+				{ token: 'C', logprob: 0 },
+				{ token: 'B', logprob: -1 },
+			]),
+		).toEqual({ missing: ['billing', 'technical', 'sales'] })
+		expect(
+			computeAnswer({ form: 'score', criteria: ['low', 'high'] }, [
+				{ token: 'A', logprob: 0 },
+				{ token: 'A', logprob: -1 },
+			]),
+		).toEqual({ missing: ['0', '1'] })
+	})
+	it('throws for a non-finite logprob before or after a repeated token', () => {
+		for (const top of [
+			[
+				{ token: 'No', logprob: 0 },
+				{ token: 'No', logprob: -1 },
+				{ token: 'Yes', logprob: NaN },
+			],
+			[
+				{ token: 'No', logprob: 0 },
+				{ token: 'Yes', logprob: -Infinity },
+				{ token: 'No', logprob: -1 },
+			],
+			[
+				{ token: 'Yes', logprob: Infinity },
+				{ token: 'No', logprob: 0 },
+				{ token: 'No', logprob: -1 },
+			],
+		])
+			expect(() => computeAnswer({ form: 'noul' }, top)).toThrow(
+				expect.objectContaining({
+					code: 'PROTOCOL',
+					message: 'judge error: invalid top logprob token',
+				}),
+			)
+	})
 	describe('iterator refusal boundaries', () => {
-		it('reads the top list in order, so a duplicate ahead of a hole refuses as a protocol error', () => {
+		it('reads the whole top list, so a hole after a repeated token throws as a hole alone does', () => {
 			const duplicate = Object.assign([], {
 				0: { token: 'No', logprob: 0 },
 				1: { token: 'No', logprob: 0 },
 				3: { token: 'Yes', logprob: 0 },
 			})
-			expect(() => computeAnswer({ form: 'noul' }, duplicate)).toThrow(JudgeError)
+			expect(() => computeAnswer({ form: 'noul' }, duplicate)).toThrow(TypeError)
 			const holed = Object.assign([], {
 				0: { token: 'No', logprob: 0 },
 				2: { token: 'Yes', logprob: 0 },
 			})
 			expect(() => computeAnswer({ form: 'noul' }, holed)).toThrow(TypeError)
 		})
-		it('refuses the first duplicate token before it reads the entries after it', () => {
+		it('reads every entry after a repeated token before it refuses', () => {
 			const reads = createRecorder<[index: number]>()
 			const top = Object.defineProperty(
 				[
@@ -410,21 +512,30 @@ describe('Mica label readout', () => {
 					},
 				},
 			)
-			expect(() => computeAnswer({ form: 'noul' }, top)).toThrow(JudgeError)
-			expect(reads.calls).toEqual([])
+			expect(computeAnswer({ form: 'noul' }, top)).toEqual({ missing: ['false', 'true'] })
+			expect(reads.calls).toEqual([[2]])
 		})
 		it('refuses a token repeated after another token as it refuses an adjacent repeat', () => {
-			expect(() => computeAnswer({ form: 'noul' }, NON_ADJACENT_DUPLICATE_TOP)).toThrow(JudgeError)
+			expect(computeAnswer({ form: 'noul' }, NON_ADJACENT_DUPLICATE_TOP)).toEqual({
+				missing: ['false', 'true'],
+			})
 		})
 		it('matches a repeated token as a map key does: NaN and signed zero repeat, equal objects do not', () => {
+			const candidates = [
+				{ token: 'No', logprob: 0 },
+				{ token: 'Yes', logprob: 0 },
+			]
 			for (const top of buildRepeatedTokenCases())
-				expect(() => computeAnswer({ form: 'noul' }, top)).toThrow(JudgeError)
+				expect(computeAnswer({ form: 'noul' }, [...candidates, ...top])).toEqual({
+					missing: ['false', 'true'],
+				})
 			expect(
 				computeAnswer({ form: 'noul' }, [
+					...candidates,
 					Object.assign({ token: 'x', logprob: 0 }, { token: {} }),
 					Object.assign({ token: 'x', logprob: 0 }, { token: {} }),
 				]),
-			).toEqual({ missing: ['false', 'true'] })
+			).toEqual({ form: 'noul', noul: 0.5 })
 		})
 	})
 })

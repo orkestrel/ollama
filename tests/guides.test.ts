@@ -280,16 +280,24 @@ await new GuideCommand({
 			expect(() =>
 				extractTopLogprobs({ logprobs: [{ top_logprobs: [{ token: 'No', logprob: NaN }] }] }),
 			).toThrow(JudgeError)
+			const repeated = extractTopLogprobs({
+				logprobs: [
+					{
+						top_logprobs: [
+							{ token: 'No', logprob: 0 },
+							{ token: 'No', logprob: 0 },
+						],
+					},
+				],
+			})
+			expect(repeated).toEqual([
+				{ token: 'No', logprob: 0 },
+				{ token: 'No', logprob: 0 },
+			])
+			expect(computeAnswer({ form: 'noul' }, repeated)).toEqual({ missing: ['false', 'true'] })
 			expect(() =>
 				extractTopLogprobs({
-					logprobs: [
-						{
-							top_logprobs: [
-								{ token: 'No', logprob: 0 },
-								{ token: 'No', logprob: 0 },
-							],
-						},
-					],
+					logprobs: [{ top_logprobs: [...repeated, { token: 'Yes', logprob: NaN }] }],
 				}),
 			).toThrow(JudgeError)
 			expect(() => judge.read({ ...JUDGE_RAW_NOUL, eval_count: -1 }, JUDGE_NOUL_REQUEST)).toThrow(

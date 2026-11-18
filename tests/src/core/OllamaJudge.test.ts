@@ -310,6 +310,33 @@ describe('OllamaJudge', () => {
 		expect(answer.probabilities).toHaveLength(3)
 		expect(answer.probabilities.reduce((sum, value) => sum + value, 0)).toBeCloseTo(1, 12)
 	})
+	it('resolves a readout whose top logprobs repeat a token to a refusal naming every candidate key', async () => {
+		const repeated = {
+			...JUDGE_RAW_NOUL,
+			model: 'mica',
+			logprobs: [
+				{
+					top_logprobs: [
+						{ token: 'No', logprob: -0.01 },
+						{ token: 'Yes', logprob: -4.6 },
+						{ token: 'No', logprob: -9 },
+					],
+				},
+			],
+		}
+		const transport = createRecordingTransport(createStreamingTransport([JSON.stringify(repeated)]))
+		const judge = new OllamaJudge({ model: 'mica', system: MICA_SYSTEM, fetch: transport.fetch })
+		expect(judge.read(repeated, JUDGE_NOUL_REQUEST)).toEqual({
+			model: judge.model,
+			answers: {},
+			refusals: { deletion: { missing: ['false', 'true'] } },
+			usage: { prompt: 138, completion: 1, total: 139 },
+		})
+		const result = await judge.ask(JUDGE_NOUL_REQUEST, new AbortController().signal)
+		expect(result.refusals).toEqual({ deletion: { missing: ['false', 'true'] } })
+		expect(result.answers).toEqual({})
+		expect(transport.requests).toHaveLength(1)
+	})
 	it('rejects malformed or incomplete responses and omits unavailable usage', () => {
 		const judge = new OllamaJudge({ model: JUDGE_RAW_NOUL.model, system: MICA_SYSTEM })
 		expect(() => judge.read({ ...JUDGE_RAW_NOUL, done: false }, JUDGE_NOUL_REQUEST)).toThrow(
@@ -334,7 +361,30 @@ describe('OllamaJudge', () => {
 				{ ...JUDGE_RAW_NOUL, logprobs: [{ top_logprobs: [{ token: 'No', logprob: NaN }] }] },
 				JUDGE_NOUL_REQUEST,
 			),
-		).toThrow('judge error: question deletion invalid or duplicate top logprob token')
+		).toThrow('judge error: question deletion invalid top logprob token')
+		expect(() =>
+			judge.read(
+				{
+					...JUDGE_RAW_NOUL,
+					logprobs: [
+						{
+							top_logprobs: [
+								{ token: 'No', logprob: 0 },
+								{ token: 'No', logprob: -1 },
+								{ token: 'Yes', logprob: NaN },
+							],
+						},
+					],
+				},
+				JUDGE_NOUL_REQUEST,
+			),
+		).toThrow(
+			expect.objectContaining({
+				code: 'PROTOCOL',
+				message: 'judge error: question deletion invalid top logprob token',
+				cause: expect.any(JudgeError),
+			}),
+		)
 		expect(
 			judge.read({ ...JUDGE_RAW_NOUL, eval_count: undefined }, JUDGE_NOUL_REQUEST).usage,
 		).toBeUndefined()

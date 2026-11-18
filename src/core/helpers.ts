@@ -184,8 +184,8 @@ export function buildJudgeLabels(question: JudgeQuestion): ReadonlyMap<string, s
 /**
  * Extracts the first generated position's top logprobs without changing token text.
  * @param value - The parsed Ollama generate response
- * @returns The owned top list, preserving its wire order
- * @throws JudgeError Thrown with code `PROTOCOL` for a malformed list or a non-finite logprob
+ * @returns The owned top list, preserving its wire order and every repeated token
+ * @throws JudgeError Thrown with code `PROTOCOL` for a malformed list, a non-string token, or a non-finite logprob
  * @example
  * ```ts
  * extractTopLogprobs({ logprobs: [{ top_logprobs: [{ token: 'No', logprob: -0.1 }] }] })
@@ -202,12 +202,8 @@ export function extractTopLogprobs(value: unknown): readonly Logprob[] {
 	for (const entry of top) {
 		const token: unknown = isObject(entry) ? Reflect.get(entry, 'token') : undefined
 		const logprob: unknown = isObject(entry) ? Reflect.get(entry, 'logprob') : undefined
-		if (
-			!isString(token) ||
-			!isFiniteNumber(logprob) ||
-			result.some((earlier) => earlier.token === token)
-		)
-			throw new JudgeError('PROTOCOL', 'judge error: invalid or duplicate top logprob token')
+		if (!isString(token) || !isFiniteNumber(logprob))
+			throw new JudgeError('PROTOCOL', 'judge error: invalid top logprob token')
 		result.push({ token, logprob })
 	}
 	return result
@@ -218,8 +214,8 @@ export function extractTopLogprobs(value: unknown): readonly Logprob[] {
  * @param question - The question defining the candidate keys
  * @param top - The first position's top logprobs
  * @param temperature - The finite positive calibration temperature; default 1
- * @returns The answer, or a refusal naming every missing caller key
- * @throws JudgeError Thrown with code `QUESTION` for invalid calibration or candidate counts, or `PROTOCOL` for invalid logprobs
+ * @returns The answer, or a refusal naming every missing caller key, or every caller key when a token repeats
+ * @throws JudgeError Thrown with code `QUESTION` for invalid calibration or candidate counts, or `PROTOCOL` for a non-finite logprob, a repeated token beside it included
  * @example
  * ```ts
  * computeAnswer({ form: 'noul' }, [{ token: 'No', logprob: 0 }, { token: 'Yes', logprob: 0 }])
@@ -237,15 +233,16 @@ export function computeAnswer(
 			'judge error: calibration temperature must be finite and positive',
 		)
 	const labels = buildJudgeLabels(question)
-	// A log of the readings so far: a repeated token throws, and `includes` matches a key as a `Map` does.
 	const readings: Array<readonly [string, number]> = []
 	for (const entry of top) {
 		const { token, logprob } = entry
-		if (!isFiniteNumber(logprob) || readings.map(([earlier]) => earlier).includes(token))
-			throw new JudgeError('PROTOCOL', 'judge error: invalid or duplicate top logprob token')
+		if (!isFiniteNumber(logprob))
+			throw new JudgeError('PROTOCOL', 'judge error: invalid top logprob token')
 		readings.push([token, logprob])
 	}
 	const available = new Map(readings)
+	// A `Map` keeps one reading per key, so a repeated token leaves it smaller than the list.
+	if (available.size < readings.length) return { missing: Array.from(labels.keys()) }
 	const answers = Array.from(labels, ([key, label]) => [key, available.get(label)] as const)
 	const missing = answers.filter(([, logprob]) => logprob === undefined).map(([key]) => key)
 	if (missing.length > 0) return { missing }

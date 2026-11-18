@@ -1,6 +1,5 @@
-import type { ConversationInterface, Message } from '@orkestrel/agent'
 import { isRecord, isString } from '@orkestrel/contract'
-import { createOllama, OLLAMA_CHAT_PATH, OllamaProvider } from '@src/core'
+import { OLLAMA_CHAT_PATH, OllamaProvider } from '@src/core'
 import { SHORT_OPTIONS } from './setup.js'
 import { env, withScheme } from './setupServer.js'
 
@@ -49,65 +48,6 @@ export function createLiveOllama(options?: LiveProviderOptions): OllamaProvider 
 		...(options?.turn === undefined ? {} : { timeout: options.turn }),
 		...(options?.think === undefined ? {} : { think: options.think }),
 	})
-}
-
-/**
- * Builds a live summarizer for conversation-compaction scenarios.
- *
- * The fixed summarization instruction is appended as the final user turn because a
- * reasoning chat model may treat a prompt ending on an assistant turn as already
- * answered and emit no digest.
- *
- * @param timeoutMs - The generation deadline in milliseconds
- * @param predict - The summarizer's `num_predict` cap; defaults to `64`
- * @returns A conversation summarizer backed by the warmed live model
- */
-export function createLiveSummarizer(
-	timeoutMs: number,
-	predict = 64,
-): (messages: readonly Message[]) => Promise<string> {
-	const summarizer = createOllama({
-		model: OLLAMA_CONFIG.model,
-		url: OLLAMA_CONFIG.host,
-		options: { num_predict: predict, temperature: 0 },
-	})
-	return async (messages) =>
-		(
-			await summarizer.generate(
-				[
-					...messages,
-					{
-						id: 'sum',
-						role: 'user',
-						content: 'Summarize the conversation so far concisely in one sentence.',
-					},
-				],
-				AbortSignal.timeout(timeoutMs),
-			)
-		).content
-}
-
-/**
- * Seeds a conversation with the fixed trip-planning exchange compaction round-trips fold.
- *
- * The seeded turns are long enough that a one-sentence digest is measurably shorter, so a
- * post-compaction `view()` is provably smaller than the seeded one.
- *
- * @param conversation - The conversation to add the turns to
- */
-export function seedConversation(conversation: ConversationInterface): void {
-	conversation.add([
-		{ role: 'user', content: 'My name is Ada and I am planning a trip to Kyoto in spring.' },
-		{
-			role: 'assistant',
-			content: 'Kyoto in spring is lovely — the cherry blossoms peak in early April.',
-		},
-		{ role: 'user', content: 'I want to visit temples and try traditional food.' },
-		{
-			role: 'assistant',
-			content: 'Fushimi Inari and Kinkaku-ji are must-sees; try kaiseki and yudofu.',
-		},
-	])
 }
 
 /**

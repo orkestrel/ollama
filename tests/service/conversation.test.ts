@@ -1,92 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { createAgent, createConversationManager } from '@orkestrel/agent'
-import { createBudget } from '@orkestrel/budget'
-import { isError } from '@orkestrel/contract'
-import { createRecorder, retryUntil } from '@orkestrel/test'
+import { retryUntil } from '@orkestrel/test'
 import { createOllama } from '@src/core'
-import {
-	buildTurns,
-	CASE_TIMEOUT,
-	countRequestCharacters,
-	createThrowingSummarizer,
-	HEAVY_TIMEOUT,
-	THROWING_SUMMARIZER_MESSAGE,
-	toMessageInputs,
-} from '../setup.js'
+import { buildTurns, CASE_TIMEOUT, HEAVY_TIMEOUT, toMessageInputs } from '../setup.js'
 import { createRecordingProxy, systemText } from '../setupServer.js'
-import { createLiveOllama, OLLAMA_CONFIG, RETRY_BUDGET } from '../setupService.js'
-
-describe('Agent (live) — a throwing summarizer under auto-compaction', () => {
-	it(
-		'rejects with its failure under strict, the default, after the fault and before any provider call',
-		async () => {
-			const proxy = await createRecordingProxy(OLLAMA_CONFIG.host)
-			try {
-				const conversations = createConversationManager({
-					summarize: createThrowingSummarizer(),
-					keep: 2,
-				})
-				const conversation = conversations.add()
-				conversation.add(toMessageInputs(buildTurns(12)))
-				const agent = createAgent(createOllama({ model: OLLAMA_CONFIG.model, url: proxy.url }), {
-					conversations,
-					window: createBudget({ max: 20, consumer: countRequestCharacters }),
-					timeout: CASE_TIMEOUT,
-				})
-				const faults = createRecorder<[unknown]>()
-				agent.emitter.on('fault', (error) => faults.handler(error))
-				agent.context.messages.add({ role: 'user', content: 'Please continue.' })
-
-				await expect(agent.generate()).rejects.toThrow(THROWING_SUMMARIZER_MESSAGE)
-				expect(faults.calls).toEqual([[new Error(THROWING_SUMMARIZER_MESSAGE)]])
-				expect(proxy.requests).toEqual([])
-			} finally {
-				await proxy.stop()
-			}
-		},
-		CASE_TIMEOUT,
-	)
-
-	it(
-		'stays non-fatal under strict: false, where the fault fires and the run still completes non-partial',
-		async () => {
-			const best = await retryUntil(
-				'surface a fault from a throwing summarizer',
-				async () => {
-					const summarize = createThrowingSummarizer()
-					const conversations = createConversationManager({ summarize, keep: 2 })
-					const conversation = conversations.add()
-					conversation.add(toMessageInputs(buildTurns(12)))
-					const agent = createAgent(createLiveOllama(), {
-						conversations,
-						window: createBudget({ max: 20, consumer: countRequestCharacters }),
-						strict: false,
-						timeout: CASE_TIMEOUT,
-					})
-					const faults = createRecorder<[unknown]>()
-					agent.emitter.on('fault', (error) => faults.handler(error))
-					agent.context.messages.add({ role: 'user', content: 'Please continue.' })
-					const result = await agent.generate()
-					return { faults: faults.calls, partial: result.partial }
-				},
-				// The predicate is the assertion below: an attempt that emits a second fault, or one that
-				// is not the summarizer's own, is retried rather than accepted and then failed.
-				(value) =>
-					value.partial === false &&
-					value.faults.length === 1 &&
-					value.faults.every(
-						([fault]) => isError(fault) && fault.message === THROWING_SUMMARIZER_MESSAGE,
-					),
-				{ attempts: 3, budget: RETRY_BUDGET },
-			)
-
-			// The summarizer's own failure is what the agent reported.
-			expect(best.faults).toEqual([[new Error(THROWING_SUMMARIZER_MESSAGE)]])
-			expect(best.partial).toBe(false)
-		},
-		CASE_TIMEOUT,
-	)
-})
+import { OLLAMA_CONFIG, RETRY_BUDGET } from '../setupService.js'
 
 describe('Agent (live) — a sentinel instruction survives a long conversation', () => {
 	it(

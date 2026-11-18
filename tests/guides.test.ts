@@ -726,6 +726,7 @@ await new GuideCommand({
 			try {
 				const browser = createRelayProvider({
 					url: `${server.url}/inference`,
+					model: 'qwen3.5:2b-q4_K_M',
 					headers: () => ({ authorization: OBFUSCATED }),
 				})
 
@@ -742,6 +743,7 @@ await new GuideCommand({
 					usage: { prompt: 3, completion: 4, total: 7 },
 				})
 				expect(browser.name).toBe('relay')
+				expect(browser.model).toBe('qwen3.5:2b-q4_K_M')
 				expect(server.requests.map((request) => request.path)).toEqual(['/inference'])
 			} finally {
 				await server.stop()
@@ -762,6 +764,7 @@ await new GuideCommand({
 			})
 			const browser = createRelayProvider({
 				url: 'https://app.example.com/inference',
+				model: 'qwen3.5:2b-q4_K_M',
 				headers: () => ({ authorization: 'Bearer wrong' }),
 				fetch: (input, init) => dispatcher.handle(new Request(input, init), undefined),
 			})
@@ -788,6 +791,9 @@ await new GuideCommand({
 			expect(guideText).toContain('const port = await server.start()')
 			expect(guideText).toContain('await server.stop()')
 			expect(guideText).toContain('const browser = createRelayProvider({')
+			expect(guideText).toContain(
+				"model: 'qwen3.5:2b-q4_K_M', // the model the server half's provider serves",
+			)
 			expect(guideText).not.toContain('parser: createNDJSONParser,')
 		})
 

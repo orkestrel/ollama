@@ -837,7 +837,7 @@ describe('renderDaemonFailure', () => {
 
 	it('appends the remedy when the text names the context', () => {
 		expect(renderDaemonFailure('exceeds the context size')).toBe(
-			"exceeds the context size; the prompt exceeds the model's context window; set AgentOptions.window to fold the conversation, raise options.num_ctx, or set truncate: true to let the daemon cut it",
+			"exceeds the context size; the prompt exceeds the model's context window; serve the conversation through createLedger to bound every request, raise options.num_ctx, or set truncate: true to let the daemon cut it",
 		)
 	})
 })

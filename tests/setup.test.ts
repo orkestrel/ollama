@@ -1,5 +1,5 @@
 // The shared test infrastructure's own proof, over two subjects: the conversation
-// padding, the throwing summarizer, the workspace seeder, the page tool definition, and
+// padding, the workspace seeder, the page tool definition, and
 // the timer lead exported from `tests/setup.ts`, and the host-independent half of
 // `tests/setupServer.ts` — its request-narrowing guards, its refusing transport, its tool
 // fixtures, its agent-stream driver, and its environment readers. Each is real code the
@@ -17,9 +17,8 @@
 // This proof covers the workspace's fixtures rather than one module, which is why it
 // sits at the tests root in its own `setup` project.
 
-import type { AgentResult, Message } from '@orkestrel/agent'
+import type { AgentResult } from '@orkestrel/agent'
 import type { ToolResult } from '@orkestrel/tool'
-import { estimateRequest } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
 import { createNDJSONParser } from '@orkestrel/ndjson'
 import { createRecorder, requireValue, waitForDelay } from '@orkestrel/test'
@@ -40,15 +39,10 @@ import {
 	CANNED_STREAM_DELTAS,
 	CANNED_STREAM_DONE,
 	CASE_TIMEOUT,
-	countRequestCharacters,
 	createAllowAuthority,
 	createChallengeTools,
-	createRecordingSummarizer,
-	createThrowingSummarizer,
-	createUserMessage,
 	DEADLINE_MS,
 	DONE_RECORD,
-	estimateRequestMessages,
 	extractAnchoredFence,
 	FENCE_CONTROLS,
 	FENCE_MODEL,
@@ -64,14 +58,12 @@ import {
 	readStackDepth,
 	README_FENCE_PROMPT,
 	RECLASSIFIED_TURN,
-	RECORDING_SUMMARIZER_DIGEST,
 	recordRecursion,
 	SETTLE_MS,
 	SHORT_ANSWER_PROMPT,
 	SHORT_OPTIONS,
 	STREAM_FENCE_ANCHOR,
 	STREAM_FENCE_CASES,
-	THROWING_SUMMARIZER_MESSAGE,
 	TINY_PNG_BASE64,
 	TOOL_CONTEXT,
 	TRUNCATED_INVALID_REASONS,
@@ -466,66 +458,6 @@ describe('buildTurns', () => {
 
 	it('returns an empty array for count 0', () => {
 		expect(buildTurns(0)).toEqual([])
-	})
-})
-
-describe('countRequestCharacters', () => {
-	it('sums the content length of every message', () => {
-		const messages = [createUserMessage('abc'), createUserMessage('de')]
-
-		expect(countRequestCharacters({ messages })).toBe(5)
-	})
-
-	it('counts nothing for a request without messages', () => {
-		expect(countRequestCharacters({ messages: [] })).toBe(0)
-	})
-})
-
-describe('estimateRequestMessages', () => {
-	it('estimates the messages alone, whatever tools the request advertises', () => {
-		const messages = [createUserMessage('hello')]
-		const tools = [{ name: 'weather', description: 'x'.repeat(400) }]
-
-		expect(estimateRequestMessages({ messages })).toBe(6)
-		expect(estimateRequestMessages({ messages, tools })).toBe(6)
-		expect(estimateRequest({ messages, tools })).toBeGreaterThan(6)
-	})
-
-	it('estimates nothing for a request without messages', () => {
-		expect(estimateRequestMessages({ messages: [] })).toBe(0)
-	})
-})
-
-describe('createThrowingSummarizer', () => {
-	it('rejects with the default message', async () => {
-		const summarizer = createThrowingSummarizer()
-		await expect(summarizer([])).rejects.toThrow(THROWING_SUMMARIZER_MESSAGE)
-	})
-
-	it('rejects with a custom message', async () => {
-		const summarizer = createThrowingSummarizer('custom-failure')
-		await expect(summarizer([])).rejects.toThrow('custom-failure')
-	})
-})
-
-describe('createRecordingSummarizer', () => {
-	it('records the turns it was handed and resolves the default digest', async () => {
-		const invocations = createRecorder<[readonly Message[]]>()
-		const summarize = createRecordingSummarizer(invocations)
-		const turns = buildTurns(2)
-
-		expect(await summarize(turns)).toBe(RECORDING_SUMMARIZER_DIGEST)
-		expect(invocations.calls).toEqual([[turns]])
-	})
-
-	it('resolves a custom digest and records nothing until it is called', async () => {
-		const invocations = createRecorder<[readonly Message[]]>()
-		const summarize = createRecordingSummarizer(invocations, 'custom-digest')
-		const turns = buildTurns(1)
-
-		expect(invocations.calls).toEqual([])
-		expect(await summarize(turns)).toBe('custom-digest')
-		expect(invocations.calls).toEqual([[turns]])
 	})
 })
 

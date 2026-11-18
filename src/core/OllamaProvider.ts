@@ -51,7 +51,6 @@ import {
  */
 export class OllamaProvider extends AgentProvider implements AgentProviderInterface {
 	readonly name = 'ollama'
-	readonly #model: string
 	readonly #keepAlive: string | number
 	readonly #think: boolean
 	readonly #options: Readonly<Record<string, unknown>> | undefined
@@ -69,22 +68,17 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 		super({
 			url: options.url ?? DEFAULT_OLLAMA_URL,
 			path: OLLAMA_CHAT_PATH,
+			model: options.model,
 			...(options.timeout === undefined ? {} : { timeout: options.timeout }),
 			...(options.fetch === undefined ? {} : { fetch: options.fetch }),
 			...(options.headers === undefined ? {} : { headers: options.headers }),
 			...(options.replay === undefined ? {} : { replay: options.replay }),
 		})
-		this.#model = options.model
 		this.#keepAlive = options.keepAlive ?? DEFAULT_KEEP_ALIVE
 		this.#think = options.think ?? false
 		this.#options = options.options
 		this.#truncate = options.truncate ?? false
 		this.#shift = options.shift
-	}
-
-	/** Returns the model tag the constructor received, which every request body names. */
-	get model(): string {
-		return this.#model
 	}
 
 	/**
@@ -95,7 +89,7 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 	 * @param tools - The advertised tool definitions
 	 * @param options - The per-call generation configuration
 	 * @returns Content and native thinking deltas followed by the settled result
-	 * @throws ProviderError Thrown with code `HTTP` and status 400, its text naming `window`, `num_ctx`, and `truncate`, when the daemon's refusal names the context window
+	 * @throws ProviderError Thrown with code `HTTP` and status 400, its text naming `createLedger`, `num_ctx`, and `truncate`, when the daemon's refusal names the context window
 	 */
 	override async *stream(
 		messages: readonly Message[],
@@ -148,7 +142,7 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 				'provider error: messages is empty, and the daemon answers that with a model load and no turn; pass at least one message',
 			)
 		return {
-			model: this.#model,
+			model: this.model,
 			messages: mapMessages(request.messages),
 			stream: true,
 			keep_alive: this.#keepAlive,
@@ -187,10 +181,10 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 				`provider error: the daemon reported ${renderDaemonFailure(failure)}`,
 			)
 		const model = Reflect.get(record, 'model')
-		if (model !== undefined && model !== this.#model)
+		if (model !== undefined && model !== this.model)
 			throw new ProviderError(
 				'PROTOCOL',
-				`provider error: the daemon answered for model ${preview(model)} and this provider names ${preview(this.#model)}; set model to the tag the daemon serves`,
+				`provider error: the daemon answered for model ${preview(model)} and this provider names ${preview(this.model)}; set model to the tag the daemon serves`,
 			)
 		const done = Reflect.get(record, 'done') === true
 		if (done && Reflect.get(record, 'done_reason') === 'load')

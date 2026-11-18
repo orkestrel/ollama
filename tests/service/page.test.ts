@@ -206,7 +206,7 @@ describe('Agent tool loop in a real page (live) — a page tool through the rela
 								category: 'outcome',
 								outcome: await readOutcome(
 									acquired.page,
-									`page.run(${JSON.stringify({ ...PAGE_RUN, url: `${acquired.fixture.url}${PAGE_INFERENCE_PATH}`, authorization: OBFUSCATED })})`,
+									`page.run(${JSON.stringify({ ...PAGE_RUN, model: OLLAMA_CONFIG.model, url: `${acquired.fixture.url}${PAGE_INFERENCE_PATH}`, authorization: OBFUSCATED })})`,
 									isPageOutcome,
 									{ timeout: PAGE_BOUNDS.evaluate, signal },
 								),
@@ -688,7 +688,7 @@ describe('Agent tool loop in a real page (live) — a refused page credential', 
 				async (session, signal) => {
 					const outcome = await readOutcome(
 						session.page,
-						`page.run(${JSON.stringify({ ...PAGE_RUN, url: `${session.fixture.url}${PAGE_INFERENCE_PATH}`, authorization: `${OBFUSCATED}-wrong` })})`,
+						`page.run(${JSON.stringify({ ...PAGE_RUN, model: OLLAMA_CONFIG.model, url: `${session.fixture.url}${PAGE_INFERENCE_PATH}`, authorization: `${OBFUSCATED}-wrong` })})`,
 						isPageOutcome,
 						{ timeout: PAGE_BOUNDS.evaluate, signal },
 					)

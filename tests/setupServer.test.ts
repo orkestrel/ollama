@@ -5696,6 +5696,7 @@ describe('store fixtures', () => {
 				timer,
 			)
 			const signal = AbortSignal.timeout(5000)
+			expect(provider.model).toBe('fixture')
 			expect(
 				(await provider.generate([{ id: '1', role: 'user', content: 'Answer.' }], signal)).content,
 			).toBe('Measured.')

@@ -1,14 +1,14 @@
 // The hermetic half of `tests/setupService.ts`. That module is the `service` project's
 // setup file: it reads the selected daemon and model from the environment, gates the
 // project on the daemon answering with that model installed, warms the model, and then
-// hands the suites their live provider, live summarizer, and sampling tables.
+// hands the suites their live provider and sampling tables.
 //
 // The LIVE half — that a real Ollama daemon generates usable content, that the warmed
 // model answers within these prediction caps, that a live retry fits RETRY_BUDGET — is
 // proven by the `service` project itself, driving a real daemon. The `setup` project has
 // no daemon, so what is proven here is everything that does not need one: the
 // environment normalization, the readiness verdict, the warmup recipe, the wire options
-// each factory carries, the summarizer's message shaping, and the tables' invariants.
+// each factory carries, and the tables' invariants.
 //
 // The daemon those contracts are driven against is the protocol-faithful Ollama fixture under the
 // `DaemonPolicy` `tests/setupServer.ts` declares, which this file starts on a loopback ephemeral
@@ -17,11 +17,10 @@
 // runs its readiness gate at import; that is why the import is deferred until the
 // environment points at the fixture.
 
-import { createConversation } from '@orkestrel/agent'
 import { isRecord } from '@orkestrel/contract'
 import { afterAll, describe, expect, it } from 'vitest'
 import { service } from '../vite.config.js'
-import { buildTurns, createUserMessage } from './setup.js'
+import { createUserMessage } from './setup.js'
 import {
 	createDaemonFixture,
 	DAEMON_MODEL,
@@ -29,11 +28,9 @@ import {
 	FIXTURE_CONTENT,
 	FIXTURE_MODEL,
 	isPositiveInteger,
-	readChatMessages,
 	readChats,
 	readLatestChat,
 	readPreflights,
-	SUMMARY_INSTRUCTION,
 } from './setupServer.js'
 
 const policy = new DaemonPolicy()
@@ -52,7 +49,6 @@ process.env.OLLAMA_MODEL = FIXTURE_MODEL
 const {
 	createLiveOllama,
 	requireDaemonOrigin,
-	createLiveSummarizer,
 	fetchDaemon,
 	isOllamaReady,
 	OLLAMA_CONFIG,
@@ -60,7 +56,6 @@ const {
 	SAMPLING_EXPORTS,
 	SAMPLING_TABLES,
 	SEED_OPTIONS,
-	seedConversation,
 	warmOllama,
 } = await import('./setupService.js')
 
@@ -237,57 +232,6 @@ describe('the service setup against a fixture daemon', { shuffle: false }, () =>
 			} finally {
 				policy.clear()
 			}
-		})
-	})
-
-	describe('createLiveSummarizer', () => {
-		it('appends the fixed instruction after the conversation as a final user turn', async () => {
-			const turns = buildTurns(2)
-
-			const digest = await createLiveSummarizer(5000)(turns)
-
-			expect(digest).toBe(FIXTURE_CONTENT)
-			const messages = readChatMessages(readLatestChat(daemon))
-			expect(messages.length).toBe(turns.length + 1)
-			expect(messages.slice(0, turns.length)).toEqual(
-				turns.map((turn) => ({ role: turn.role, content: turn.content })),
-			)
-			expect(messages.at(-1)).toEqual({ role: 'user', content: SUMMARY_INSTRUCTION })
-		})
-
-		it('caps the digest at 64 tokens by default and at the requested cap when given', async () => {
-			await createLiveSummarizer(5000)(buildTurns(2))
-			expect(readLatestChat(daemon).options).toEqual({ num_predict: 64, temperature: 0 })
-
-			await createLiveSummarizer(5000, 16)(buildTurns(2))
-			expect(readLatestChat(daemon).options).toEqual({ num_predict: 16, temperature: 0 })
-		})
-
-		it('bounds the generation by the deadline it was built with', async () => {
-			policy.chat({ status: 200, content: FIXTURE_CONTENT, park: true })
-			try {
-				await expect(createLiveSummarizer(50)(buildTurns(2))).rejects.toThrow(Error)
-			} finally {
-				policy.clear()
-			}
-		})
-	})
-
-	describe('seedConversation', () => {
-		it('adds the fixed trip-planning exchange, alternating user and assistant turns', () => {
-			const conversation = createConversation()
-
-			seedConversation(conversation)
-
-			const view = conversation.view()
-			expect(view.map((message) => message.role)).toEqual([
-				'user',
-				'assistant',
-				'user',
-				'assistant',
-			])
-			expect(view[0]?.content).toContain('Kyoto')
-			expect(new Set(view.map((message) => message.content)).size).toBe(view.length)
 		})
 	})
 

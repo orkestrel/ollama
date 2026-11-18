@@ -5,14 +5,12 @@ import { createOllamaInstructionFormat } from '../../setupServer.js'
 
 import type { Message } from '@orkestrel/agent'
 import {
-	CONVERSATION_RECAP_PREFIX,
 	createAgent,
 	createConversation,
 	createConversationManager,
 	createInstructionManager,
 	createScope,
 	createRelayProvider,
-	isConversationError,
 	isProviderAbortError,
 	isProviderError,
 } from '@orkestrel/agent'
@@ -28,12 +26,9 @@ import {
 	CANNED_STREAM_DONE,
 	CASE_TIMEOUT,
 	createAllowAuthority,
-	createRecordingSummarizer,
-	createThrowingSummarizer,
 	createUserMessage,
 	fillWorkspace,
 	SHORT_OPTIONS,
-	THROWING_SUMMARIZER_MESSAGE,
 	TINY_PNG_BASE64,
 } from '../../setup.js'
 import {
@@ -72,6 +67,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
+				model: 'fixture-model',
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const messages: readonly Message[] = [{ id: 'question', role: 'user', content: 'Hello' }]
@@ -124,6 +120,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
+				model: 'fixture-model',
 				headers: () => ({ authorization: 'Bearer wrong-token' }),
 			})
 			const error = await browser
@@ -148,6 +145,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
+				model: 'fixture-model',
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const stream = browser.stream([createUserMessage('hi')], abort.signal)
@@ -182,6 +180,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
+				model: 'fixture-model',
 				headers: () => ({ authorization: OBFUSCATED }),
 				fetch: wire.fetch,
 			})
@@ -216,6 +215,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
+				model: 'fixture-model',
 				headers: () => ({ authorization: OBFUSCATED }),
 				fetch: wire.fetch,
 			})
@@ -254,6 +254,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
+				model: 'fixture-model',
 				headers: () => ({ authorization: OBFUSCATED }),
 				fetch: wire.fetch,
 			})
@@ -284,6 +285,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
+				model: 'fixture-model',
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const undeclared = {
@@ -310,6 +312,7 @@ describe('RelayProvider through a real server and OllamaProvider', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
+				model: 'fixture-model',
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const signal = AbortSignal.timeout(2000)
@@ -502,51 +505,6 @@ describe('AgentContext (provider-behavior) — a CUSTOM format still reaches the
 					message.content.includes('</instructions>'),
 			)
 			expect(framed).toBeDefined()
-		},
-		CASE_TIMEOUT,
-	)
-})
-
-describe('Conversation framing (provider-behavior) — the TIGHTENED recap prefix reaches the wire', () => {
-	// Directive #5's named-bug fix: the OLD test measured whether a recap label made the MODEL
-	// answer an attribution question correctly (a pass-rate/A-B comparison) — a model-BEHAVIOR
-	// assertion, forbidden. REPLACED entirely with a deterministic PROVIDER-behavior assertion: a
-	// folded section (view()'s recap shape) is sent to the agent, and we assert the RECORDED
-	// request body carries the message labeled with CONVERSATION_RECAP_PREFIX — proving the recap
-	// framing is what the provider actually SENDS, independent of whether the model then "gets it
-	// right". No passRate / honored / console.info / >= comparison remains.
-
-	const FACT = 'XJ7'
-	// A third-person NARRATION attributing the key to the USER — the digest shape a fold produces.
-	const summary = `The user introduced themselves as Ada and shared that their deploy key is ${FACT}. The assistant acknowledged it.`
-
-	it(
-		'a recap-labeled section summary is framed with CONVERSATION_RECAP_PREFIX in the request the provider sends',
-		async () => {
-			// Recipe: { num_predict: 8, temperature: 0 } — the response is irrelevant; the proxy records the request before
-			// forwarding.
-			const conversations = createConversationManager()
-			const active = conversations.add()
-			// Seed a section directly (the exact recap shape view() folds a compacted section into)
-			// rather than driving a real compaction — the wire-framing assertion is deterministic and
-			// doesn't need a summarizer call.
-			active.add({ role: 'assistant', content: `${CONVERSATION_RECAP_PREFIX}${summary}` })
-			active.add({
-				role: 'user',
-				content: 'What did I tell you my deploy key was?',
-			})
-			const request = await captureSettledRequest(
-				SCENARIO_PROVIDER,
-				(provider) => createAgent(provider, { conversations, timeout: CASE_TIMEOUT }).generate(),
-				createOllama,
-			)
-
-			const messages = wireMessages(request)
-			const recapMessage = messages.find((message) =>
-				message.content.startsWith(CONVERSATION_RECAP_PREFIX),
-			)
-			expect(recapMessage).toBeDefined()
-			expect(recapMessage?.content).toContain(FACT)
 		},
 		CASE_TIMEOUT,
 	)
@@ -1075,41 +1033,7 @@ describe('AgentContext workspaces (hermetic provider behavior) — large-context
 	)
 })
 
-// --- Conversation selection and compaction ------------------------------------
-
-describe('Conversation.compact() (pure, no daemon) — the two deterministic surfaces', () => {
-	it('compact() without a summarizer throws ConversationError (SUMMARIZER)', async () => {
-		const conversation = createConversation()
-		conversation.add([
-			{ role: 'user', content: 'Hello there.' },
-			{ role: 'assistant', content: 'Hi, how can I help?' },
-		])
-		const rejection = await conversation.compact().then(
-			() => undefined,
-			(error: unknown) => error,
-		)
-		expect(isConversationError(rejection)).toBe(true)
-		const code = isConversationError(rejection) ? rejection.code : undefined
-		expect(code).toBe('SUMMARIZER')
-	})
-
-	it('compact() on a short conversation is a no-op and never invokes the summarizer', async () => {
-		const invocations = createRecorder<[readonly Message[]]>()
-		const conversation = createConversation({
-			summarize: createRecordingSummarizer(invocations),
-		})
-		const result = await conversation.compact()
-		expect(result).toBeUndefined()
-		expect(invocations.calls).toEqual([])
-	})
-})
-
-describe('createThrowingSummarizer', () => {
-	it('the throwing summarizer fixture itself rejects with THROWING_SUMMARIZER_MESSAGE', async () => {
-		const summarize = createThrowingSummarizer()
-		await expect(summarize([])).rejects.toThrow(THROWING_SUMMARIZER_MESSAGE)
-	})
-})
+// --- Conversation selection ---------------------------------------------------
 
 describe('Agent (wire) — only the active conversation reaches the wire', () => {
 	it(

@@ -145,7 +145,10 @@ describe('OllamaProvider (wire seams)', () => {
 
 		expect(qwen.model).toBe('qwen3.5:2b-q4_K_M')
 		expect(mica.model).toBe('hf.co/sky7350/Mica-v0.1-4B:Q4_K_M')
-		expect(Reflect.get(boundary, 'model')).toBe('qwen3.5:2b-q4_K_M')
+		expect(boundary.model).toBe('qwen3.5:2b-q4_K_M')
+		// No accessor of its own, so each read above resolves to the base's getter over the tag
+		// the constructor passed to `super`.
+		expect(Object.getOwnPropertyDescriptor(OllamaProvider.prototype, 'model')).toBeUndefined()
 	})
 
 	it('inherits the shared engine and creates independent framing state', () => {
@@ -320,7 +323,7 @@ describe('OllamaProvider (a prompt over the context window)', () => {
 
 		expect(isProviderError(caught) && caught.code === 'HTTP' && caught.status === 400).toBe(true)
 		expect(isProviderError(caught) && caught.message).toBe(
-			`provider error: 400 - ${OLLAMA_CONTEXT_REFUSAL}; the prompt exceeds the model's context window; set AgentOptions.window to fold the conversation, raise options.num_ctx, or set truncate: true to let the daemon cut it`,
+			`provider error: 400 - ${OLLAMA_CONTEXT_REFUSAL}; the prompt exceeds the model's context window; serve the conversation through createLedger to bound every request, raise options.num_ctx, or set truncate: true to let the daemon cut it`,
 		)
 		expect(isProviderError(caught) && isProviderError(caught.cause)).toBe(true)
 	})

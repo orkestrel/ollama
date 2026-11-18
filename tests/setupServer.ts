@@ -973,15 +973,6 @@ export const FIXTURE_CONTENT = 'The conversation covered two small-talk topics.'
 export const READY_CHAT: ChatAnswer = { status: 200, content: FIXTURE_CONTENT, park: false }
 
 /**
- * Names the instruction `createLiveSummarizer` appends as the final user turn.
- *
- * @remarks Declared here as the expected value the summarizer's request is read against, apart
- * from the literal `createLiveSummarizer` sends, so the proof compares the wire to a second
- * declaration rather than to the value it was built from.
- */
-export const SUMMARY_INSTRUCTION = 'Summarize the conversation so far concisely in one sentence.'
-
-/**
  * Reads every `/api/chat` body a fixture recorded that is a JSON record, in arrival order.
  *
  * @param fixture - The fixture whose request log is read
@@ -1696,6 +1687,7 @@ export const PAGE_DOCUMENT = `<ul id="receipts"></ul>
 			const agent = createAgent(
 				createRelayProvider({
 					url: options.url,
+					model: options.model,
 					headers: () => ({ authorization: options.authorization }),
 				}),
 				{
@@ -8092,6 +8084,7 @@ export function createTimedProvider(
 	return {
 		id: provider.id,
 		name: provider.name,
+		model: provider.model,
 		...(provider.replay === undefined ? {} : { replay: provider.replay }),
 		async generate(messages, signal, tools, options) {
 			const start = performance.now()

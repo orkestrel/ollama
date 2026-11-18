@@ -4,14 +4,12 @@ import type {
 	Message,
 	MessageInput,
 	ProviderDelta,
-	ProviderRequest,
 	ProviderResult,
 } from '@orkestrel/agent'
-import type { RecorderInterface } from '@orkestrel/test'
 import type { ToolContext, ToolDefinition, ToolInterface } from '@orkestrel/tool'
 import type { WorkspaceInterface } from '@orkestrel/workspace'
 import type { Logprob, OllamaTiming } from '@src/core'
-import { createAuthority, estimateMessages } from '@orkestrel/agent'
+import { createAuthority } from '@orkestrel/agent'
 import { isString } from '@orkestrel/contract'
 import { createTool } from '@orkestrel/tool'
 import {
@@ -127,7 +125,7 @@ export function createUserMessage(content: string): Message & { readonly role: '
 /**
  * Builds `count` alternating user/assistant {@link Message}s (user first) — small-talk
  * padding turns whose content varies deterministically by index, for seeding long
- * conversations ahead of a compaction / window round-trip.
+ * conversations.
  *
  * @param count - How many turns to build
  * @returns `count` alternating turns, starting with `user`
@@ -166,91 +164,6 @@ export function toMessageInputs(
 	messages: ReadonlyArray<Message & { readonly role: MessageInput['role'] }>,
 ): readonly MessageInput[] {
 	return messages.map((message) => ({ role: message.role, content: message.content }))
-}
-
-// ── Window consumers ──────────────────────────────────────────────────────────
-//
-// An agent's `window` budget measures the complete provider request. These two consumers keep
-// the live compaction tests' ceilings on the message text alone, so the tools a request
-// advertises never move a fold the test places by message size.
-
-/**
- * Counts the characters of every message a provider request carries, ignoring the advertised
- * tools and the call options.
- *
- * @param request - The provider request a window budget measures
- * @returns The summed `content` length of the request's messages
- * @example
- * ```ts
- * countRequestCharacters({ messages: [createUserMessage('abc')] }) // 3
- * ```
- */
-export function countRequestCharacters(request: ProviderRequest): number {
-	return request.messages.reduce((total, message) => total + message.content.length, 0)
-}
-
-/**
- * Estimates the token footprint of a provider request's messages alone, ignoring the advertised
- * tools and the call options.
- *
- * @param request - The provider request a window budget measures
- * @returns The estimated token count of the request's messages
- * @example
- * ```ts
- * estimateRequestMessages({ messages: [createUserMessage('hello')] }) // 6
- * ```
- */
-export function estimateRequestMessages(request: ProviderRequest): number {
-	return estimateMessages(request.messages)
-}
-
-// ── Summarizer fixtures ───────────────────────────────────────────────────────
-//
-// The always-fails counterpart to a live `createLiveSummarizer` — a `summarize`
-// fixture for compaction round-trips that assert on the NON-FATAL warn / error path
-// rather than a successful digest. Matches `ConversationSummaryHandler` from
-// `@orkestrel/agent`: `(messages: readonly Message[]) => Promise<string>`.
-
-/** Names the message every {@link createThrowingSummarizer} invocation rejects with, by default. */
-export const THROWING_SUMMARIZER_MESSAGE = 'throwing-summarizer-always-fails'
-
-/**
- * Builds a `summarize` function that always rejects — the compaction-failure fixture.
- * Compatible with `ConversationSummaryHandler`
- * (`(messages: readonly Message[]) => Promise<string>`).
- *
- * @param message - The rejection's `Error` message; defaults to {@link THROWING_SUMMARIZER_MESSAGE}
- * @returns A summarizer function that always rejects with `new Error(message)`
- */
-export function createThrowingSummarizer(
-	message: string = THROWING_SUMMARIZER_MESSAGE,
-): (messages: readonly Message[]) => Promise<string> {
-	return async () => {
-		throw new Error(message)
-	}
-}
-
-/** Names the digest every {@link createRecordingSummarizer} invocation resolves with, by default. */
-export const RECORDING_SUMMARIZER_DIGEST = 'recording-summarizer-digest'
-
-/**
- * Builds a `summarize` function that records the turns it was handed and then resolves a
- * fixed digest — the never-invoked / invoked-once fixture for a compaction round-trip
- * that asserts WHETHER the summarizer ran. Compatible with `ConversationSummaryHandler`
- * (`(messages: readonly Message[]) => Promise<string>`).
- *
- * @param recorder - The recorder each invocation hands its turns to
- * @param digest - The digest the summarizer resolves; defaults to {@link RECORDING_SUMMARIZER_DIGEST}
- * @returns A summarizer function that records its turns and resolves `digest`
- */
-export function createRecordingSummarizer(
-	recorder: RecorderInterface<[readonly Message[]]>,
-	digest: string = RECORDING_SUMMARIZER_DIGEST,
-): (messages: readonly Message[]) => Promise<string> {
-	return async (messages) => {
-		recorder.handler(messages)
-		return digest
-	}
 }
 
 // ── Workspace seeder ──────────────────────────────────────────────────────────

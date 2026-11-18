@@ -18,6 +18,7 @@ describe('RelayProvider through a real server and the live daemon', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
+				model: OLLAMA_CONFIG.model,
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const result = await browser.generate(
@@ -51,6 +52,7 @@ describe('RelayProvider through a real server and the live daemon', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
+				model: OLLAMA_CONFIG.model,
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const { deltas, result } = await drive(
@@ -84,6 +86,7 @@ describe('RelayProvider through a real server and the live daemon', () => {
 		try {
 			const browser = createRelayProvider({
 				url: `${server.url}/inference`,
+				model: OLLAMA_CONFIG.model,
 				headers: () => ({ authorization: OBFUSCATED }),
 			})
 			const stream = browser.stream(

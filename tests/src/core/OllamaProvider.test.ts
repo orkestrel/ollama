@@ -1,4 +1,4 @@
-import type { Message } from '@orkestrel/agent'
+import type { AgentProviderInterface, Message } from '@orkestrel/agent'
 import { createAbort } from '@orkestrel/abort'
 import {
 	AgentProvider,
@@ -136,6 +136,16 @@ describe('OllamaProvider (wire seams)', () => {
 	it('forwards configured replay and defaults to none', () => {
 		expect(new OllamaProvider({ model: 'test-model', replay: 'all' }).replay).toBe('all')
 		expect(new OllamaProvider({ model: 'test-model' }).replay).toBe('none')
+	})
+
+	it('reports the constructed model through the class and through AgentProviderInterface', () => {
+		const qwen = new OllamaProvider({ model: 'qwen3.5:2b-q4_K_M' })
+		const mica = new OllamaProvider({ model: 'hf.co/sky7350/Mica-v0.1-4B:Q4_K_M' })
+		const boundary: AgentProviderInterface = qwen
+
+		expect(qwen.model).toBe('qwen3.5:2b-q4_K_M')
+		expect(mica.model).toBe('hf.co/sky7350/Mica-v0.1-4B:Q4_K_M')
+		expect(Reflect.get(boundary, 'model')).toBe('qwen3.5:2b-q4_K_M')
 	})
 
 	it('inherits the shared engine and creates independent framing state', () => {

@@ -82,6 +82,11 @@ export class OllamaProvider extends AgentProvider implements AgentProviderInterf
 		this.#shift = options.shift
 	}
 
+	/** Returns the model tag the constructor received, which every request body names. */
+	get model(): string {
+		return this.#model
+	}
+
 	/**
 	 * Streams a turn, naming the remedy when the daemon refuses a prompt over its context window.
 	 *

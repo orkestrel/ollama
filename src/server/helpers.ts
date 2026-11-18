@@ -352,6 +352,13 @@ export async function readOllamaReply(
 	}
 }
 
+/**
+ * Builds the timing fields of a terminal wire record, leaving out every member that is not set.
+ * @example
+ * ```ts
+ * buildOllamaTiming({ load: 0 }, { cached: 0 }) // { load_duration: 0, prompt_eval_cached_count: 0 }
+ * ```
+ */
 export function buildOllamaTiming(
 	durations: Partial<OllamaDurations> = {},
 	counts: Partial<OllamaCounts> = {},
@@ -372,6 +379,14 @@ export function buildOllamaTiming(
 	)
 }
 
+/**
+ * Builds an NDJSON chat reply: a delta row for each part, then one terminal row.
+ * @example
+ * ```ts
+ * buildOllamaReply({ content: 'ok' })
+ * // '{"message":{"role":"assistant","content":"ok"},"done":true,"done_reason":"stop"}\n'
+ * ```
+ */
 export function buildOllamaReply(options: OllamaReplyOptions = {}): string {
 	const model = options.model === undefined ? {} : { model: options.model }
 	const deltas = (options.parts ?? []).map(
@@ -400,6 +415,14 @@ export function buildOllamaReply(options: OllamaReplyOptions = {}): string {
 	return [...deltas, `${terminal}\n`].join('')
 }
 
+/**
+ * Builds a one-token raw generate reply carrying the token's top logprob list.
+ * @example
+ * ```ts
+ * buildOllamaReadout({ token: 'No', top: [{ token: 'No', logprob: -0.01 }] })
+ * // '{"response":"No","done":true,"done_reason":"length","logprobs":[{"token":"No","logprob":-0.01,"top_logprobs":[{"token":"No","logprob":-0.01}]}]}'
+ * ```
+ */
 export function buildOllamaReadout(options: OllamaReadoutOptions): string {
 	const chosen = options.top.find((entry) => entry.token === options.token)
 	return JSON.stringify({
@@ -418,6 +441,13 @@ export function buildOllamaReadout(options: OllamaReadoutOptions): string {
 	})
 }
 
+/**
+ * Builds a `/api/tags` listing body for the given models, in the shape a real daemon sends.
+ * @example
+ * ```ts
+ * buildOllamaInventory([]) // '{"models":[]}'
+ * ```
+ */
 export function buildOllamaInventory(models: readonly OllamaModel[]): string {
 	return JSON.stringify({
 		models: models.map((model) => ({
@@ -438,6 +468,15 @@ export function buildOllamaInventory(models: readonly OllamaModel[]): string {
 	})
 }
 
+/**
+ * Builds the answer a fixture gives a request its reply callback declines.
+ * @returns The route table's answer, or a 404 for a path the fixture does not serve
+ * @example
+ * ```ts
+ * const request = { method: 'GET', path: '/api/version', headers: {}, body: '' }
+ * await buildOllamaAnswer(request, { models: [], version: '0.40.14', context: 4096 }).json() // { version: '0.40.14' }
+ * ```
+ */
 export function buildOllamaAnswer(
 	request: OllamaFixtureRequest,
 	options: Pick<OllamaFixtureOptions, 'models' | 'version' | 'context'>,

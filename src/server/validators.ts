@@ -162,6 +162,15 @@ export function isOllamaDaemonOptions(value: unknown): value is OllamaDaemonOpti
 	})
 }
 
+/**
+ * Checks whether a value configures a fixture with unique model names, a nonempty version, and a positive integer context.
+ * @param value - The options to inspect
+ * @returns True if every member is well formed and no other key is present; false otherwise
+ * @example
+ * ```ts
+ * isOllamaFixtureOptions({ models: [], version: '0.40.14', context: 4096 }) // true
+ * ```
+ */
 export function isOllamaFixtureOptions(value: unknown): value is OllamaFixtureOptions {
 	return holds(
 		() =>

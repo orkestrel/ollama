@@ -23,6 +23,15 @@ export function createOllamaDaemon(options: OllamaDaemonOptions): OllamaDaemonIn
 	return new OllamaDaemon(options)
 }
 
+/**
+ * Creates a fixture and resolves after it listens.
+ * @throws OllamaError Thrown when the options are malformed.
+ * @example
+ * ```ts
+ * const fixture = await createOllamaFixture({ models: [], version: '0.40.14', context: 4096 })
+ * await fixture.destroy()
+ * ```
+ */
 export async function createOllamaFixture(
 	options: OllamaFixtureOptions,
 ): Promise<OllamaFixtureInterface> {

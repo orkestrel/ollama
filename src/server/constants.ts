@@ -38,6 +38,7 @@ export const OLLAMA_DAEMON_KEYS = Object.freeze({
 	termination: Object.freeze(['grace', 'drain']),
 })
 
+/** Lists the keys the fixture options admit, live values included. */
 export const OLLAMA_FIXTURE_KEYS: readonly string[] = Object.freeze([
 	'on',
 	'error',
@@ -47,6 +48,7 @@ export const OLLAMA_FIXTURE_KEYS: readonly string[] = Object.freeze([
 	'reply',
 ])
 
+/** Names the fixed timestamp a fixture writes as each listed model's `modified_at` and each unload reply's `created_at`. */
 export const OLLAMA_FIXTURE_TIME = '2026-10-23T14:08:45.7014834Z'
 
 /** Identifies daemon errors across installations and module formats through the global symbol registry. */

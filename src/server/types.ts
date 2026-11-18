@@ -271,6 +271,7 @@ export interface OllamaErrorOptions {
 	readonly cause?: unknown
 }
 
+/** Records one received request: its method, path, headers, and whole body text. */
 export interface OllamaFixtureRequest {
 	readonly method: string
 	readonly path: string
@@ -278,11 +279,28 @@ export interface OllamaFixtureRequest {
 	readonly body: string
 }
 
+/**
+ * Defines the reply callback, which answers a logged request with a `Response` or declines it with `undefined`.
+ *
+ * @remarks
+ * A declined request takes the built-in answer `buildOllamaAnswer` returns. The signal aborts
+ * when the client disconnects or `destroy` runs.
+ */
 export type OllamaFixtureHandler = (
 	request: OllamaFixtureRequest,
 	signal: AbortSignal,
 ) => Response | undefined | Promise<Response | undefined>
 
+/**
+ * Configures a fixture's listed models, reported version, context length, reply callback, and listeners.
+ *
+ * @remarks
+ * `models` holds unique nonempty names, and an empty list is admitted. `version` is the nonempty
+ * text `/api/version` reports. `context` is the positive safe integer `/api/show` reports as the
+ * context length. `reply` sees every request before any built-in answer. `on` installs initial
+ * listeners, and `error` passes to the emitter as its listener-error handler. An undeclared key
+ * refuses.
+ */
 export interface OllamaFixtureOptions {
 	readonly on?: EmitterHooks<OllamaFixtureEventMap>
 	readonly error?: EmitterErrorHandler
@@ -292,19 +310,57 @@ export interface OllamaFixtureOptions {
 	readonly reply?: OllamaFixtureHandler
 }
 
+/**
+ * Reports logged requests and serving failures.
+ *
+ * @remarks
+ * `request` fires after the request joins the log and before the reply callback runs. `error`
+ * reports a throwing reply callback, which also answers 500, as an unknown value.
+ */
 export type OllamaFixtureEventMap = {
 	readonly request: readonly [request: OllamaFixtureRequest]
 	readonly error: readonly [error: unknown]
 }
 
+/**
+ * Owns a loopback Ollama protocol fixture from `start` through `destroy`.
+ *
+ * @remarks
+ * A request joins the log after its whole body arrives. The reply callback sees it first, and
+ * the built-in answer applies only when the callback declines.
+ */
 export interface OllamaFixtureInterface {
+	/** Holds the listening origin, readable after destroy, and throws `OllamaError` with code `state` before start resolves. */
 	readonly url: string
+	/** Holds a copy of the request log in arrival order, each record frozen. */
 	readonly requests: readonly OllamaFixtureRequest[]
+	/** Holds the typed observation surface for logged requests and serving failures. */
 	readonly emitter: EmitterInterface<OllamaFixtureEventMap>
+	/**
+	 * Listens on an ephemeral port on `127.0.0.1` and records the origin in `url`.
+	 *
+	 * @remarks
+	 * Concurrent and repeated calls share the first result. A destroyed fixture refuses with
+	 * `OllamaError` code `state`.
+	 */
 	start(): Promise<void>
+	/**
+	 * Aborts every callback signal, cancels each held body, closes the listener, and releases the emitter last.
+	 *
+	 * @remarks
+	 * Idempotent and never rejects.
+	 */
 	destroy(): Promise<void>
 }
 
+/**
+ * Configures a chat reply's delta rows and its terminal row.
+ *
+ * @remarks
+ * Each of `parts` becomes a delta row before the terminal row. The terminal row carries
+ * `content`, `thinking`, `calls`, `reason` (default `'stop'`), and the set members of `counts`
+ * and `durations`. An omitted `model` leaves the model out of every row.
+ */
 export interface OllamaReplyOptions {
 	readonly model?: string
 	readonly content?: string
@@ -316,6 +372,12 @@ export interface OllamaReplyOptions {
 	readonly durations?: Partial<OllamaDurations>
 }
 
+/**
+ * Configures a one-token judge readout: the chosen token, its top list, and an optional model and counts.
+ *
+ * @remarks
+ * The readout names the token's own logprob only when `top` holds that token.
+ */
 export interface OllamaReadoutOptions {
 	readonly model?: string
 	readonly token: string

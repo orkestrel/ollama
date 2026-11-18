@@ -15,6 +15,20 @@ import { OllamaError } from './errors.js'
 import { buildOllamaAnswer } from './helpers.js'
 import { isOllamaFixtureOptions } from './validators.js'
 
+/**
+ * Serves Ollama's protocol on a loopback port, handing each logged request to the reply callback before any built-in answer.
+ * @throws OllamaError Thrown when the options are malformed.
+ * @example
+ * ```ts
+ * const fixture = new OllamaFixture({ models: [], version: '0.40.14', context: 4096 })
+ * try {
+ * 	await fixture.start()
+ * 	await (await fetch(`${fixture.url}/api/version`)).json() // { version: '0.40.14' }
+ * } finally {
+ * 	await fixture.destroy()
+ * }
+ * ```
+ */
 export class OllamaFixture implements OllamaFixtureInterface {
 	readonly #options: OllamaFixtureOptions
 	readonly #emitter: Emitter<OllamaFixtureEventMap>

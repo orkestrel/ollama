@@ -1,6 +1,6 @@
 {
 	"name": "@orkestrel/ollama",
-	"version": "0.0.44",
+	"version": "0.0.45",
 	"description": "A typed local-LLM provider for the @orkestrel line — a ProviderInterface over a local Ollama daemon's /api/chat with NDJSON streaming and guard-narrowed wire boundaries. Part of the @orkestrel line.",
 	"keywords": [
 		"ai",
@@ -85,26 +85,26 @@
 		"prepack": "npm run build"
 	},
 	"dependencies": {
-		"@orkestrel/agent": "^0.0.47",
+		"@orkestrel/agent": "^0.0.48",
 		"@orkestrel/budget": "^0.0.21",
 		"@orkestrel/contract": "^0.0.27",
 		"@orkestrel/emitter": "^0.0.19",
 		"@orkestrel/ndjson": "^0.0.20",
-		"@orkestrel/process": "^0.0.22",
-		"@orkestrel/tool": "^0.0.25"
+		"@orkestrel/process": "^0.0.23",
+		"@orkestrel/tool": "^0.0.26"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.60.1",
 		"@orkestrel/abort": "^0.0.20",
-		"@orkestrel/browser": "^0.0.35",
-		"@orkestrel/guide": "^0.0.33",
-		"@orkestrel/probe": "^0.0.32",
-		"@orkestrel/router": "^0.0.24",
+		"@orkestrel/browser": "^0.0.36",
+		"@orkestrel/guide": "^0.0.34",
+		"@orkestrel/probe": "^0.0.33",
+		"@orkestrel/router": "^0.0.25",
 		"@orkestrel/scaffold": "^0.0.144",
-		"@orkestrel/server": "^0.0.30",
+		"@orkestrel/server": "^0.0.31",
 		"@orkestrel/test": "^0.0.45",
 		"@orkestrel/timeout": "^0.0.20",
-		"@orkestrel/workspace": "^0.0.21",
+		"@orkestrel/workspace": "^0.0.22",
 		"@types/node": "^24.19.2",
 		"ollama": "0.6.4",
 		"oxfmt": "^0.79.0",

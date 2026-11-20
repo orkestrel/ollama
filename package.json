@@ -86,24 +86,24 @@
 	},
 	"dependencies": {
 		"@orkestrel/agent": "^0.0.47",
-		"@orkestrel/budget": "^0.0.20",
-		"@orkestrel/contract": "^0.0.26",
-		"@orkestrel/emitter": "^0.0.18",
-		"@orkestrel/ndjson": "^0.0.19",
+		"@orkestrel/budget": "^0.0.21",
+		"@orkestrel/contract": "^0.0.27",
+		"@orkestrel/emitter": "^0.0.19",
+		"@orkestrel/ndjson": "^0.0.20",
 		"@orkestrel/process": "^0.0.22",
 		"@orkestrel/tool": "^0.0.25"
 	},
 	"devDependencies": {
 		"@microsoft/api-extractor": "^7.60.1",
-		"@orkestrel/abort": "^0.0.19",
+		"@orkestrel/abort": "^0.0.20",
 		"@orkestrel/browser": "^0.0.35",
 		"@orkestrel/guide": "^0.0.33",
 		"@orkestrel/probe": "^0.0.32",
 		"@orkestrel/router": "^0.0.24",
-		"@orkestrel/scaffold": "^0.0.140",
+		"@orkestrel/scaffold": "^0.0.144",
 		"@orkestrel/server": "^0.0.30",
-		"@orkestrel/test": "^0.0.44",
-		"@orkestrel/timeout": "^0.0.19",
+		"@orkestrel/test": "^0.0.45",
+		"@orkestrel/timeout": "^0.0.20",
 		"@orkestrel/workspace": "^0.0.21",
 		"@types/node": "^24.19.2",
 		"ollama": "0.6.4",
@@ -111,7 +111,7 @@
 		"oxlint": "^1.94.0",
 		"typescript": "^7.0.2",
 		"vite": "^8.3.8",
-		"vitest": "^5.1.0"
+		"vitest": "^5.1.1"
 	},
 	"engines": {
 		"node": "^22.18.0 || >=24.4.0"
